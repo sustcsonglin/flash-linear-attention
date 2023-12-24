@@ -47,11 +47,12 @@ def chunk_retention_fwd_kernel(
         # [BT, DV]
         b_v = tl.load(p_v)
 
-        b_s = tl.dot(b_q, b_k, False) * d_s
+        b_s = tl.dot(b_q, b_k, allow_tf32=False) * d_s
         # [BT, BD]
-        b_o = tl.dot((b_q * d_o[:, None]).to(b_q.dtype), b_h.to(b_q.dtype), False) + tl.dot(b_s.to(b_q.dtype), b_v, False)
+        b_o = tl.dot((b_q * d_o[:, None]).to(b_q.dtype), b_h.to(b_q.dtype), allow_tf32=False)
+        b_o += tl.dot(b_s.to(b_q.dtype), b_v, allow_tf32=False)
         # [BD, DV]
-        b_h = d_b * b_h + tl.dot(b_k, (b_v * d_h[:, None]).to(b_k.dtype), False)
+        b_h = d_b * b_h + tl.dot(b_k, (b_v * d_h[:, None]).to(b_k.dtype), allow_tf32=False)
 
         tl.store(p_o, b_o.to(p_o.dtype.element_ty))
 
@@ -101,12 +102,12 @@ def chunk_retention_bwd_kernel(
         b_dd = (b_do * d_q[:, None]).to(b_do.dtype)
 
         # [BT, BT]
-        b_ds = tl.dot(b_do, b_v, False)
+        b_ds = tl.dot(b_do, b_v, allow_tf32=False)
         b_ds = (b_ds * d_s).to(b_k.dtype)
         # [BT, BD]
-        b_dq = tl.dot(b_dd, b_h.to(b_k.dtype), False) + tl.dot(b_ds, b_k, False)
+        b_dq = tl.dot(b_dd, b_h.to(b_k.dtype), allow_tf32=False) + tl.dot(b_ds, b_k, allow_tf32=False)
         # [BD, BD]
-        b_h = d_b * b_h + tl.dot((b_v * d_k[None, :]).to(b_k.dtype), b_k, False)
+        b_h = d_b * b_h + tl.dot((b_v * d_k[None, :]).to(b_k.dtype), b_k, allow_tf32=False)
 
         tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty))
 
@@ -129,16 +130,18 @@ def chunk_retention_bwd_kernel(
         b_dd = (b_do * d_q[:, None]).to(b_do.dtype)
 
         # [BT, BT]
-        b_ds = tl.dot(b_v, tl.trans(b_do), False)
+        b_ds = tl.dot(b_v, tl.trans(b_do), allow_tf32=False)
         b_ds = (b_ds * d_s).to(b_k.dtype)
 
         # [BT, BT]
-        b_s = tl.dot(b_k, b_q, False) * d_s
+        b_s = tl.dot(b_k, b_q, allow_tf32=False) * d_s
         # [BT, BD]
-        b_dk = tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), False) * d_k[:, None] + tl.dot(b_ds, tl.trans(b_q), False)
-        b_dv = tl.dot(b_k, b_dh.to(b_k.dtype), False) * d_k[:, None] + tl.dot(b_s.to(b_q.dtype), b_do, False)
+        b_dk = tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), allow_tf32=False) * d_k[:, None]
+        b_dk += tl.dot(b_ds, tl.trans(b_q), allow_tf32=False)
+        b_dv = tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False) * d_k[:, None]
+        b_dv += tl.dot(b_s.to(b_q.dtype), b_do, allow_tf32=False)
         # [BD, BD]
-        b_dh = d_b * b_dh + tl.dot(b_q, b_dd, False)
+        b_dh = d_b * b_dh + tl.dot(b_q, b_dd, allow_tf32=False)
 
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty))
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty))

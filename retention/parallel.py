@@ -43,9 +43,9 @@ def parallel_retention_fwd_kernel(
         # [BQ, BK]
         m_s = o_q[:, None] >= o_k[None, :]
         d_s = tl.where(m_s, tl.math.exp2((o_q[:, None] - o_k[None, :]) * b_b), 0)
-        b_s = tl.dot(b_q, b_k, False) * d_s
+        b_s = tl.dot(b_q, b_k, allow_tf32=False) * d_s
         # [BQ, BD]
-        b_o += tl.dot(b_s.to(b_q.dtype), b_v, False)
+        b_o += tl.dot(b_s.to(b_q.dtype), b_v, allow_tf32=False)
 
         p_k = tl.advance(p_k, (0, BK))
         p_v = tl.advance(p_v, (BK, 0))
@@ -91,9 +91,9 @@ def parallel_retention_bwd_kernel_dq(
         # [BQ, BK]
         m_s = o_q[:, None] >= o_k[None, :]
         d_s = tl.where(m_s, tl.math.exp2((o_q[:, None] - o_k[None, :]) * b_b), 0) * scale
-        b_ds = tl.dot(b_do, b_v, False) * d_s
+        b_ds = tl.dot(b_do, b_v, allow_tf32=False) * d_s
         # [BQ, BD]
-        b_dq += tl.dot(b_ds.to(b_k.dtype), b_k, False)
+        b_dq += tl.dot(b_ds.to(b_k.dtype), b_k, allow_tf32=False)
 
         p_k = tl.advance(p_k, (BK, 0))
         p_v = tl.advance(p_v, (0, BK))
@@ -143,12 +143,12 @@ def parallel_retention_bwd_kernel_dkv(
         # [BK, BQ]
         m_s = o_k[:, None] <= o_q[None, :]
         d_s = tl.where(m_s, tl.math.exp2((-o_k[:, None] + o_q[None, :]) * b_b.to(tl.float32)), 0) * scale
-        b_s = tl.dot(b_k, b_q, False) * d_s
-        b_ds = tl.dot(b_v, b_do, False) * d_s
+        b_s = tl.dot(b_k, b_q, allow_tf32=False) * d_s
+        b_ds = tl.dot(b_v, b_do, allow_tf32=False) * d_s
 
         # [BK, BD]
-        b_dk += tl.dot(b_ds.to(b_q.dtype), tl.trans(b_q), False)
-        b_dv += tl.dot(b_s.to(b_q.dtype), tl.trans(b_do), False)
+        b_dk += tl.dot(b_ds.to(b_q.dtype), tl.trans(b_q), allow_tf32=False)
+        b_dv += tl.dot(b_s.to(b_q.dtype), tl.trans(b_do), allow_tf32=False)
         o_q += BQ
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty))
     tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty))
