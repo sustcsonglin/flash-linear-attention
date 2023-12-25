@@ -164,7 +164,7 @@ class ChunkRetentionFunction(torch.autograd.Function):
         scale = d_head ** -0.5
         BD = triton.next_power_of_2(q.shape[-1])
         BT = 32 if BD > 64 else 64
-        DK, DV = min(BD, 128), 64
+        DK, DV = min(BD, 128), min(BD, 64)
         NK, NV = triton.cdiv(BD, DK), triton.cdiv(BD, DV)
         num_stages = 3 if d_head <= 64 else 2
         num_warps = 4
@@ -202,8 +202,8 @@ class ChunkRetentionFunction(torch.autograd.Function):
         q, k, v, b = ctx.saved_tensors
         scale = ctx.scale
         BD = triton.next_power_of_2(q.shape[-1])
-        BT = 32 if BD > 64 else 64
-        DK, DV = min(BD, 128), 64
+        BT = 64
+        DK, DV = min(BD, 64), min(BD, 128)
         NK, NV = triton.cdiv(BD, DK), triton.cdiv(BD, DV)
         batch_size, n_heads, seq_len, d_head = ctx.batch_size, ctx.n_heads, ctx.seq_len, ctx.d_head
         num_stages = 3 if d_head <= 64 else 2
