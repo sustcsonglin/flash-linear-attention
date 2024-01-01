@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Copyright (c) 2023, Yu Zhang, Songlin Yang
 
 import torch
 import triton

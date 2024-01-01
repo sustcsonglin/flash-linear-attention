@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Copyright (c) 2023, Yu Zhang, Songlin Yang
 
 import torch
 import triton
@@ -25,9 +26,12 @@ def chunk_retention_fwd_kernel_h(
     DV: tl.constexpr
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    p_k = tl.make_block_ptr(k + i_bh * s_qh, (BD, T), (s_qd, s_qt), (i_k * DK, 0), (DK, BT), (0, 1))
-    p_v = tl.make_block_ptr(v + i_bh * s_qh, (T, BD), (s_qt, s_qd), (0, i_v * DV), (BT, DV), (1, 0))
-    p_h = tl.make_block_ptr(h + i_bh * s_hh, (TD, BD), (s_ht, s_qd), (i_k * DK, i_v * DV), (DK, DV), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * s_qh, (BD, T),
+                            (s_qd, s_qt), (i_k * DK, 0), (DK, BT), (0, 1))
+    p_v = tl.make_block_ptr(v + i_bh * s_qh, (T, BD),
+                            (s_qt, s_qd), (0, i_v * DV), (BT, DV), (1, 0))
+    p_h = tl.make_block_ptr(h + i_bh * s_hh, (TD, BD),
+                            (s_ht, s_qd), (i_k * DK, i_v * DV), (DK, DV), (1, 0))
     p_b = b + i_bh % H
 
     o_i = tl.arange(0, BT)
@@ -43,7 +47,8 @@ def chunk_retention_fwd_kernel_h(
         # [BT, DV]
         b_v = tl.load(p_v)
         # [DK, DV]
-        b_h = d_b * b_h + tl.dot(b_k, (b_v * d_i[:, None]).to(b_k.dtype), allow_tf32=False)
+        b_h = d_b * b_h + \
+            tl.dot(b_k, (b_v * d_i[:, None]).to(b_k.dtype), allow_tf32=False)
 
         p_k = tl.advance(p_k, (0, BT))
         p_v = tl.advance(p_v, (BT, 0))
@@ -71,11 +76,16 @@ def chunk_retention_fwd_kernel_o(
     BD: tl.constexpr
 ):
     i_q, i_bh = tl.program_id(0), tl.program_id(1)
-    p_q = tl.make_block_ptr(q + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
-    p_k = tl.make_block_ptr(k + i_bh * s_qh, (BD, T), (s_qd, s_qt), (0, i_q * BT), (BD, BT), (0, 1))
-    p_v = tl.make_block_ptr(v + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
-    p_h = tl.make_block_ptr(h + i_bh * s_hh, (TD, BD), (s_ht, s_qd), (i_q * BD, 0), (BD, BD), (1, 0))
-    p_o = tl.make_block_ptr(o + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * s_qh, (T, BD),
+                            (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * s_qh, (BD, T),
+                            (s_qd, s_qt), (0, i_q * BT), (BD, BT), (0, 1))
+    p_v = tl.make_block_ptr(v + i_bh * s_qh, (T, BD),
+                            (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
+    p_h = tl.make_block_ptr(h + i_bh * s_hh, (TD, BD),
+                            (s_ht, s_qd), (i_q * BD, 0), (BD, BD), (1, 0))
+    p_o = tl.make_block_ptr(o + i_bh * s_qh, (T, BD),
+                            (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
     p_b = b + i_bh % H
 
     o_i = tl.arange(0, BT)
@@ -96,7 +106,8 @@ def chunk_retention_fwd_kernel_o(
     d_s = tl.where(m_s, tl.math.exp2((o_i[:, None] - o_i[None, :]) * b_b), 0)
     b_s = tl.dot(b_q, b_k, allow_tf32=False) * d_s
     # [BT, BD]
-    b_o = tl.dot((b_q * d_i[:, None]).to(b_q.dtype), b_h, allow_tf32=False) + tl.dot(b_s.to(b_q.dtype), b_v, allow_tf32=False)
+    b_o = tl.dot((b_q * d_i[:, None]).to(b_q.dtype), b_h, allow_tf32=False) + \
+        tl.dot(b_s.to(b_q.dtype), b_v, allow_tf32=False)
 
     tl.store(p_o, b_o.to(p_o.dtype.element_ty))
 
@@ -122,9 +133,12 @@ def chunk_retention_bwd_kernel_dh(
     DV: tl.constexpr
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    p_q = tl.make_block_ptr(q + i_bh * s_qh, (BD, T), (s_qd, s_qt), (i_k * DK, T - BT), (DK, BT), (0, 1))
-    p_do = tl.make_block_ptr(do + i_bh * s_qh, (T, BD), (s_qt, s_qd), (T - BT, i_v * DV), (BT, DV), (1, 0))
-    p_dh = tl.make_block_ptr(dh + i_bh * s_hh, (TD, BD), (s_ht, s_qd), (TD - BD + i_k * DK, i_v * DV), (DK, DV), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * s_qh, (BD, T),
+                            (s_qd, s_qt), (i_k * DK, T - BT), (DK, BT), (0, 1))
+    p_do = tl.make_block_ptr(do + i_bh * s_qh, (T, BD),
+                             (s_qt, s_qd), (T - BT, i_v * DV), (BT, DV), (1, 0))
+    p_dh = tl.make_block_ptr(dh + i_bh * s_hh, (TD, BD), (s_ht, s_qd),
+                             (TD - BD + i_k * DK, i_v * DV), (DK, DV), (1, 0))
     p_b = b + i_bh % H
 
     o_i = tl.arange(0, BT)
@@ -141,7 +155,8 @@ def chunk_retention_bwd_kernel_dh(
         # [BT, DV]
         b_do = tl.load(p_do)
         # [DK, DV]
-        b_dh = d_b * b_dh + tl.dot(b_q, (b_do * d_i[:, None]).to(b_q.dtype), allow_tf32=False)
+        b_dh = d_b * b_dh + \
+            tl.dot(b_q, (b_do * d_i[:, None]).to(b_q.dtype), allow_tf32=False)
 
         p_q = tl.advance(p_q, (0, -BT))
         p_do = tl.advance(p_do, (-BT, 0))
@@ -173,15 +188,24 @@ def chunk_retention_bwd_kernel_dqkv(
     BD: tl.constexpr
 ):
     i_q, i_bh = tl.program_id(0), tl.program_id(1)
-    p_q = tl.make_block_ptr(q + i_bh * s_qh, (BD, T), (s_qd, s_qt), (0, i_q * BT), (BD, BT), (0, 1))
-    p_k = tl.make_block_ptr(k + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
-    p_v = tl.make_block_ptr(v + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
-    p_h = tl.make_block_ptr(h + i_bh * s_hh, (BD, TD), (s_qd, s_ht), (0, i_q * BD), (BD, BD), (0, 1))
-    p_do = tl.make_block_ptr(do + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
-    p_dh = tl.make_block_ptr(dh + i_bh * s_hh, (TD, BD), (s_ht, s_qd), (i_q * BD, 0), (BD, BD), (1, 0))
-    p_dq = tl.make_block_ptr(dq + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
-    p_dk = tl.make_block_ptr(dk + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
-    p_dv = tl.make_block_ptr(dv + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * s_qh, (BD, T),
+                            (s_qd, s_qt), (0, i_q * BT), (BD, BT), (0, 1))
+    p_k = tl.make_block_ptr(k + i_bh * s_qh, (T, BD),
+                            (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
+    p_v = tl.make_block_ptr(v + i_bh * s_qh, (T, BD),
+                            (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
+    p_h = tl.make_block_ptr(h + i_bh * s_hh, (BD, TD),
+                            (s_qd, s_ht), (0, i_q * BD), (BD, BD), (0, 1))
+    p_do = tl.make_block_ptr(do + i_bh * s_qh, (T, BD),
+                             (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
+    p_dh = tl.make_block_ptr(dh + i_bh * s_hh, (TD, BD),
+                             (s_ht, s_qd), (i_q * BD, 0), (BD, BD), (1, 0))
+    p_dq = tl.make_block_ptr(dq + i_bh * s_qh, (T, BD),
+                             (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
+    p_dk = tl.make_block_ptr(dk + i_bh * s_qh, (T, BD),
+                             (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
+    p_dv = tl.make_block_ptr(dv + i_bh * s_qh, (T, BD),
+                             (s_qt, s_qd), (i_q * BT, 0), (BT, BD), (1, 0))
     p_b = b + i_bh % H
 
     o_i = tl.arange(0, BT)
@@ -200,17 +224,21 @@ def chunk_retention_bwd_kernel_dqkv(
     b_ds = tl.dot(b_do, tl.trans(b_v), allow_tf32=False)
     # [BT, BT]
     m_s = o_i[:, None] >= o_i[None, :]
-    d_s = tl.where(m_s, tl.math.exp2((o_i[:, None] - o_i[None, :]) * b_b), 0) * scale
+    d_s = tl.where(m_s, tl.math.exp2(
+        (o_i[:, None] - o_i[None, :]) * b_b), 0) * scale
     b_ds = (b_ds * d_s).to(b_k.dtype)
     # [BT, BD]
-    b_dq = tl.dot((b_do * (d_q * scale)[:, None]).to(b_k.dtype), b_h, allow_tf32=False) + tl.dot(b_ds, b_k, allow_tf32=False)
+    b_dq = tl.dot((b_do * (d_q * scale)[:, None]).to(b_k.dtype),
+                  b_h, allow_tf32=False) + tl.dot(b_ds, b_k, allow_tf32=False)
 
     # [BT, BT]
     b_s = tl.dot(b_k, b_q, allow_tf32=False) * tl.trans(d_s)
     b_ds = tl.trans(b_ds)
     # [BT, BD]
-    b_dk = tl.dot(b_v, tl.trans(b_dh), allow_tf32=False) * d_k[:, None] + tl.dot(b_ds, tl.trans(b_q), allow_tf32=False)
-    b_dv = tl.dot(b_k, b_dh, allow_tf32=False) * d_k[:, None] + tl.dot(b_s.to(b_q.dtype), b_do, allow_tf32=False)
+    b_dk = tl.dot(b_v, tl.trans(b_dh), allow_tf32=False) * \
+        d_k[:, None] + tl.dot(b_ds, tl.trans(b_q), allow_tf32=False)
+    b_dv = tl.dot(b_k, b_dh, allow_tf32=False) * \
+        d_k[:, None] + tl.dot(b_s.to(b_q.dtype), b_do, allow_tf32=False)
 
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty))
@@ -235,12 +263,14 @@ class ChunkRetentionFunction(torch.autograd.Function):
             p[tuple(slice(0, i) for i in x.shape)] = x
             return p
         if BD != d_head:
-            q, k, v = (pad(i, (batch_size, n_heads, seq_len, BD)) for i in (q, k, v))
+            q, k, v = (pad(i, (batch_size, n_heads, seq_len, BD))
+                       for i in (q, k, v))
 
         h = q.new_empty(batch_size, n_heads, triton.cdiv(seq_len, BT) * BD, BD)
         o = torch.empty_like(q)
         # NOTE: be careful about BF16 precision
-        b = (1. - q.new_tensor(2., dtype=torch.float).pow(-5 - q.new_tensor(range(n_heads), dtype=torch.float))).log2()
+        b = (1. - q.new_tensor(2., dtype=torch.float).pow(-5 -
+             q.new_tensor(range(n_heads), dtype=torch.float))).log2()
         grid = (triton.cdiv(BD, DK), triton.cdiv(BD, DV), batch_size * n_heads)
         chunk_retention_fwd_kernel_h[grid](
             k, v, h, b,
@@ -285,7 +315,8 @@ class ChunkRetentionFunction(torch.autograd.Function):
         if BD != d_head:
             do = pad(do, q.shape)
 
-        dq, dk, dv, dh = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v), torch.empty_like(h)
+        dq, dk, dv, dh = torch.empty_like(q), torch.empty_like(
+            k), torch.empty_like(v), torch.empty_like(h)
         grid = (triton.cdiv(BD, DK), triton.cdiv(BD, DV), batch_size * n_heads)
         chunk_retention_bwd_kernel_dh[grid](
             q, b, do, dh,
