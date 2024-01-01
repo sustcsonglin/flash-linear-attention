@@ -2,7 +2,6 @@
 
 # Retentive Network: A Successor to Transformer for Large Language Models"[https://arxiv.org/pdf/2307.08621.pdf]
 
-from re import T
 from fla.ops.triton.retention import fused_chunk_retention, parallel_retention
 from fla.module.rmsnorm import RMSNorm
 from einops import rearrange
