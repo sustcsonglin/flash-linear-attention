@@ -61,8 +61,12 @@ class MultiScaleRetention(nn.Module):
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads).contiguous()
         if form == 'fused_chunk':
             o = fused_chunk_retention(q, k, v)
+        # TODO: need fix to allow different d_head_qk and d_head_v
         elif form == 'parallel':
-            o = parallel_retention(q, k, v)
+            # o = parallel_retention(q, k, v)
+            raise NotImplementedError
+        else:
+            raise NotImplementedError
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
         return self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.g_proj(x))
 
