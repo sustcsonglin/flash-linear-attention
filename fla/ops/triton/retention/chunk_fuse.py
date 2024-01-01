@@ -4,7 +4,6 @@
 import torch
 import triton
 import triton.language as tl
-import math
 
 # on-the-fly computation without materializing hidden statets into HBMs
 
@@ -16,15 +15,12 @@ def fused_chunk_retention_fwd_kernel(
     k,  # key [B, H, L, D_head_V]
     v,  # value [B, H, L, D_head_V]
     o,  # output [B, H, L, D_head_V]
-
     s_qk_h,  # stride size: L * D_head_K
     s_qk_t,  # stride size: D_head_K
     s_qk_d,  # stride size: 1
-
     s_vo_h,  # stride size: L * D_head_V
     s_vo_t,  # stride size: D_head_V
     s_vo_d,  # stride size: 1
-
     B,  # batch size
     H,  # n_heads
     T,  # seq_len
@@ -46,8 +42,7 @@ def fused_chunk_retention_fwd_kernel(
     # d_b: overall decay for the entire chunk
     # d_o: cumulative decay from the start of the chunk
     # d_h: cumulative decay from the end of the chunk
-    d_b, d_o, d_h = tl.math.exp2(
-        BT * b_b), tl.math.exp2(o_i * b_b), tl.math.exp2((BT - o_i) * b_b)
+    d_b, d_o, d_h = tl.math.exp2(BT * b_b), tl.math.exp2(o_i * b_b), tl.math.exp2((BT - o_i) * b_b)
 
     # [BT, BT]
     m_s = o_i[:, None] >= o_i[None, :]
@@ -56,14 +51,10 @@ def fused_chunk_retention_fwd_kernel(
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
 
     # make block pointers
-    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK),
-                            (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
-    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T),
-                            (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
-    p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV),
-                            (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o + (i_bh + i_k * B * H) * s_vo_h,
-                            (T, DV), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
+    p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + (i_bh + i_k*B*H) * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
 
     for i in range(0, tl.cdiv(T, BT)):
         # [BK, BT]
@@ -83,8 +74,7 @@ def fused_chunk_retention_fwd_kernel(
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
         # [BK, BV]
-        b_h = d_b * b_h + \
-            tl.dot(b_k, (b_v * d_h[:, None]).to(b_k.dtype), allow_tf32=False)
+        b_h = d_b * b_h + tl.dot(b_k, (b_v * d_h[:, None]).to(b_k.dtype), allow_tf32=False)
 
         p_q = tl.advance(p_q, (BT, 0))
         p_k = tl.advance(p_k, (0, BT))
@@ -100,20 +90,16 @@ def fused_chunk_retention_bwd_kernel(
     q,  # query [B, H, L, D_head_K]
     k,  # key [B, H, L, D_head_V]
     v,  # value [B, H, L, D_head_V]
-
     do,  # gradient of output [B, H, L, D_head_V]
     dq,  # gradient of query [NV, B, H, L, D_head_K]
     dk,  # gradient of key [NV, B, H, L, D_head_K]
     dv,  # gradient of value [NK, B, H, L, D_head_V]
-
     s_qk_h,  # stride size: L * D_head_K
     s_qk_t,  # stride size: D_head_K
     s_qk_d,  # stride size: 1
-
     s_vo_h,  # stride size: L * D_head_V
     s_vo_t,  # stride size: D_head_V
     s_vo_d,  # stride size: 1
-
     B,  # batch_size
     H,  # n_heads
     T,  # seq_len
@@ -138,14 +124,10 @@ def fused_chunk_retention_bwd_kernel(
     # [BV, BK]
     b_h = tl.zeros([BV, BK], dtype=tl.float32)
     for i in range(0, tl.cdiv(T, BT)):
-        p_k = tl.make_block_ptr(
-            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_v = tl.make_block_ptr(
-            v + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
-        p_do = tl.make_block_ptr(
-            do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dq = tl.make_block_ptr(dq + (i_bh + i_v * B * H) * s_qk_h,
-                                 (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
+        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dq = tl.make_block_ptr(dq + (i_bh + i_v*B*H) * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i*BT, i_k*BK), (BT, BK), (1, 0))
 
         # [BT, DK]
         b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -159,11 +141,9 @@ def fused_chunk_retention_bwd_kernel(
         b_ds = tl.dot(b_do, b_v, allow_tf32=False)
         b_ds = (b_ds * d_s).to(b_k.dtype)
         # [BT, DK]
-        b_dq = tl.dot(b_dd, b_h.to(b_k.dtype), allow_tf32=False) + \
-            tl.dot(b_ds, b_k, allow_tf32=False)
+        b_dq = tl.dot(b_dd, b_h.to(b_k.dtype), allow_tf32=False) + tl.dot(b_ds, b_k, allow_tf32=False)
         # [DV, DK]
-        b_h = d_b * b_h + \
-            tl.dot((b_v * d_k[None, :]).to(b_k.dtype), b_k, allow_tf32=False)
+        b_h = d_b * b_h + tl.dot((b_v * d_k[None, :]).to(b_k.dtype), b_k, allow_tf32=False)
 
         tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
 
@@ -175,18 +155,12 @@ def fused_chunk_retention_bwd_kernel(
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
 
     for i in range(1, tl.cdiv(T, BT) + 1):
-        p_q = tl.make_block_ptr(
-            q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
-        p_k = tl.make_block_ptr(
-            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_v = tl.make_block_ptr(
-            v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_do = tl.make_block_ptr(
-            do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dk = tl.make_block_ptr(dk + (i_bh + i_v * B * H) * s_qk_h, (T, DK),
-                                 (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dv = tl.make_block_ptr(dv + (i_bh + i_k * B * H) * s_vo_h, (T, DV),
-                                 (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
+        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dk = tl.make_block_ptr(dk + (i_bh+i_v*B*H) * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i*BT, i_k*BK), (BT, BK), (1, 0))
+        p_dv = tl.make_block_ptr(dv + (i_bh+i_k*B*H) * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i*BT, i_v*BV), (BT, BV), (1, 0))
         # [DK, BT]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         # [BT, DK]
@@ -203,8 +177,7 @@ def fused_chunk_retention_bwd_kernel(
         # [BT, BT]
         b_s = tl.dot(b_k, b_q, allow_tf32=False) * d_s
         # [BT, DK]
-        b_dk = tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype),
-                      allow_tf32=False) * d_k[:, None]
+        b_dk = tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), allow_tf32=False) * d_k[:, None]
         b_dk += tl.dot(b_ds, tl.trans(b_q), allow_tf32=False)
         # [BT, DV]
         b_dv = tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False) * d_k[:, None]
