@@ -41,7 +41,7 @@ def benchmark(seq_len, provider):
     quantiles = [0.5, 0.2, 0.8]
     results = 0, 0, 0
     if provider == 'torch':
-        if seq_len > 1024:
+        if seq_len > 2048:
             return results
         results = triton.testing.do_bench(lambda: naive_retention(q, k, v), quantiles=quantiles)
     elif provider == 'chunk':
@@ -49,7 +49,7 @@ def benchmark(seq_len, provider):
     elif provider == 'parallel':
         results = triton.testing.do_bench(lambda: parallel_retention(q, k, v), quantiles=quantiles)
     elif provider == 'torch_bwd':
-        if seq_len > 1024:
+        if seq_len > 2048:
             return results
         results = triton.testing.do_bench(lambda: naive_retention(q, k, v).backward(do), quantiles=quantiles)
     elif provider == 'chunk_bwd':
