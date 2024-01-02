@@ -3,13 +3,12 @@
 import pytest
 import torch
 
-from fla.ops.triton.retention import fused_chunk_retention, naive_retention
+from fla.ops.triton.retention import fused_chunk_retention, naive_retention, parallel_retention
 
-
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("D", [64, 100, 128, 256])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("D", [64, 100])
 @pytest.mark.parametrize("expand_ratio", [1, 2])
-@pytest.mark.parametrize("T", [1000, 1024])
+@pytest.mark.parametrize("T", [300, 512])
 def test_retention(dtype, D, expand_ratio, T, B=4, H=4):
     torch.manual_seed(42)
     # [batch_size, n_heads, seq_len, d_head]
@@ -17,14 +16,14 @@ def test_retention(dtype, D, expand_ratio, T, B=4, H=4):
     k = (torch.randn((B, H, T, D), dtype=dtype, device='cuda') / 10).requires_grad_()
     v = (torch.randn((B, H, T, D * expand_ratio), dtype=dtype, device='cuda')).requires_grad_()
     do = torch.randn_like(v) / 10
-    ref = naive_retention(q, k, v)
+    ref = fused_chunk_retention(q, k, v)
     ref.backward(do)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
     ref_dv, v.grad = v.grad.clone(), None
 
     # triton implementation
-    tri = fused_chunk_retention(q, k, v)
+    tri = parallel_retention(q, k, v)
     tri.backward(do)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None

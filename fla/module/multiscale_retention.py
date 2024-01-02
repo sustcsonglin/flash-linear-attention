@@ -54,25 +54,29 @@ class MultiScaleRetention(nn.Module):
 
     def forward(self, x, form='fused_chunk'):
         assert form in ['fused_chunk', 'parallel', 'chunk']
-        q1 = rearrange(self.q_proj(x), '... (h d) -> ... h d', h=self.num_heads)
-        k1 = rearrange(self.k_proj(x), '... (h d) -> ... h d', h=self.num_heads)
+        q1 = rearrange(self.q_proj(
+            x), '... (h d) -> ... h d', h=self.num_heads)
+        k1 = rearrange(self.k_proj(
+            x), '... (h d) -> ... h d', h=self.num_heads)
         q, k = self.rotary(q1, k1)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
-        v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads).contiguous()
+        v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d',
+                      h=self.num_heads).contiguous()
         if form == 'fused_chunk':
             o = fused_chunk_retention(q, k, v)
-        # TODO: need fix to allow different d_head_qk and d_head_v
         elif form == 'parallel':
-            # o = parallel_retention(q, k, v)
-            raise NotImplementedError
+            o = parallel_retention(q, k, v)
+        # TODO: need fix to allow different d_head_qk and d_head_v for "chunk" form
         else:
             raise NotImplementedError
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
         return self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.g_proj(x))
 
+
 if __name__ == '__main__':
     import torch
-    x = torch.randn(4, 1024, 1024).to(torch.bfloat16).cuda().requires_grad_(True)
+    x = torch.randn(4, 1024, 1024).to(
+        torch.bfloat16).cuda().requires_grad_(True)
     model = MultiScaleRetention().to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)
