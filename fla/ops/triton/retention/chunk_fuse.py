@@ -5,6 +5,8 @@ import torch
 import triton
 import triton.language as tl
 
+from fla.ops.triton.utils import contiguous
+
 # on-the-fly computation without materializing hidden statets into HBMs
 
 
@@ -192,6 +194,7 @@ def fused_chunk_retention_bwd_kernel(
 class FusedChunkRetentionFunction(torch.autograd.Function):
 
     @staticmethod
+    @contiguous
     def forward(ctx, q, k, v):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
@@ -221,6 +224,7 @@ class FusedChunkRetentionFunction(torch.autograd.Function):
         return o
 
     @staticmethod
+    @contiguous
     def backward(ctx, do):
         do = do.contiguous()
         q, k, v = ctx.saved_tensors

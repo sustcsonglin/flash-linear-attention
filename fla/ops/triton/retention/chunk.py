@@ -5,6 +5,8 @@ import torch
 import triton
 import triton.language as tl
 
+from fla.ops.triton.utils import contiguous
+
 
 @triton.jit
 def chunk_retention_fwd_kernel_h(
@@ -248,6 +250,7 @@ def chunk_retention_bwd_kernel_dqkv(
 class ChunkRetentionFunction(torch.autograd.Function):
 
     @staticmethod
+    @contiguous
     def forward(ctx, q, k, v):
         BD = triton.next_power_of_2(q.shape[-1])
         BT = 32 if BD > 64 else 64
@@ -298,6 +301,7 @@ class ChunkRetentionFunction(torch.autograd.Function):
         return o[..., :d_head]
 
     @staticmethod
+    @contiguous
     def backward(ctx, do):
         q, k, v, h, b = ctx.saved_tensors
         scale = ctx.scale
