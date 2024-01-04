@@ -5,6 +5,8 @@ import torch
 import triton
 import triton.language as tl
 
+from fla.ops.triton.utils import contiguous
+
 
 @triton.jit
 def parallel_retention_fwd_kernel(
@@ -267,6 +269,7 @@ def parallel_retention_bwd_kernel(
 
 class ParallelRetentionFunction(torch.autograd.Function):
     @staticmethod
+    @contiguous
     def forward(ctx, q, k, v):
         q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
         BTL, BTS = 128, 32
@@ -297,6 +300,7 @@ class ParallelRetentionFunction(torch.autograd.Function):
         return o.sum(0)
 
     @staticmethod
+    @contiguous
     def backward(ctx, do):
         do = do.contiguous()
         q, k, v = ctx.saved_tensors
