@@ -4,7 +4,7 @@ import torch
 import triton
 
 from fla.ops.triton.retention import (fused_chunk_retention, naive_retention,
-                                      parallel_retention)
+                                      parallel_retention, fused_recurrent_retention)
 
 
 @triton.testing.perf_report(
@@ -16,9 +16,9 @@ from fla.ops.triton.retention import (fused_chunk_retention, naive_retention,
         # argument name whose value corresponds to a different line in the plot
         line_arg='provider',
         # possible values for `line_arg``
-        line_vals=['torch', 'chunk', 'parallel', 'torch_bwd', 'chunk_bwd', 'parallel_bwd'],
+        line_vals=['recurrent', 'chunk', 'parallel', 'recurrent_bwd', 'chunk_bwd', 'parallel_bwd'],
         # label name for the lines
-        line_names=['torch', 'chunk', 'parallel', 'torch_bwd', 'chunk_bwd', 'parallel_bwd'],
+        line_names=['recurrent', 'chunk', 'parallel', 'recurrent_bwd', 'chunk_bwd', 'parallel_bwd'],
         # line styles
         styles=[('green', '-'), ('blue', '--'), ('red', '-.'), ('cyan', ':'), ('yellow', 'dotted'), ('black', 'dashed')],
         ylabel="Execution Time (ms)",  # label name for the y-axis
@@ -44,6 +44,8 @@ def benchmark(seq_len, provider):
         if seq_len > 2048:
             return results
         results = triton.testing.do_bench(lambda: naive_retention(q, k, v), quantiles=quantiles)
+    elif provider == 'recurrent':
+        results = triton.testing.do_bench(lambda: fused_recurrent_retention(q, k, v), quantiles=quantiles)
     elif provider == 'chunk':
         results = triton.testing.do_bench(lambda: fused_chunk_retention(q, k, v), quantiles=quantiles)
     elif provider == 'parallel':
@@ -52,6 +54,8 @@ def benchmark(seq_len, provider):
         if seq_len > 2048:
             return results
         results = triton.testing.do_bench(lambda: naive_retention(q, k, v).backward(do), quantiles=quantiles)
+    elif provider == 'recurrent_bwd':
+        results = triton.testing.do_bench(lambda: fused_recurrent_retention(q, k, v).backward(do), quantiles=quantiles)
     elif provider == 'chunk_bwd':
         results = triton.testing.do_bench(lambda: fused_chunk_retention(q, k, v).backward(do), quantiles=quantiles)
     elif provider == 'parallel_bwd':

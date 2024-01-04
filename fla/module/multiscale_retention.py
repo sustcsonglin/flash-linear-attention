@@ -2,7 +2,7 @@
 
 # Retentive Network: A Successor to Transformer for Large Language Models"[https://arxiv.org/pdf/2307.08621.pdf]
 
-from fla.ops.triton.retention import fused_chunk_retention, parallel_retention
+from fla.ops.triton.retention import fused_chunk_retention, parallel_retention, fused_recurrent_retention
 from fla.module.rmsnorm import RMSNorm
 from einops import rearrange
 import torch.nn as nn
@@ -53,7 +53,7 @@ class MultiScaleRetention(nn.Module):
         nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -1)
 
     def forward(self, x, form='fused_chunk'):
-        assert form in ['fused_chunk', 'parallel', 'chunk']
+        assert form in ['fused_chunk', 'parallel', 'chunk', 'fused_recurrent']
         q1 = rearrange(self.q_proj(
             x), '... (h d) -> ... h d', h=self.num_heads)
         k1 = rearrange(self.k_proj(
@@ -66,6 +66,8 @@ class MultiScaleRetention(nn.Module):
             o = fused_chunk_retention(q, k, v)
         elif form == 'parallel':
             o = parallel_retention(q, k, v)
+        elif form == 'fused_recurrent':
+            o = fused_recurrent_retention(q, k, v)
         # TODO: need fix to allow different d_head_qk and d_head_v for "chunk" form
         else:
             raise NotImplementedError
@@ -75,7 +77,10 @@ class MultiScaleRetention(nn.Module):
 
 if __name__ == '__main__':
     import torch
-    x = torch.randn(4, 1024, 1024).to(
+    batch = 4
+    seq_len = 1024
+    d_model = 1024
+    x = torch.randn(batch, seq_len, d_model).to(
         torch.bfloat16).cuda().requires_grad_(True)
     model = MultiScaleRetention().to(torch.bfloat16).cuda()
     y = model(x)
