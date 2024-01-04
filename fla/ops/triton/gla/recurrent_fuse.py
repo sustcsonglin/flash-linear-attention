@@ -11,11 +11,12 @@ from fla.ops.triton.utils import contiguous
 
 
 @triton.jit
-def fused_recurrent_retention_fwd_kernel(
+def fused_recurrent_gla_fwd_kernel(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
     q,  # query [B, H, L, D_head_K]
-    k,  # key [B, H, L, D_head_V]
+    k,  # key [B, H, L, D_head_K]
     v,  # value [B, H, L, D_head_V]
+    g,  # log gate [B, H, L, D_head_K]
     o,  # output [B, H, L, D_head_V]
 
     s_qk_h,  # stride size: L * D_head_K
@@ -39,11 +40,10 @@ def fused_recurrent_retention_fwd_kernel(
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
 
-    # decay rate given the head index
-    b_b = (1 - tl.math.pow(2, -5 - i_h * 1.0))
 
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
+    p_g = g + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     p_o = o + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV)
 
@@ -56,8 +56,10 @@ def fused_recurrent_retention_fwd_kernel(
         _k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         _v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
         _q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
+        _g = tl.load(p_g, mask=mask_bk, other=float("-inf")).to(tl.float32)
+        _g = tl.math.exp(_g)
 
-        h = b_b * h + _k[None, :] * _v[:, None]
+        h = h * _g[None, :] + _k[None, :] * _v[:, None]
         _o = h * _q[None, :]
         _o = tl.sum(_o, axis=1)
         tl.store(p_o, _o.to(p_o.dtype.element_ty), mask=mask_bv)
@@ -66,16 +68,18 @@ def fused_recurrent_retention_fwd_kernel(
         p_k += DK
         p_o += DV
         p_v += DV
+        p_g += DK
 
 
 # Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
 @triton.jit
-def fused_recurrent_retention_bwd_kernel(
+def fused_recurrent_gla_bwd_kernel(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
     # NV: number of split in the V dimension. NK: number of split in the K dimension
     q,  # query [B, H, L, D_head_K]
     k,  # key [B, H, L, D_head_V]
     v,  # value [B, H, L, D_head_V]
+    g,  # log gate [B, H, L, D_head_K]
 
     do,  # gradient of output [B, H, L, D_head_V]
     dq,  # gradient of query [NV, B, H, L, D_head_K]
@@ -102,10 +106,9 @@ def fused_recurrent_retention_bwd_kernel(
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
 
-    b_b = 1 - tl.math.pow(2, -5 - i_h * 1.0)
-
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
+    p_g = g + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     
@@ -119,8 +122,10 @@ def fused_recurrent_retention_bwd_kernel(
         _k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         _v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
         _do = tl.load(p_do, mask=mask_bv, other=0).to(tl.float32)
+        _g = tl.load(p_g, mask=mask_bk, other=0).to(tl.float32)
+        _g = tl.exp(_g)
 
-        h = b_b * h + _k[:, None] * _v[None, :]
+        h = h * _g[:, None] + _k[:, None] * _v[None, :]
         _d_q = h * _do[None, :]
         d_q = tl.sum(_d_q, axis=1) * scale
         tl.store(p_dq, d_q.to(p_dq.dtype.element_ty), mask=mask_bk)
@@ -129,12 +134,14 @@ def fused_recurrent_retention_bwd_kernel(
         p_do += DV
         p_v += DV
         p_dq += DK
+        p_g += DK
 
     # sync threads
     tl.debug_barrier()
 
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
+    p_g = g + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
     p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV    
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV    
     p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
@@ -146,11 +153,13 @@ def fused_recurrent_retention_bwd_kernel(
         _q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
         _k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         _v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
+        _g = tl.load(p_g, mask=mask_bk, other=0).to(tl.float32)
+        _g = tl.exp(_g)
+
         d_h += _q[:, None] * _do[None, :]
         d_k = tl.sum(d_h * _v[None, :], axis=1)
         d_v = tl.sum(d_h * _k[:, None], axis=0)
-
-        d_h *= b_b                         
+        d_h = d_h * _g[:, None]
         tl.store(p_dk, d_k.to(p_dk.dtype.element_ty), mask=mask_bk)
         tl.store(p_dv, d_v.to(p_dv.dtype.element_ty), mask=mask_bv)
 
@@ -160,13 +169,14 @@ def fused_recurrent_retention_bwd_kernel(
         p_v -= DV
         p_dk -= DK
         p_dv -= DV
+        p_g -= DK
 
 
-class FusedRecurrentRetentionFunction(torch.autograd.Function):
+class FusedRecurrentGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    def forward(ctx, q, k, v):
+    def forward(ctx, q, k, v, g):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
 
@@ -179,8 +189,8 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
         o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
 
         grid = (NV, NK, batch_size * n_heads)
-        fused_recurrent_retention_fwd_kernel[grid](
-            q, k, v, o,
+        fused_recurrent_gla_fwd_kernel[grid](
+            q, k, v, g, o, 
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             batch_size, n_heads, seq_len, scale,
@@ -190,13 +200,13 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
         )
 
         o = o.sum(0)
-        ctx.save_for_backward(q, k, v)
+        ctx.save_for_backward(q, k, v, g)
         return o
 
     @staticmethod
     @contiguous
     def backward(ctx, do):
-        q, k, v = ctx.saved_tensors
+        q, k, v, g = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
         scale = d_head_qk ** -0.5
@@ -211,8 +221,8 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
         dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
         grid = (NV, NK, batch_size * n_heads)
 
-        fused_recurrent_retention_bwd_kernel[grid](
-            q, k, v, do, dq, dk, dv,
+        fused_recurrent_gla_bwd_kernel[grid](
+            q, k, v, g, do, dq, dk, dv,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             batch_size, n_heads, seq_len, scale,
@@ -223,7 +233,10 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
         dq = dq.sum(0)
         dk = dk.sum(0)
         dv = dv.sum(0)
-        return dq, dk, dv
+        _dg = dq * q - dk * k
+        _dg_cumsum = _dg.cumsum(-2)
+        dg = _dg + _dg_cumsum[:, :, -1, None] - _dg_cumsum
+        return dq, dk, dv, dg
 
 
-fused_recurrent_retention = FusedRecurrentRetentionFunction.apply
+fused_recurrent_gla = FusedRecurrentGLAFunction.apply
