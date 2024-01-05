@@ -34,7 +34,7 @@ def naive_loop(q, k, v, gk, stop_grad=False):
 if __name__ == "__main__":
     B = 4
     H = 4
-    L = 32
+    L = 16
     D = 64
     dtype = torch.float32
     q = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(True)

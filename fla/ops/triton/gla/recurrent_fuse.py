@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) 2023, Yu Zhang, Songlin Yang
+# Copyright (c) 2023, Songlin Yang
 
 import torch
 import triton
@@ -39,7 +39,6 @@ def fused_recurrent_gla_fwd_kernel(
     # indices
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
-
 
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
