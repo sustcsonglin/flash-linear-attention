@@ -25,7 +25,7 @@ class GatedLinearAttention(nn.Module):
                  num_heads=4,
                  gate_fn="swish",
                  layernorm_eps=1e-5,
-                 logit_normalizer=16,
+                 gate_logit_normalizer=16,
                  gate_low_rank_dim=16,  
                  *args, **kwargs):
         super().__init__()
@@ -44,6 +44,7 @@ class GatedLinearAttention(nn.Module):
                                      nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
         self.out_proj = nn.Linear(self.value_dim, embed_dim, bias=False)
         self.group_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
+        self.gate_logit_normalizer = gate_logit_normalizer
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -65,7 +66,9 @@ class GatedLinearAttention(nn.Module):
             x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d',
                       h=self.num_heads)
-        g = rearrange(self.gk_proj(x), 'b n (h d) -> b h n d',
+        g = self.gk_proj(x)
+        g = F.logsigmoid(g) / self.gate_logit_normalizer
+        g = rearrange(g, 'b n (h d) -> b h n d',
                       h=self.num_heads)
         if form == 'fused_chunk':
             o = fused_chunk_gla(q, k, v, g)
