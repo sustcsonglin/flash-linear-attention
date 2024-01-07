@@ -7,7 +7,7 @@ import triton.language as tl
 
 from fla.ops.triton.utils import contiguous
 
-# Based: An Educational and Effective Sequence Mixer 
+# Based: An Educational and Effective Sequence Mixer
 # https://hazyresearch.stanford.edu/blog/2023-12-11-zoology2-based
 
 
@@ -40,7 +40,6 @@ def parallel_based_fwd_kernel(
     NV = tl.cdiv(DV, BV)
     i_k = i_kv // (NV)
     i_v = i_kv % (NV)
-
 
     p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK),
                             (s_qk_t, s_qk_d), (i_c * BTL, i_k * BK), (BTL, BK), (1, 0))
@@ -88,7 +87,7 @@ def parallel_based_fwd_kernel(
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BTL, BTS]
         m_s = o_q[:, None] >= o_k[None, :]
-        b_s = tl.dot(b_q, b_k, allow_tf32=False) 
+        b_s = tl.dot(b_q, b_k, allow_tf32=False)
         b_s = 1 + b_s + 0.5 * b_s * b_s
         b_s = tl.where(m_s, b_s, 0)
         # [BTL, BV]
@@ -114,8 +113,9 @@ def _parallel_based_bwd_dq(
     p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d),
                              (i_c * BTL, i_v * BV), (BTL, BV), (1, 0))
     p_q = tl.make_block_ptr(q + (i_bh) * s_qk_h, (T, DK),
-                             (s_qk_t, s_qk_d), (i_c*BTL, i_k*BK), (BTL, BK), (1, 0))
-    b_q = tl.load(p_q, boundary_check=(0, 1)) * scale
+                            (s_qk_t, s_qk_d), (i_c*BTL, i_k*BK), (BTL, BK), (1, 0))
+    b_q = tl.load(p_q, boundary_check=(0, 1))
+    b_q = (b_q * scale).to(b_q.dtype)
     b_do = tl.load(p_do, boundary_check=(0, 1))
     b_dq = tl.zeros([BTL, BK], dtype=tl.float32)
     p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK),
@@ -128,8 +128,8 @@ def _parallel_based_bwd_dq(
         # [BV, BTS]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BTL, BTS]
-        b_ds = tl.dot(b_do, b_v, allow_tf32=False) 
-        b_s = tl.dot(b_q, tl.trans(b_k), allow_tf32=False) 
+        b_ds = tl.dot(b_do, b_v, allow_tf32=False)
+        b_s = tl.dot(b_q, tl.trans(b_k), allow_tf32=False)
         # [BQ, BD]
         b_dq += tl.dot((b_ds * (1 + b_s)).to(b_v.dtype), b_k, allow_tf32=False)
         p_k = tl.advance(p_k, (BTS, 0))
@@ -155,7 +155,8 @@ def _parallel_based_bwd_dq(
         b_s = tl.dot(b_q, tl.trans(b_k), allow_tf32=False)
         b_s = tl.where(m_s, b_s, 0)
         # [BTL, BK]
-        b_dq += tl.dot((b_ds + b_ds * b_s).to(b_k.dtype), b_k, allow_tf32=False)
+        b_dq += tl.dot((b_ds + b_ds * b_s).to(b_k.dtype),
+                       b_k, allow_tf32=False)
         p_k = tl.advance(p_k, (BTS, 0))
         p_v = tl.advance(p_v, (0, BTS))
         o_k += BTS
@@ -189,12 +190,14 @@ def _parallel_based_bwd_dkv(
             do + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i), (BV, BTS), (0, 1))
         b_q = tl.load(p_q, boundary_check=(0, 1))  # [BK, BTS]
         b_do = tl.load(p_do, boundary_check=(0, 1))  # [BV, BTS]
-        b_s = tl.dot(b_k.to(b_q.dtype), b_q, allow_tf32=False) * scale # [BTL, BTS]
+        b_s = tl.dot(b_k.to(b_q.dtype), b_q, allow_tf32=False) * \
+            scale  # [BTL, BTS]
         b_s2 = 1 + b_s + 0.5 * b_s * b_s
         b_dv += tl.dot(b_s2.to(b_q.dtype), tl.trans(b_do), allow_tf32=False)
         b_ds = tl.dot(b_v, b_do, allow_tf32=False) * scale
-        b_dk += tl.dot((b_ds + b_ds * b_s).to(b_q.dtype), tl.trans(b_q), allow_tf32=False) 
-    
+        b_dk += tl.dot((b_ds + b_ds * b_s).to(b_q.dtype),
+                       tl.trans(b_q), allow_tf32=False)
+
     tl.debug_barrier()
     o_q, o_k = tl.arange(0, BTS), tl.arange(0, BTL)
     for i in range(i_c*BTL, (i_c+1)*BTL, BTS):
@@ -211,11 +214,12 @@ def _parallel_based_bwd_dkv(
         b_s = tl.where(m_s, b_s, 0)
         b_s2 = tl.where(m_s, b_s2, 0)
 
-        b_ds = tl.dot(b_v, b_do, allow_tf32=False) 
-        b_ds = tl.where(m_s, b_ds, 0)  * scale
+        b_ds = tl.dot(b_v, b_do, allow_tf32=False)
+        b_ds = tl.where(m_s, b_ds, 0) * scale
         # [BK, BD]
         b_dv += tl.dot(b_s2.to(b_q.dtype), tl.trans(b_do), allow_tf32=False)
-        b_dk += tl.dot((b_ds + b_ds * b_s).to(b_q.dtype), tl.trans(b_q), allow_tf32=False)
+        b_dk += tl.dot((b_ds + b_ds * b_s).to(b_q.dtype),
+                       tl.trans(b_q), allow_tf32=False)
         o_q += BTS
 
     p_dk = tl.make_block_ptr(dk + (i_bh + B * H * i_v) * s_qk_h,
@@ -240,7 +244,7 @@ def parallel_based_bwd_kernel(
     i_v = i_kv % (NV)
     i_h = i_bh % H
     _parallel_based_bwd_dq(
-        i_bh, i_c, i_k, i_v, i_h, 
+        i_bh, i_c, i_k, i_v, i_h,
         q, k, v, do, dq, s_qk_h, s_qk_t, s_qk_d, s_vo_h,
         s_vo_t, s_vo_d, B, H, T, scale,  BTL=BTL, BTS=BTS, BK=BK, BV=BV, DK=DK, DV=DV
     )
@@ -323,4 +327,3 @@ class ParallelBasedFunction(torch.autograd.Function):
 
 
 parallel_based = ParallelBasedFunction.apply
-

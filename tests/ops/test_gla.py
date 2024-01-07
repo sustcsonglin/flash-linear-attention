@@ -9,7 +9,7 @@ from torch.nn.functional import logsigmoid
 @pytest.mark.parametrize("dtype", [torch.float32])
 @pytest.mark.parametrize("D", [32, 64, 128])
 @pytest.mark.parametrize("T", [512])
-def test_based(dtype, D, T, B=4, H=4):
+def test_gla(dtype, D, T, B=4, H=4):
     # [batch_size, n_heads, seq_len, d_head]
     q = (torch.randn((B, H, T, D), dtype=dtype, device='cuda') / 10).requires_grad_()
     k = (torch.randn((B, H, T, D), dtype=dtype, device='cuda') / 10).requires_grad_()
