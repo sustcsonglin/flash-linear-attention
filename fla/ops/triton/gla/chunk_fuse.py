@@ -10,7 +10,9 @@ from einops import rearrange
 from fla.ops.triton.utils import contiguous
 from fla.ops.cuda.gla.semiring.cal_A.fn import cuda_cal_A, cuda_cal_A_bf16
 
+
 inv_ln2 = 1.44269504
+
 
 @triton.jit
 def fused_chunk_gla_fwd_kernel(
@@ -19,6 +21,7 @@ def fused_chunk_gla_fwd_kernel(
     k,  # key [B, H, L, D_head_K]
     v,  # value [B, H, L, D_head_V]
     g,  # cumulative sum of log decay [B, H, L, D_head_K]
+    # db, # chunk decay [B, H, num_chunk, D_head_K]
     o,  # output [B, H, L, D_head_V]
 
     s_qk_h,  # stride size: L * D_head_K
@@ -47,9 +50,10 @@ def fused_chunk_gla_fwd_kernel(
     # make block pointers
     p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK),
                             (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
-    p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK),
-                            (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
+    # p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK),
+    #                         (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
     p_db = g + i_bh * s_qk_h + (BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
+
     p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T),
                             (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
     p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV),
@@ -65,29 +69,23 @@ def fused_chunk_gla_fwd_kernel(
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
-        b_g = tl.load(p_g, boundary_check=(0, 1)).to(tl.float32)
-        b_g *= inv_ln2
 
-        d_b = tl.load(p_db) * inv_ln2
-
-        b_q = (b_q * scale * tl.math.exp2(b_g))
-        b_k = b_k * tl.trans(tl.math.exp2(-b_g + d_b[None, :]))
-
-        b_o = tl.dot(b_q.to(b_v.dtype), b_h.to(b_v.dtype), allow_tf32=True)
-        b_h *= tl.math.exp2(d_b)[:, None]
-        b_h += tl.dot(b_k.to(b_v.dtype), b_v, allow_tf32=False)
+        d_b = tl.exp(tl.load(p_db).to(tl.float32))
+        b_o = tl.dot(b_q, b_h.to(b_v.dtype), allow_tf32=False) * scale
+        b_h *= d_b[:, None]
+        b_h += tl.dot(b_k, b_v, allow_tf32=False)
 
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
         p_q = tl.advance(p_q, (BT, 0))
-        p_g = tl.advance(p_g, (BT, 0))
         p_k = tl.advance(p_k, (0, BT))
         p_v = tl.advance(p_v, (BT, 0))
         p_o = tl.advance(p_o, (BT, 0))
-        p_db += BT * DK
-
+        p_db += DK * BT
 
 # Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
+
+
 @triton.jit
 def fused_chunk_gla_bwd_kernel(
     q, k, v, g,
@@ -118,36 +116,34 @@ def fused_chunk_gla_bwd_kernel(
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     # [BV, BK]
     b_h = tl.zeros([BV, BK], dtype=tl.float32)
+    n_chunks = tl.cdiv(T, BT)
 
-    for i in range(0, tl.cdiv(T, BT)):
+    for i in range(0, n_chunks):
         p_k = tl.make_block_ptr(
             k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(
-            g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_db = g + i_bh * s_qk_h + ((i+1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
         p_v = tl.make_block_ptr(
             v + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
         p_do = tl.make_block_ptr(
             do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
         p_dq = tl.make_block_ptr(dq + (i_bh + i_v * B * H) * s_qk_h,
                                  (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_db = g + i_bh * s_qk_h + \
+            ((i+1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
         b_dq = tl.zeros([BT, BK], dtype=tl.float32)
         # [BT, DK]
         b_k = tl.load(p_k, boundary_check=(0, 1))
-        b_g = tl.load(p_g, boundary_check=(0, 1)) * inv_ln2
-        d_b = tl.load(p_db) * inv_ln2
 
         # [DV, BT]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BT, DV]
         b_do = tl.load(p_do, boundary_check=(0, 1))
         b_dq += tl.dot(b_do, b_h.to(b_do.dtype),
-                       allow_tf32=False)
+                       allow_tf32=False) * scale
         # [DV, DK]
-        b_k *= tl.math.exp2(d_b[None, :] - b_g)
-        b_h *= tl.math.exp2(d_b)[None, :]
-        b_h += tl.dot(b_v, b_k.to(b_v.dtype), allow_tf32=True)
-        b_dq *= scale * tl.math.exp2(b_g)
+        db = tl.exp(tl.load(p_db).to(tl.float32))
+        b_h *= db[None, :]
+        b_h += tl.dot(b_v, b_k, allow_tf32=False)
+
         tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
 
     # sync threads
@@ -162,17 +158,16 @@ def fused_chunk_gla_bwd_kernel(
             q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
         p_k = tl.make_block_ptr(
             k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(
-            g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_db = g + i_bh * s_qk_h + (T - (i-1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
         p_v = tl.make_block_ptr(
             v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
         p_do = tl.make_block_ptr(
             do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
         p_dk = tl.make_block_ptr(dk + (i_bh + i_v * B * H) * s_qk_h, (T, DK),
                                  (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_db = g + i_bh * s_qk_h + \
+            (T - (i-1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
         # p_dg = tl.make_block_ptr(dg + (i_bh + i_v * B * H) * s_qk_h, (T, DK),
-                                #  (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
+        #                          (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
         p_dv = tl.make_block_ptr(dv + (i_bh + i_k * B * H) * s_vo_h, (T, DV),
                                  (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
         # [DK, BT]
@@ -182,24 +177,129 @@ def fused_chunk_gla_bwd_kernel(
         # [BT, DV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_do = tl.load(p_do, boundary_check=(0, 1))
-        b_g = tl.load(p_g, boundary_check=(0, 1)) * inv_ln2
-        b_db = tl.load(p_db) * inv_ln2
+
+        b_db = tl.exp(tl.load(p_db).to(tl.float32))
 
         # inter-chunk
-        g_k = tl.math.exp2(b_db[None, :] - b_g)
-        b_k *= g_k 
-        b_q *= tl.math.exp2(tl.trans(b_g))
         b_dk = tl.trans(tl.dot(b_dh.to(b_v.dtype), tl.trans(b_v),
-                       allow_tf32=False)) * scale * g_k
+                               allow_tf32=False)) * scale
         b_dv = tl.dot((b_k).to(b_v.dtype),
-                       b_dh.to(b_v.dtype), allow_tf32=False) * scale
+                      b_dh.to(b_v.dtype), allow_tf32=False) * scale
 
         # [DK, DV]
-        b_dh *= tl.math.exp2(b_db)[:, None] 
+        b_dh *= b_db[:, None]
         b_dh += tl.dot(b_q.to(b_do.dtype), b_do, allow_tf32=False)
 
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
+
+
+@triton.jit
+def _fwd_preprocess_cumsum(
+    q, k, g,
+    q_exp, k_exp,
+    s_qk_h,
+    s_qk_t,
+    s_qk_d,
+    T,  # seq_len
+    BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
+    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
+    DK: tl.constexpr,  # D_head_K
+):
+    i_k, i_bh = tl.program_id(0), tl.program_id(1)
+    n_chunks = tl.cdiv(T, BT)
+    for i in range(n_chunks):
+        p_q = tl.make_block_ptr(
+            q + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_q_exp = tl.make_block_ptr(
+            q_exp + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(
+            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k_exp = tl.make_block_ptr(
+            k_exp + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_g = tl.make_block_ptr(
+            g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        b_q = tl.load(p_q)
+        b_k = tl.load(p_k)
+        b_g = tl.load(p_g).to(tl.float32)
+        g_cumsum = tl.cumsum(b_g, axis=0)
+        g_sum = tl.sum(b_g, axis=0)
+        b_q_exp = b_q * tl.exp(g_cumsum)
+        b_k_exp = b_k * tl.exp(-g_cumsum + g_sum[None, :])
+        tl.store(p_q_exp, b_q_exp.to(p_q_exp.dtype.element_ty))
+        tl.store(p_k_exp, b_k_exp.to(p_k_exp.dtype.element_ty))
+        tl.store(p_g, g_cumsum.to(p_g.dtype.element_ty))
+
+
+@triton.jit
+def _bwd_post_process_cumsum(
+    q, k, g,
+    dq, dq2, dk, dk2, dg,
+    s_qk_h,
+    s_qk_t,
+    s_qk_d,
+    B, H, T,  # seq_len
+    BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
+    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
+    DK: tl.constexpr,  # D_head_K
+    NV: tl.constexpr,  # D_head_V
+):
+    i_k, i_bh = tl.program_id(0), tl.program_id(1)
+    n_chunks = tl.cdiv(T, BT)
+    acc = tl.zeros([BK], dtype=tl.float32)
+
+    for i in range(n_chunks-1, -1, -1):
+        p_g = tl.make_block_ptr(
+            g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_db = g + i_bh * s_qk_h + \
+            ((i+1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
+        p_k = tl.make_block_ptr(
+            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_q = tl.make_block_ptr(
+            q + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        b_dq = tl.zeros([BT, BK], dtype=tl.float32)
+        b_dk = tl.zeros([BT, BK], dtype=tl.float32)
+
+        for j in range(NV):
+            p_dq = tl.make_block_ptr(
+                dq + (i_bh + j * B * H) * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+            p_dk = tl.make_block_ptr(
+                dk + (j * B * H + i_bh) * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+            b_dq += tl.load(p_dq)
+            b_dk += tl.load(p_dk)
+
+        b_g = tl.load(p_g).to(tl.float32)
+        d_b = tl.load(p_db).to(tl.float32)
+        b_dq *= tl.exp(b_g)
+        b_dk *= tl.exp(-b_g+d_b[None, :])
+
+        # dg
+        b_q = tl.load(p_q)
+        b_k = tl.load(p_k)
+        b_dg = tl.zeros([BT, BK], dtype=tl.float32)
+        b_dg += (b_q * b_dq)
+        b_dg -= (b_k * b_dk)
+        p_dg = tl.make_block_ptr(
+            dg + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        b_dg += tl.load(p_dg)
+
+        b_dg_cumsum = tl.cumsum(b_dg, axis=0)
+        b_dg_sum = tl.sum(b_dg, axis=0)
+        acc += b_dg_sum
+        b_dg = b_dg - b_dg_cumsum + acc[None, :]
+        tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty))
+
+        # dq dk
+        p_dq2 = tl.make_block_ptr(dq2 + i_bh * s_qk_h,
+                                  (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        b_dq += tl.load(p_dq2)
+        tl.store(p_dq2, b_dq.to(p_dq2.dtype.element_ty))
+
+        p_dk2 = tl.make_block_ptr(
+            dk2 + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        b_dk += tl.load(p_dk2)
+        tl.store(p_dk2, b_dk.to(p_dk2.dtype.element_ty))
+
 
 class FusedChunkGLAFunction(torch.autograd.Function):
     @staticmethod
@@ -207,20 +307,34 @@ class FusedChunkGLAFunction(torch.autograd.Function):
     def forward(ctx, q, k, v,
                 g  # log decay rate
                 ):
-
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-
         scale = d_head_qk ** -0.5
 
-        ### inter-chunk
-        BT = 16  ##chunk_size
+        # inter-chunk
+        BT = 16  # chunk_size
         assert seq_len % 16 == 0
+        n_chunks = seq_len // BT
+
+        # preprocess cumsum.
+        BK = min(d_head_qk, 32)
+        q_exp = torch.empty_like(q)
+        k_exp = torch.empty_like(k)
+        grid = (d_head_qk // BK, batch_size * n_heads)
+        _fwd_preprocess_cumsum[grid](
+            q, k, g, q_exp, k_exp,
+            q.stride(1), q.stride(2), q.stride(3),
+            seq_len, BT, BK, d_head_qk,
+            num_warps=1
+        )
+
+        # main func
         if batch_size * n_heads > 100:
             BK, BV = min(d_head_qk, 64), min(d_head_v, 64)
             num_stages = 1
             num_warps = 2
         else:
+            # SM is not fully utilized so we add more parallelism in the hidden state dimension.
             BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
             num_stages = 1
             num_warps = 1
@@ -228,13 +342,9 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
 
-        g = rearrange(g, 'b h (n c) d -> b h n c d', c=BT)
-        g = g.float().cumsum(-2).to(q.dtype)
-        g = rearrange(g, 'b h n c d -> b h (n c) d')
-
         grid = (NV, NK, batch_size * n_heads)
         fused_chunk_gla_fwd_kernel[grid](
-            q, k, v, g, o,
+            q_exp, k_exp, v, g, o,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             batch_size, n_heads, seq_len, scale,
@@ -244,9 +354,6 @@ class FusedChunkGLAFunction(torch.autograd.Function):
             num_warps=num_warps,
             num_stages=num_stages
         )
-        
-        o = o.sum(0)
-        
         # ### intra-chunk
         chunk_size = 16
         num_chunk = seq_len // chunk_size
@@ -257,38 +364,43 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         if q.dtype == torch.bfloat16:
             A = cuda_cal_A_bf16.forward(q2, k2, g2) * scale
         else:
-            A = (cuda_cal_A.forward(q2.float(), k2.float(), g2.float()) * scale).to(v2.dtype)                    
+            A = (cuda_cal_A.forward(q2.float(), k2.float(),
+                 g2.float()) * scale).to(v2.dtype)
         o2 = A @ v2
         o2 = rearrange(o2, 'b h n c d -> b h (n c) d')
-        o.add_(o2)
-        ctx.save_for_backward(q, k, v, g, A)
-        return o
+        o2.add_(o.sum(0))
+        ctx.save_for_backward(q, k, v, g, A, q_exp, k_exp)
+        return o2
 
     @staticmethod
     @contiguous
     def backward(ctx, do):
-        q, k, v, g, A = ctx.saved_tensors
+        q, k, v, g, A, q_exp, k_exp = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
         scale = d_head_qk ** -0.5
 
-        ### inter-chunk
+        # inter-chunk
         BT = 16
-        BK, BV = min(d_head_qk, 64), min(d_head_v, 64)
+        if batch_size * n_heads > 100:
+            BK, BV = min(d_head_qk, 64), min(d_head_v, 64)
+            num_stages = 1
+            num_warps = 4
+        else:
+            BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
+            num_stages = 1
+            num_warps = 2
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
-        num_stages = 1
-        num_warps = 2
-        
-        dq = torch.empty(NV, batch_size, n_heads,  seq_len, 
-                         d_head_qk, dtype=q.dtype, device=q.device)
-        dk = torch.empty(NV, batch_size, n_heads,  seq_len,
-                         d_head_qk, dtype=q.dtype, device=q.device)
-        dv = torch.empty(NK, batch_size, n_heads,  seq_len,
-                         d_head_v, dtype=q.dtype, device=q.device)
 
+        dq = torch.empty(NV, batch_size, n_heads,  seq_len,
+                         d_head_qk, dtype=q.dtype, device=q.device).contiguous()
+        dk = torch.empty(NV, batch_size, n_heads,  seq_len,
+                         d_head_qk, dtype=q.dtype, device=q.device).contiguous()
+        dv = torch.empty(NK, batch_size, n_heads,  seq_len,
+                         d_head_v, dtype=q.dtype, device=q.device).contiguous()
         grid = (NV, NK, batch_size * n_heads)
         fused_chunk_gla_bwd_kernel[grid](
-            q, k, v, g, do, dq, dk, dv,  
+            q_exp, k_exp, v, g, do, dq, dk, dv,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             batch_size, n_heads, seq_len, scale,
@@ -298,13 +410,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
             num_stages=num_stages,
             # USE_SIGMOID=True, USE_EXP=False
         )
-        dq = dq.sum(0)
-        dk = dk.sum(0)
-        dv = dv.sum(0)
-        
-        dg = dq * q
-        dg.add_(- dk * k)
-        
+
         # # # #### intra chunk
         num_chunk = seq_len // BT
         q2 = rearrange(q, 'b h (n c) d -> b h n c d', n=num_chunk)
@@ -317,17 +423,22 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         if q.dtype == torch.bfloat16:
             dq2, dk2, dg2 = cuda_cal_A_bf16.backward(q2, k2, g2, dA2)
         else:
-            dq2, dk2, dg2 = cuda_cal_A.backward(q2.float(), k2.float(), g2.float(), dA2.float())        
-        dq2 = rearrange(dq2, '... h n c d -> ... h (n c) d')
-        dk2 = rearrange(dk2, '... h n c d -> ... h (n c) d')
-        dv2 = rearrange(dv2, '... h n c d -> ... h (n c) d')
-        dg2 = rearrange(dg2, '... h n c d -> ... h (n c) d')
-        dq.add_(dq2.to(dq))
-        dk.add_(dk2.to(dk))
-        dv.add_(dv2.to(dv))
-        dg.add_(dg2.to(dg))
-        _dg_cumsum = dg.cumsum(-2)
-        dg = dg + _dg_cumsum[:, :, -1, None] - _dg_cumsum
-        return dq.to(q), dk.to(k), dv.to(v), dg.to(g)
+            dq2, dk2, dg2 = cuda_cal_A.backward(
+                q2.float(), k2.float(), g2.float(), dA2.float())
+        dq2 = rearrange(dq2, '... h n c d -> ... h (n c) d').contiguous()
+        dk2 = rearrange(dk2, '... h n c d -> ... h (n c) d').contiguous()
+        dv2 = rearrange(dv2, '... h n c d -> ... h (n c) d').contiguous()
+        dg2 = rearrange(dg2, '... h n c d -> ... h (n c) d').contiguous()
+
+        dv2.add_(dv.sum(0))
+        BK = min(d_head_qk, 32)
+        BT = 16  # must be the same as the chunk size in the forward pass
+        grid = (d_head_qk // BK, batch_size * n_heads)
+        _bwd_post_process_cumsum[grid](q, k, g, dq, dq2, dk, dk2, dg2,
+                                       dg2.stride(1), dg2.stride(
+                                           2), dg2.stride(3),
+                                       batch_size, n_heads, seq_len, BT, BK, d_head_qk, NV, num_warps=2)
+        return dq2.to(q), dk2.to(k), dv2.to(v), dg2.to(g)
+
 
 fused_chunk_gla = FusedChunkGLAFunction.apply
