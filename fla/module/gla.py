@@ -56,7 +56,7 @@ class GatedLinearAttention(nn.Module):
         nn.init.xavier_uniform_(self.gk_proj[0].weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.gk_proj[1].weight, gain=2 ** -2.5)
 
-    def forward(self, x, form='fused_chunk'):
+    def forward(self, x, form='chunk'):
         assert form in ['fused_chunk', 'chunk', 'fused_recurrent']
         assert x.shape[-1] % 16 == 0, "only support dimension divisible by 16 for now" 
         assert x.shape[-2] % 16 == 0, "only support input length divisible by 16 for now"
