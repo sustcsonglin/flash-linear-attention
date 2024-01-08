@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from fla.ops.triton.based import parallel_based, fused_chunk_based_dim16
-from fla.ops.pure_torch.based import torch_parallel_based
+from fla.ops.torch.based import torch_parallel_based
+from fla.ops.triton.based import fused_chunk_based_dim16, parallel_based
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
