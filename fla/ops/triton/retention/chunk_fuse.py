@@ -200,11 +200,11 @@ class FusedChunkRetentionFunction(torch.autograd.Function):
         d_head_v = v.shape[-1]
 
         scale = d_head_qk ** -0.5
-        BT = 16
-        BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
+        BT = 64
+        BK, BV = min(triton.next_power_of_2(d_head_qk), 64), min(triton.next_power_of_2(d_head_v), 64)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         num_stages = 1
-        num_warps = 1
+        num_warps = 4
 
         o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
 
@@ -232,11 +232,11 @@ class FusedChunkRetentionFunction(torch.autograd.Function):
         d_head_v = v.shape[-1]
         scale = d_head_qk ** -0.5
 
-        BT = 16
-        BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
+        BT = 64
+        BK, BV = min(triton.next_power_of_2(d_head_qk), 64), min(triton.next_power_of_2(d_head_v), 64)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         num_stages = 1
-        num_warps = 2
+        num_warps = 4
 
         dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
         dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
