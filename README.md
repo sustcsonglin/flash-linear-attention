@@ -14,15 +14,22 @@ Orded by my expected implementation time.
 | 2021-10 |                            [**ABC**] Attention with Bounded-memory Control (@UW)                             |                             [arxiv](https://arxiv.org/abs/2110.02488)                              |                                                                                                                                              -                                                                                                                                               |                        TODO                         |
 | 2023-09 |                    🔥[**VQ-transformer**] Linear-Time Transformers via Vector Quantization                    |                             [arxiv](https://arxiv.org/abs/2309.16354)                              |                                                                    [[official]](https://github.com/transformer-vq/transformer_vq) ![](https://img.shields.io/github/stars/transformer-vq/transformer_vq.svg?style=social)                                                                    |                        TODO                         |
 
-# Requirements
-- [PyTorch](https://pytorch.org/) >= 2.0
+# Installation
 
+The following requirements should be satisfied 
+- [PyTorch](https://pytorch.org/) >= 2.0
 - [Triton](https://github.com/openai/triton) latest nightly release
 ```
 pip install -U --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/Triton-Nightly/pypi/simple/ triton-nightly
 ```
-
 - [einops](https://einops.rocks/)
+
+Currently `fla` is actively developed, and no released packages are provided at this time.
+If you do need to use `fla` modules/ops and contemplate further explorations, an alternative way is to manage `fla` with submodules
+```sh
+git submodule add https://github.com/sustcsonglin/flash-linear-attention.git 3rdparty/flash-linear-attention
+ln -s 3rdparty/flash-linear-attention/fla fla
+```
 
 # Different forms of linear attention
 Please refer to Sectiton 2.3 of [GLA paper](https://arxiv.org/pdf/2312.06635.pdf) for hardware considerations of different forms of linear attention.
