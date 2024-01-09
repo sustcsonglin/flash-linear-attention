@@ -2,23 +2,38 @@
 
 import torch
 from einops import rearrange
+from fla.ops.triton.based import fused_chunk_based_dim16
 
 
 def torch_parallel_based(q, k, v):
     q = q * (q.shape[-1] ** -0.5)
     attn = q @ k.transpose(-2, -1)
     attn = 1 + attn + 1/2 * (attn ** 2)
-    attn.masked_fill_(~torch.tril(torch.ones(q.shape[-2], q.shape[-2], dtype=torch.bool, device=q.device)), 0)
+    attn.masked_fill_(~torch.tril(torch.ones(
+        q.shape[-2], q.shape[-2], dtype=torch.bool, device=q.device)), 0)
+    z = attn.sum(-1)[..., None]
     o = attn @ v
-    return o
+    return o / (z + 1e-6)
 
 
 def torch_chunk_based(q, k, v, chunk_size=256):
+    q = q * (q.shape[-1] ** -0.5)
+
+    # compute normalizer.
+    k_cumsum = torch.cumsum(k, dim=-2)
+    kk_cumsum = torch.cumsum(k.unsqueeze(-1) * k.unsqueeze(-2), dim=-3)
+    # first
+    z = (q * k_cumsum).sum(-1)
+    # second order
+    z += (q.unsqueeze(-1) * q.unsqueeze(-2) * kk_cumsum).sum((-1, -2)) * 0.5
+    # zero-th order
+    z += (torch.arange(0, q.shape[-2]).to(z.device) * 1.0 + 1.0)[None, None, :]
+
+    # compute o
     # constant term
     _o = v.cumsum(-2)
 
     q = rearrange(q, 'b h (n c) d -> b h n c d', c=chunk_size)
-    q = q * (q.shape[-1] ** -0.5)
 
     k = rearrange(k, 'b h (n c) d -> b h n c d', c=chunk_size)
     v = rearrange(v, 'b h (n c) d -> b h n c d', c=chunk_size)
@@ -38,7 +53,9 @@ def torch_chunk_based(q, k, v, chunk_size=256):
     kv = kv.cumsum(2)
     kv = torch.cat([torch.zeros_like(kv[:, :, :1]), kv[:, :, :-1]], dim=2)
 
-    o += 0.5 * torch.einsum('b h n x y z, b h n c x, b h n c y -> b h n c z', kv, q, q)
+    o += 0.5 * \
+        torch.einsum(
+            'b h n x y z, b h n c x, b h n c y -> b h n c z', kv, q, q)
 
     # linear term
     kv = torch.einsum('b h n c x, b h n c y -> b h n x y', k, v)
@@ -47,7 +64,8 @@ def torch_chunk_based(q, k, v, chunk_size=256):
     o += torch.einsum('b h n x y, b h n c x -> b h n c y', kv, q)
 
     o = rearrange(o, 'b h n c d -> b h (n c) d')
-    return o + _o
+    o = o + _o
+    return o / (z[..., None] + 1e-6)
 
 
 if __name__ == "__main__":
@@ -68,6 +86,17 @@ if __name__ == "__main__":
     ref_dv, v.grad = v.grad.clone(), None
 
     tri = torch_chunk_based(q, k, v)
+    tri.backward(do, retain_graph=True)
+    tri_dq, q.grad = q.grad.clone(), None
+    tri_dk, k.grad = k.grad.clone(), None
+    tri_dv, v.grad = v.grad.clone(), None
+
+    assert ref.allclose(tri, 0, 1e-4), breakpoint()
+    assert ref_dq.allclose(tri_dq, 0, 1e-4), breakpoint()
+    assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
+    assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
+
+    tri = fused_chunk_based_dim16(q, k, v)
     tri.backward(do, retain_graph=True)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
