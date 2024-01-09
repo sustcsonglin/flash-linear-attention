@@ -39,7 +39,7 @@ def benchmark(seq_len, provider):
     device = 'cuda'
     dtype = torch.bfloat16
     requires_grad = True
-    batch_size, n_heads, d_head = 1, 16, 256
+    batch_size, n_heads, d_head = 8, 32, 128
 
     if provider == 'flash' or provider == 'flash_bwd':
         q = torch.randn(batch_size, seq_len, n_heads, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
