@@ -73,6 +73,7 @@ class GatedLinearAttention(nn.Module):
         if form == 'fused_chunk':
             o = fused_chunk_gla(q, k, v, g)
         elif form == 'chunk':
+            g = torch.clamp(g, min=-3)
             o = chunk_gla(q, k, v, g)
         elif form == 'fused_recurrent':
             o = fused_recurrent_gla(q, k, v, g)
