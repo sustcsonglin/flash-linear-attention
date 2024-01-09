@@ -1,15 +1,21 @@
 # -*- coding: utf-8 -*-
+
 # Copyright (c) 2023, Songlin Yang
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
 # on-the-fly computation without materializing hidden statets into HBMs
+
+import warnings
 
 import torch
 import triton
 import triton.language as tl
 from einops import rearrange
-from fla.ops.triton.utils import contiguous
-from fla.ops.cuda.gla.semiring.cal_A.fn import cuda_cal_A, cuda_cal_A_bf16
 
+try:
+    from fla.ops.cuda.gla.semiring.cal_A.fn import cuda_cal_A, cuda_cal_A_bf16
+except Exception:
+    warnings.warn('Failed to import gla semiring modules. Please check your envs for building torch extensions.')
+from fla.ops.triton.utils import contiguous
 
 inv_ln2 = 1.44269504
 
