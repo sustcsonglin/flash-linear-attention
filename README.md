@@ -40,31 +40,6 @@ Please refer to Sectiton 2.3 of [GLA paper](https://arxiv.org/pdf/2312.06635.pdf
 - **ParallelChunk**: Chunkwise computation with sequence parallelism. Need to materialize hidden states to global memory for each chunk. $C$ is needed to set properly to achieve good performance because when $C$ is small there are too many hidden states to load/store to global memory; and when $C$ is too large the FLOPs are high. Recommened $C$ is 128 or 256. This function is largely useful when the batch size x number of heads is small, so **FusedChunk** cannot fully utilize the SMs.
 
 
-# Benchmarks
-
-We provide a comparison of various linear attention variants against PyTorch standard attention and FlashAttention, taking into account sequence length and different GPUs, by presenting their respective benchmarks.
-
-### A100
-
-The benchmarks are conducted on a single A100 PCIe 40GB GPU with `batch_size=8`, `num_heads=32` and `head_dim=128`, a common setting for training Llama models.
-
-You can reproduce the benchmark by running
-```py
-$ python -m benchmarks.benchmark_fla
-Performance:
-   seq_len       flash   retention       based
-0    128.0    0.232096    0.814656    0.357152
-1    256.0    0.482672    1.581904    0.678080
-2    512.0    1.195744    3.102048    1.509600
-3   1024.0    3.429472    6.142112    3.956096
-4   2048.0   11.517168   12.276352   11.990976
-5   4096.0   41.977936   24.413921   40.499439
-6   8192.0  164.846756   48.832432  146.982178
-7  16384.0  639.013916  114.688835  563.009949
-```
-<img width="621" alt="image" src="https://github.com/sustcsonglin/flash-linear-attention/assets/18402347/61f89bbc-0e1b-4860-ada1-70b2dfe98705">
-
-
 # Citation
 If you find this repo useful, please consider citing our work:
 ```
