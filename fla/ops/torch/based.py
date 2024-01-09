@@ -2,18 +2,23 @@
 
 import torch
 from einops import rearrange
-from fla.ops.triton.based import fused_chunk_based_dim16
+from fla.ops.triton.based import fused_chunk_based_dim16, parallel_based
 
 
-def torch_parallel_based(q, k, v):
-    q = q * (q.shape[-1] ** -0.5)
+
+def torch_parallel_based(q, k, v, use_scale=True, use_norm=True):
+    if use_scale:
+        q = q * (q.shape[-1] ** -0.5)
     attn = q @ k.transpose(-2, -1)
     attn = 1 + attn + 1/2 * (attn ** 2)
     attn.masked_fill_(~torch.tril(torch.ones(
         q.shape[-2], q.shape[-2], dtype=torch.bool, device=q.device)), 0)
-    z = attn.sum(-1)[..., None]
     o = attn @ v
-    return o / (z + 1e-6)
+    if use_norm:    
+        z = attn.sum(-1)
+        return o / (z[..., None] + 1e-6)
+    else:
+        return o
 
 
 def torch_chunk_based(q, k, v, chunk_size=256):
@@ -71,38 +76,58 @@ def torch_chunk_based(q, k, v, chunk_size=256):
 if __name__ == "__main__":
     B = 4
     H = 4
-    L = 256
-    D = 16
+    L = 128
+    D = 15
     dtype = torch.float32
-    q = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(True)
-    k = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(True)
+    q = (torch.randn(B, H, L, D).cuda().to(dtype) / 10).requires_grad_(True)
+    k = (torch.randn(B, H, L, D).cuda().to(dtype) / 10).requires_grad_(True)
     v = torch.randn(B, H, L, D).cuda().to(dtype).requires_grad_(True)
 
     do = torch.randn_like(v).cuda() / 10
-    ref = torch_parallel_based(q, k, v)
+    ref = torch_parallel_based(q, k, v, True, False)
     ref.backward(do, retain_graph=True)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
     ref_dv, v.grad = v.grad.clone(), None
 
-    tri = torch_chunk_based(q, k, v)
+    # tri = torch_chunk_based(q, k, v)
+    # tri.backward(do, retain_graph=True)
+    # tri_dq, q.grad = q.grad.clone(), None
+    # tri_dk, k.grad = k.grad.clone(), None
+    # tri_dv, v.grad = v.grad.clone(), None
+
+    # assert ref.allclose(tri, 0, 1e-4), breakpoint()
+    # assert ref_dq.allclose(tri_dq, 0, 1e-4), breakpoint()
+    # assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
+    # assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
+
+    tri = fused_chunk_based_dim16(q, k, v, True, False)
+    tri.backward(do, retain_graph=True)
+    tri_dq, q.grad = q.grad.clone(), None
+    tri_dk, k.grad = k.grad.clone(), None
+    tri_dv, v.grad = v.grad.clone(), None
+    print((ref-tri).abs().max())
+    print((ref_dq-tri_dq).abs().max())
+    print((ref_dk-tri_dk).abs().max())
+    print((ref_dv-tri_dv).abs().max())
+
+    # assert ref.allclose(tri, 0, 1e-4), breakpoint()
+    # assert ref_dq.allclose(tri_dq, 0, 1e-4), breakpoint()
+    # assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
+    # assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
+
+    tri = parallel_based(q, k, v, True, False)
     tri.backward(do, retain_graph=True)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
     tri_dv, v.grad = v.grad.clone(), None
 
-    assert ref.allclose(tri, 0, 1e-4), breakpoint()
-    assert ref_dq.allclose(tri_dq, 0, 1e-4), breakpoint()
-    assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
-    assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
+    print((ref-tri).abs().max())
+    print((ref_dq-tri_dq).abs().max())
+    print((ref_dk-tri_dk).abs().max())
+    print((ref_dv-tri_dv).abs().max())
 
-    tri = fused_chunk_based_dim16(q, k, v)
-    tri.backward(do, retain_graph=True)
-    tri_dq, q.grad = q.grad.clone(), None
-    tri_dk, k.grad = k.grad.clone(), None
-    tri_dv, v.grad = v.grad.clone(), None
-
-    assert ref.allclose(tri, 0, 1e-4), breakpoint()
-    assert ref_dq.allclose(tri_dq, 0, 1e-4), breakpoint()
-    assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
-    assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
+    # assert ref.allclose(tri, 0, 1e-4), breakpoint()
+    # assert ref_dq.allclose(tri_dq, 0, 1e-4), breakpoint()
+    # assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
+    # assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()

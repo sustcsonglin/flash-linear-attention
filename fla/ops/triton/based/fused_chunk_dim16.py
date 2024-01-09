@@ -65,7 +65,7 @@ def fused_chunk_based_fwd_kernel(
 
     for i in range(0, tl.cdiv(T, BT)):
         # [BK, BT]
-        b_k = tl.load(p_k, boundary_check=(0))
+        b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BK*BK, BT]
         b_k_2o = b_k[:, None, :] * b_k[None, :, :]
         b_k_2o = tl.reshape(b_k_2o, [BK * BK, BT]).to(b_k.dtype)
@@ -103,7 +103,8 @@ def fused_chunk_based_fwd_kernel(
         b_o += tl.dot(b_s.to(b_q.dtype), b_v, allow_tf32=False)
         # [TB, BV]
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
-        tl.store(p_z, b_z.to(p_z.dtype.element_ty), boundary_check=(0))
+        tl.store(p_z, b_z.to(p_z.dtype.element_ty),
+                 mask=(i * BT + tl.arange(0, BT)) < T)
 
         # update hidden state
         # [BK, BV]
@@ -178,13 +179,13 @@ def fused_chunk_based_bwd_kernel(
 
         # load tensors
         # [BT, BK]
-        b_dz = tl.load(p_dz)
-        b_q = tl.load(p_q, boundary_check=(0))
+        b_dz = tl.load(p_dz, mask=(tl.arange(0, BT) + i * BT) < T)
+        b_q = tl.load(p_q, boundary_check=(0, 1))
         b_q = (b_q * scale).to(b_q.dtype)
-        b_do = tl.load(p_do, boundary_check=(0))
-        b_k = tl.load(p_k, boundary_check=(0))
+        b_do = tl.load(p_do, boundary_check=(0, 1)).to(b_q.dtype)
+        b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BV, BT]
-        b_v = tl.load(p_v, boundary_check=(1))
+        b_v = tl.load(p_v, boundary_check=(0, 1))
 
         # inter-chunk
         b_dq += tl.dot(b_do, (b_h_1o).to(b_do.dtype), allow_tf32=False)
@@ -206,7 +207,7 @@ def fused_chunk_based_bwd_kernel(
         b_dq += tl.dot((b_ds * (1 + b_s)).to(b_q.dtype), b_k, allow_tf32=False)
 
         # store
-        tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0))
+        tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
 
         # update hidden state
         # [BT, BK*BK]
@@ -233,27 +234,27 @@ def fused_chunk_based_bwd_kernel(
     m_s = tl.arange(0, BT)[:, None] <= tl.arange(0, BT)[None, :]
 
     dq_1o = tl.zeros([1, BK], dtype=tl.float32)
-    dq_2o = tl.zeros([1, BK * BK], dtype=tl.float32)
+    dq_2o = tl.zeros([BK * BK, 1], dtype=tl.float32)
 
-    for i in range(1, tl.cdiv(T, BT) + 1):
+    for i in range(tl.cdiv(T, BT) * BT - BT, -BT, -BT):
         p_q = tl.make_block_ptr(
-            q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
+            q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, i), (BK, BT), (0, 1))
         p_k = tl.make_block_ptr(
-            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
+            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i, i_k * BK), (BT, BK), (1, 0))
         p_v = tl.make_block_ptr(
-            v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+            v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i, i_v * BV), (BT, BV), (1, 0))
         p_do = tl.make_block_ptr(
-            do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+            do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i, i_v * BV), (BT, BV), (1, 0))
         p_dk = tl.make_block_ptr(dk + (i_bh+i_v*B*H) * s_qk_h, (T, DK),
-                                 (s_qk_t, s_qk_d), (T - i*BT, i_k*BK), (BT, BK), (1, 0))
+                                 (s_qk_t, s_qk_d), (i, i_k*BK), (BT, BK), (1, 0))
         p_dv = tl.make_block_ptr(dv + (i_bh+i_k*B*H) * s_vo_h, (T, DV),
-                                 (s_vo_t, s_vo_d), (T - i*BT, i_v*BV), (BT, BV), (1, 0))
-        p_dz = dz + (i_bh + i_v * B * H) * T + tl.arange(0, BT) + (T - i * BT)
+                                 (s_vo_t, s_vo_d), (i, i_v*BV), (BT, BV), (1, 0))
+        p_dz = dz + (i_bh + i_v * B * H) * T + tl.arange(0, BT) + i
 
         b_dk = tl.zeros([BT, BK], dtype=tl.float32)
         b_dv = tl.zeros([BT, BV], dtype=tl.float32)
 
-        b_dz = tl.load(p_dz)
+        b_dz = tl.load(p_dz, mask=(tl.arange(0, BT)+i) < T)
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_v = tl.load(p_v, boundary_check=(0, 1))
@@ -282,8 +283,9 @@ def fused_chunk_based_bwd_kernel(
 
         b_dk += tl.dot(b_v, tl.trans(b_dh_1o).to(b_k.dtype), allow_tf32=False)
         b_dk += dq_1o
+
         b_dk_2o = tl.dot(b_dh_2o.to(b_k.dtype),
-                         tl.trans(b_v), allow_tf32=False) + tl.trans(dq_2o)
+                         tl.trans(b_v), allow_tf32=False) + dq_2o
         b_dk_2o = tl.reshape(b_dk_2o, [BK, BK, BT])
         b_k_fp32 = tl.trans(b_k.to(tl.float32))
         b_dk2 = tl.sum(b_dk_2o * b_k_fp32[:, None, :], axis=0)
@@ -297,8 +299,8 @@ def fused_chunk_based_bwd_kernel(
         b_q_2o = tl.reshape(b_q_2o, [BK * BK, BT]).to(b_k.dtype)
         b_dh_2o = b_dh_2o + tl.dot(b_q_2o, b_do, allow_tf32=False) * 0.5
 
-        dq_1o += tl.sum(b_dz[None, :] * b_q, axis=1)
-        dq_2o += tl.sum(b_dz[None, :] * b_q_2o, axis=1) * 0.5
+        dq_1o += (tl.sum(b_dz[None, :] * b_q, axis=1))[None, :]
+        dq_2o += (tl.sum(b_dz[None, :] * b_q_2o, axis=1) * 0.5)[:, None]
 
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
@@ -310,13 +312,15 @@ class FusedChunkBasedFunction(torch.autograd.Function):
     @contiguous
     def forward(ctx, q, k, v, scale=1):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
-        assert d_head_qk == 16, "currently we do not support feature dim other than 16"
+        # assert d_head_qk == 16, "currently we do not support feature dim other than 16"
         d_head_v = v.shape[-1]
 
         scale = scale
         BT = 16
         BK, BV = min(d_head_qk, 16), min(d_head_v, 32)
+        BK, BV = max(BK, 16), max(BV, 16)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
+
         num_warps = 4
 
         # the norm of o might explode, so we need to use float32 here
@@ -348,7 +352,8 @@ class FusedChunkBasedFunction(torch.autograd.Function):
         scale = ctx.scale
 
         BT = 16
-        BK, BV = min(d_head_qk, 16), min(d_head_v, 16)
+        BK, BV = min(d_head_qk, 16), min(d_head_v, 32)
+        BK, BV = max(BK, 16), max(BV, 16)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         num_stages = 1
         num_warps = 4
@@ -377,6 +382,7 @@ triton_fused_chunk_based_dim16 = FusedChunkBasedFunction.apply
 
 
 def fused_chunk_based_dim16(q, k, v, use_scale=True, use_normalize=True):
+    assert q.shape[-1] <= 16, 'only support feature dimension up to 16.'
     if use_scale:
         scale = q.shape[-1] ** -0.5
     else:
@@ -386,4 +392,5 @@ def fused_chunk_based_dim16(q, k, v, use_scale=True, use_normalize=True):
         o = o / (z[..., None] + 1e-6)
     else:
         o = o
+        
     return o.to(q.dtype)
