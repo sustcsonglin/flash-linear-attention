@@ -77,14 +77,14 @@ if __name__ == "__main__":
     B = 4
     H = 4
     L = 128
-    D = 15
+    # D = 15
     dtype = torch.float32
-    q = (torch.randn(B, H, L, D).cuda().to(dtype) / 10).requires_grad_(True)
-    k = (torch.randn(B, H, L, D).cuda().to(dtype) / 10).requires_grad_(True)
-    v = torch.randn(B, H, L, D).cuda().to(dtype).requires_grad_(True)
-
-    do = torch.randn_like(v).cuda() / 10
-    ref = torch_parallel_based(q, k, v, True, False)
+    q = (torch.randn(B, H, L, 16).cuda().to(dtype)).requires_grad_(True)
+    k = (torch.randn(B, H, L, 16).cuda().to(dtype)).requires_grad_(True)
+    v = torch.randn(B, H, L, 128).cuda().to(dtype).requires_grad_(True)
+    
+    do = torch.randn_like(v).cuda() 
+    ref = torch_parallel_based(q, k, v, True, True)
     ref.backward(do, retain_graph=True)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
@@ -101,7 +101,7 @@ if __name__ == "__main__":
     # assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
     # assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
 
-    tri = fused_chunk_based_dim16(q, k, v, True, False)
+    tri = fused_chunk_based_dim16(q, k, v, True, True)
     tri.backward(do, retain_graph=True)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     # assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
     # assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
 
-    tri = parallel_based(q, k, v, True, False)
+    tri = parallel_based(q, k, v, True, True)
     tri.backward(do, retain_graph=True)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None

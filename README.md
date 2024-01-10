@@ -31,13 +31,27 @@ git submodule add https://github.com/sustcsonglin/flash-linear-attention.git 3rd
 ln -s 3rdparty/flash-linear-attention/fla fla
 ```
 
-# Different forms of linear attention
-Please refer to Sectiton 2.3 of [GLA paper](https://arxiv.org/pdf/2312.06635.pdf) for hardware considerations of different forms of linear attention.
+# Usage
+```py
+from fla.layers import MultiScaleRetention, GatedLinearAttention, BasedLinearAttention 
 
-- **Parallel**: Self-attention-styled computation in $O(L^2)$ time with sequence parallelism.
-- **FusedRecurrent**: Recurrent computation in $O(L)$ time. Hidden states are computed on-the-fly in shared memory without any materialization to global memory (see Algorithm1 of [this paper](https://arxiv.org/pdf/2006.16236.pdf) for more details!). This saves a lot of I/O cost and should be a strong baseline for speed comparison.
-- **FusedChunk**: Chunkwise computation in $O(LC)$ time where $C$ is the chunk size. Hidden states are computed on-the-fly without any materialization to global memory likewise **FusedRecurrent**. This version is usually better than FusedReuccurent because tensor cores can be used for sequence level "reduction", whilst FusedRecurrent cannot use tensor cores at all.  Note that there is no sequence level parallelism in this implementation. If the batch size x number of heads is small, please avoid using this implementation as Streaming Processors (SMs) are not fully utilized. Often $C$ can be set to as small as 16 (the smallest size for tensor cores).
-- **ParallelChunk**: Chunkwise computation with sequence parallelism. Need to materialize hidden states to global memory for each chunk. $C$ is needed to set properly to achieve good performance because when $C$ is small there are too many hidden states to load/store to global memory; and when $C$ is too large the FLOPs are high. Recommened $C$ is 128 or 256. This function is largely useful when the batch size x number of heads is small, so **FusedChunk** cannot fully utilize the SMs.
+d_model = 1024
+num_head = 4
+device = "cuda:0"
+dtype = torch.bfloat16
+
+retnet = MultiScaleRetention(d_model=d_model, num_head=num_head).to(device).to(dtype)
+gla = GatedLinearAttention(d_model=d_model, num_head=num_head).to(device).to(dtype)
+based = BasedLinearAttention(d_model=d_model, num_head=num_head).to(device).to(dtype)
+
+bsz, seq_len, d_model = 32, 2048, 1024
+x = torch.randn(bsz, seq_len, d_model).to(device).to(dtype)
+y1 = retnet(x)
+y2 = gla(x)
+y3 = based(x)
+
+asssert y1.shape == y2.shape == y3.shape == x.shape
+```
 
 # Benchmark
 We compared our Triton-based RetNet implementation with CUDA-based FlashAttention2, using a batch size of 8, 32 heads, and a head dimension of 128, across different sequence lengths. These tests were conducted on a single A100 80GB GPU, as illustrated in the following graph
@@ -56,6 +70,15 @@ Performance:
 ```
 
 ![Performance](https://github.com/sustcsonglin/flash-linear-attention/assets/30831390/36961182-da39-48ba-96a6-84c572ce51d7)
+
+
+# Different forms of linear attention
+Please refer to Sectiton 2.3 of [GLA paper](https://arxiv.org/pdf/2312.06635.pdf) for hardware considerations of different forms of linear attention.
+
+- **Parallel**: Self-attention-styled computation in $O(L^2)$ time with sequence parallelism.
+- **FusedRecurrent**: Recurrent computation in $O(L)$ time. Hidden states are computed on-the-fly in shared memory without any materialization to global memory (see Algorithm1 of [this paper](https://arxiv.org/pdf/2006.16236.pdf) for more details!). This saves a lot of I/O cost and should be a strong baseline for speed comparison.
+- **FusedChunk**: Chunkwise computation in $O(LC)$ time where $C$ is the chunk size. Hidden states are computed on-the-fly without any materialization to global memory likewise **FusedRecurrent**. This version is usually better than FusedReuccurent because tensor cores can be used for sequence level "reduction", whilst FusedRecurrent cannot use tensor cores at all.  Note that there is no sequence level parallelism in this implementation. If the batch size x number of heads is small, please avoid using this implementation as Streaming Processors (SMs) are not fully utilized. Often $C$ can be set to as small as 16 (the smallest size for tensor cores).
+- **ParallelChunk**: Chunkwise computation with sequence parallelism. Need to materialize hidden states to global memory for each chunk. $C$ is needed to set properly to achieve good performance because when $C$ is small there are too many hidden states to load/store to global memory; and when $C$ is too large the FLOPs are high. Recommened $C$ is 128 or 256. This function is largely useful when the batch size x number of heads is small, so **FusedChunk** cannot fully utilize the SMs.
 
 
 # Citation

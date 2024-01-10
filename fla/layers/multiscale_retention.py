@@ -21,24 +21,24 @@ def get_activation_fn(activation):
 
 class MultiScaleRetention(nn.Module):
     def __init__(self,
-                 embed_dim=1024,
+                 d_model=1024,
                  expansion_ratio=2,
                  num_heads=4,
                  gate_fn="swish",
                  layernorm_eps=1e-5,
                  *args, **kwargs):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.value_dim = embed_dim * expansion_ratio
+        self.d_model = d_model
+        self.value_dim = d_model * expansion_ratio
         self.num_heads = num_heads
-        self.head_qk_dim = self.embed_dim // num_heads
+        self.head_qk_dim = self.d_model // num_heads
         self.head_v_dim = int(self.head_qk_dim * expansion_ratio)
         self.gate_fn = get_activation_fn(activation=str(gate_fn))
-        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.v_proj = nn.Linear(embed_dim, self.value_dim, bias=False)
-        self.g_proj = nn.Linear(embed_dim, self.value_dim, bias=False)
-        self.out_proj = nn.Linear(self.value_dim, embed_dim, bias=False)
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
+        self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
+        self.out_proj = nn.Linear(self.value_dim, d_model, bias=False)
 
         self.group_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
         self.rotary = RotaryEmbedding(dim=self.head_qk_dim, interleaved=False)
@@ -51,8 +51,8 @@ class MultiScaleRetention(nn.Module):
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -1)
 
-    def forward(self, x, form='fused_chunk'):
-        assert form in ['fused_chunk', 'parallel', 'chunk', 'fused_recurrent']
+    def forward(self, x, fwd_mode='fused_chunk'):
+        assert fwd_mode in ['fused_chunk', 'parallel', 'chunk', 'fused_recurrent']
         q1 = rearrange(self.q_proj(
             x), '... (h d) -> ... h d', h=self.num_heads)
         k1 = rearrange(self.k_proj(
@@ -61,11 +61,11 @@ class MultiScaleRetention(nn.Module):
         q, k = q.transpose(1, 2), k.transpose(1, 2)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d',
                       h=self.num_heads).contiguous()
-        if form == 'fused_chunk':
+        if fwd_mode == 'fused_chunk':
             o = fused_chunk_retention(q, k, v)
-        elif form == 'parallel':
+        elif fwd_mode == 'parallel':
             o = parallel_retention(q, k, v)
-        elif form == 'fused_recurrent':
+        elif fwd_mode == 'fused_recurrent':
             o = fused_recurrent_retention(q, k, v)
         # TODO: need fix to allow different d_head_qk and d_head_v for "chunk" form
         else:

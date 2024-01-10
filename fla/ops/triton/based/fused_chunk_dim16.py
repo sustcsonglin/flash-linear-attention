@@ -189,9 +189,11 @@ def fused_chunk_based_bwd_kernel(
 
         # inter-chunk
         b_dq += tl.dot(b_do, (b_h_1o).to(b_do.dtype), allow_tf32=False)
-        b_dq += b_dz[:, None] * k_1o
+        if i_v == 0:
+            b_dq += b_dz[:, None] * k_1o
         b_dq_2o = tl.dot(b_do, (b_h_2o).to(b_do.dtype), allow_tf32=False) * 0.5
-        b_dq_2o += (b_dz[:, None] * k_2o) * 0.5
+        if i_v == 0:
+            b_dq_2o += (b_dz[:, None] * k_2o) * 0.5
         b_dq_2o = tl.reshape(b_dq_2o, [BT, BK, BK])
         b_dq += tl.sum(b_dq_2o * b_q[:, :, None], axis=1)
         b_dq += tl.sum(b_dq_2o * b_q[:, None, :], axis=2)
@@ -200,7 +202,8 @@ def fused_chunk_based_bwd_kernel(
         # intra-chunk
         # [BT, BT]
         b_ds = tl.dot(b_do, b_v, allow_tf32=False)
-        b_ds += b_dz[:, None]
+        if i_v == 0:
+            b_ds += b_dz[:, None]
         b_ds = tl.where(m_s, b_ds, 0) * scale
         b_s = tl.dot(b_q, tl.trans(b_k), allow_tf32=False)
         b_s = tl.where(m_s, b_s, 0)
@@ -218,9 +221,10 @@ def fused_chunk_based_bwd_kernel(
         # [BV, BK]
         b_h_1o = b_h_1o + tl.dot(b_v, b_k, allow_tf32=False)
 
-        # update running statistics
-        k_1o += tl.sum(b_k, axis=0)[None, :]
-        k_2o += tl.sum(b_k_2o, axis=0)[None, :]
+        if i_v == 0:
+            # update running statistics
+            k_1o += tl.sum(b_k, axis=0)[None, :]
+            k_2o += tl.sum(b_k_2o, axis=0)[None, :]
 
     tl.debug_barrier()
     b_h_1o = None
@@ -249,7 +253,7 @@ def fused_chunk_based_bwd_kernel(
                                  (s_qk_t, s_qk_d), (i, i_k*BK), (BT, BK), (1, 0))
         p_dv = tl.make_block_ptr(dv + (i_bh+i_k*B*H) * s_vo_h, (T, DV),
                                  (s_vo_t, s_vo_d), (i, i_v*BV), (BT, BV), (1, 0))
-        p_dz = dz + (i_bh + i_v * B * H) * T + tl.arange(0, BT) + i
+        p_dz = dz + (i_bh) * T + tl.arange(0, BT) + i
 
         b_dk = tl.zeros([BT, BK], dtype=tl.float32)
         b_dv = tl.zeros([BT, BV], dtype=tl.float32)
@@ -262,7 +266,9 @@ def fused_chunk_based_bwd_kernel(
         b_q = (b_q * scale).to(b_k.dtype)
 
         # intra chunk
-        b_ds = tl.dot(b_v, tl.trans(b_do), allow_tf32=False) + b_dz[None, :]
+        b_ds = tl.dot(b_v, tl.trans(b_do), allow_tf32=False) 
+        if i_v == 0:
+            b_ds += b_dz[None, :]
         b_ds = tl.where(m_s, b_ds, 0)
         b_s = tl.dot(b_k, b_q, allow_tf32=False)
         b_s2 = 1 + b_s + 0.5 * b_s * b_s
@@ -282,10 +288,14 @@ def fused_chunk_based_bwd_kernel(
         b_dv += b_dh_0o
 
         b_dk += tl.dot(b_v, tl.trans(b_dh_1o).to(b_k.dtype), allow_tf32=False)
-        b_dk += dq_1o
+        
+        if i_v == 0:
+            b_dk += dq_1o
 
         b_dk_2o = tl.dot(b_dh_2o.to(b_k.dtype),
-                         tl.trans(b_v), allow_tf32=False) + dq_2o
+                         tl.trans(b_v), allow_tf32=False)
+        if i_v == 0:
+            b_dk_2o += dq_2o
         b_dk_2o = tl.reshape(b_dk_2o, [BK, BK, BT])
         b_k_fp32 = tl.trans(b_k.to(tl.float32))
         b_dk2 = tl.sum(b_dk_2o * b_k_fp32[:, None, :], axis=0)
@@ -299,8 +309,9 @@ def fused_chunk_based_bwd_kernel(
         b_q_2o = tl.reshape(b_q_2o, [BK * BK, BT]).to(b_k.dtype)
         b_dh_2o = b_dh_2o + tl.dot(b_q_2o, b_do, allow_tf32=False) * 0.5
 
-        dq_1o += (tl.sum(b_dz[None, :] * b_q, axis=1))[None, :]
-        dq_2o += (tl.sum(b_dz[None, :] * b_q_2o, axis=1) * 0.5)[:, None]
+        if i_v == 0:
+            dq_1o += (tl.sum(b_dz[None, :] * b_q, axis=1))[None, :]
+            dq_2o += (tl.sum(b_dz[None, :] * b_q_2o, axis=1) * 0.5)[:, None]
 
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))

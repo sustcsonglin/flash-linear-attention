@@ -24,11 +24,11 @@ except BaseException:
         line_arg='provider',
         # possible values for `line_arg``
         line_vals=['fused_chunk', 'chunk', 'parallel',
-                   'fused_chunk_bwd', 'chunk_bwd', 'parallel_bwd'] + ['flash', 'flash_bwd'] if HAS_FLASH else [],
+                   'fused_chunk_bwd', 'chunk_bwd', 'parallel_bwd'] + (['flash', 'flash_bwd'] if HAS_FLASH else []),
         # label name for the lines
-        line_names=['fused_chunk_fwd', 'chunk_fwd', 'parallel_fwd', 'fused_chunk_fwdbwd', 'chunk_fwdbwd', 'parallel_fwdbwd'] + ['flash_fwd', 'flash_fwdbwd'] if HAS_FLASH else [],
+        line_names=['fused_chunk_fwd', 'chunk_fwd', 'parallel_fwd', 'fused_chunk_fwdbwd', 'chunk_fwdbwd', 'parallel_fwdbwd'] + (['flash_fwd', 'flash_fwdbwd'] if HAS_FLASH else []),
         # line styles
-        styles=[('green', '-'), ('blue', '-'), ('red', '-'), ('green', 'dotted'), ('blue', 'dotted'), ('red', 'dotted')] + [('cyan', '-'), ('cyan', 'dotted')] if HAS_FLASH else [],
+        styles=[('green', '-'), ('blue', '-'), ('red', '-'), ('green', 'dotted'), ('blue', 'dotted'), ('red', 'dotted')] + ([('cyan', '-'), ('cyan', 'dotted')] if HAS_FLASH else []),
         ylabel="Execution Time (ms)",  # label name for the y-axis
         # name for the plot. Used also as a file name for saving the plot.
         plot_name="Performance",

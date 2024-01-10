@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 
-# Retentive Network: A Successor to Transformer for Large Language Models"[https://arxiv.org/pdf/2307.08621.pdf]
+# "Gated Linear Attention Transformers with Hardware-Efficient Training"[https://arxiv.org/abs/2312.06635]
 
 from fla.ops.triton.gla import fused_chunk_gla, chunk_gla, fused_recurrent_gla
 from fla.module.rmsnorm import RMSNorm
 from einops import rearrange
 import torch.nn as nn
 import torch.nn.functional as F
-
+import torch
 
 def get_activation_fn(activation):
     if activation == "swish":
@@ -20,7 +20,7 @@ def get_activation_fn(activation):
 
 class GatedLinearAttention(nn.Module):
     def __init__(self,
-                 embed_dim=1024,
+                 d_model=1024,
                  expansion_ratio=0.5,
                  num_heads=4,
                  gate_fn="swish",
@@ -29,20 +29,20 @@ class GatedLinearAttention(nn.Module):
                  gate_low_rank_dim=16,  
                  *args, **kwargs):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.value_dim = embed_dim 
-        self.key_dim = int(embed_dim * expansion_ratio)
+        self.d_model = d_model
+        self.value_dim = d_model 
+        self.key_dim = int(d_model * expansion_ratio)
         self.num_heads = num_heads
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = get_activation_fn(activation=str(gate_fn))
-        self.q_proj = nn.Linear(embed_dim, self.key_dim, bias=False)
-        self.k_proj = nn.Linear(embed_dim, self.key_dim, bias=False)
-        self.v_proj = nn.Linear(embed_dim, self.value_dim, bias=False)
-        self.g_proj = nn.Linear(embed_dim, self.value_dim, bias=False)
-        self.gk_proj = nn.Sequential(nn.Linear(embed_dim,  gate_low_rank_dim, bias=False),
+        self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
+        self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
+        self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
+        self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
+        self.gk_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
                                      nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
-        self.out_proj = nn.Linear(self.value_dim, embed_dim, bias=False)
+        self.out_proj = nn.Linear(self.value_dim, d_model, bias=False)
         self.group_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
         self.gate_logit_normalizer = gate_logit_normalizer
         self.reset_parameters()
@@ -56,8 +56,8 @@ class GatedLinearAttention(nn.Module):
         nn.init.xavier_uniform_(self.gk_proj[0].weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.gk_proj[1].weight, gain=2 ** -2.5)
 
-    def forward(self, x, form='chunk'):
-        assert form in ['fused_chunk', 'chunk', 'fused_recurrent']
+    def forward(self, x, fwd_mode='chunk'):
+        assert fwd_mode in ['fused_chunk', 'chunk', 'fused_recurrent']
         assert x.shape[-1] % 16 == 0, "only support dimension divisible by 16 for now" 
         assert x.shape[-2] % 16 == 0, "only support input length divisible by 16 for now"
         q = rearrange(self.q_proj(
@@ -70,12 +70,13 @@ class GatedLinearAttention(nn.Module):
         g = F.logsigmoid(g) / self.gate_logit_normalizer
         g = rearrange(g, 'b n (h d) -> b h n d',
                       h=self.num_heads)
-        if form == 'fused_chunk':
+        if fwd_mode == 'fused_chunk':
             o = fused_chunk_gla(q, k, v, g)
-        elif form == 'chunk':
+        elif fwd_mode == 'chunk':
+            # for numumerical stable consideration
             g = torch.clamp(g, min=-3)
             o = chunk_gla(q, k, v, g)
-        elif form == 'fused_recurrent':
+        elif fwd_mode == 'fused_recurrent':
             o = fused_recurrent_gla(q, k, v, g)
         else:
             raise NotImplementedError
