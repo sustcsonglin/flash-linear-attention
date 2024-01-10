@@ -2,12 +2,14 @@
 
 # "Gated Linear Attention Transformers with Hardware-Efficient Training"[https://arxiv.org/abs/2312.06635]
 
-from fla.ops.triton.gla import fused_chunk_gla, chunk_gla, fused_recurrent_gla
-from fla.module.rmsnorm import RMSNorm
-from einops import rearrange
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch
+from einops import rearrange
+
+from fla.modules.rmsnorm import RMSNorm
+from fla.ops.triton.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
+
 
 def get_activation_fn(activation):
     if activation == "swish":
@@ -26,11 +28,12 @@ class GatedLinearAttention(nn.Module):
                  gate_fn="swish",
                  layernorm_eps=1e-5,
                  gate_logit_normalizer=16,
-                 gate_low_rank_dim=16,  
-                 *args, **kwargs):
+                 gate_low_rank_dim=16,
+                 *args,
+                 **kwargs):
         super().__init__()
         self.d_model = d_model
-        self.value_dim = d_model 
+        self.value_dim = d_model
         self.key_dim = int(d_model * expansion_ratio)
         self.num_heads = num_heads
         self.head_qk_dim = self.key_dim // num_heads
@@ -58,7 +61,7 @@ class GatedLinearAttention(nn.Module):
 
     def forward(self, x, fwd_mode='chunk'):
         assert fwd_mode in ['fused_chunk', 'chunk', 'fused_recurrent']
-        assert x.shape[-1] % 16 == 0, "only support dimension divisible by 16 for now" 
+        assert x.shape[-1] % 16 == 0, "only support dimension divisible by 16 for now"
         assert x.shape[-2] % 16 == 0, "only support input length divisible by 16 for now"
         q = rearrange(self.q_proj(
             x), 'b n (h d) -> b h n d', h=self.num_heads)
@@ -81,11 +84,10 @@ class GatedLinearAttention(nn.Module):
         else:
             raise NotImplementedError
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
-        return self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.g_proj(x))
+        return self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.gate_fn(self.g_proj(x)))
 
 
 if __name__ == '__main__':
-    import torch
     batch = 4
     seq_len = 1024
     d_model = 1024
