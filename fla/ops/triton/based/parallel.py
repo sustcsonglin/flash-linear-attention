@@ -134,6 +134,7 @@ def _parallel_based_bwd_dq(
                             (s_vo_d, s_vo_t), (i_v * BV, 0), (BV, BTS), (0, 1))
     p_dz = dz + i_bh * T + i_c * BTL + tl.arange(0, BTL)
     b_dz = tl.load(p_dz, mask=(i_c * BTL + tl.arange(0, BTL)) < T)
+    
 
     for _ in range(0, i_c * BTL, BTS):
         # [BTS, BK]
@@ -142,7 +143,10 @@ def _parallel_based_bwd_dq(
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BTL, BTS]
         b_ds = tl.dot(b_do, b_v, allow_tf32=False)
-        b_ds += b_dz[:, None]
+        if i_v == 0:
+            b_ds += b_dz[:, None]
+        else:
+            b_ds = b_ds
         b_s = tl.dot(b_q, tl.trans(b_k), allow_tf32=False)
         # [BQ, BD]
         b_dq += tl.dot((b_ds * (1 + b_s)).to(b_v.dtype), b_k, allow_tf32=False)
@@ -165,7 +169,10 @@ def _parallel_based_bwd_dq(
         # [BTL, BTS]
         m_s = o_q[:, None] >= o_k[None, :]
         b_ds = tl.dot(b_do, b_v, allow_tf32=False)
-        b_ds += b_dz[:, None]
+        if i_v == 0:
+            b_ds += b_dz[:, None]
+        else:
+            b_ds = b_ds
         b_ds = tl.where(m_s, b_ds, 0) * scale
         b_s = tl.dot(b_q, tl.trans(b_k), allow_tf32=False)
         b_s = tl.where(m_s, b_s, 0)
@@ -213,7 +220,10 @@ def _parallel_based_bwd_dkv(
         b_s2 = 1 + b_s + 0.5 * b_s * b_s
         b_dv += tl.dot(b_s2.to(b_q.dtype), tl.trans(b_do), allow_tf32=False)
         b_ds = tl.dot(b_v, b_do, allow_tf32=False) * scale
-        b_ds += b_dz[None, :] * scale
+        if i_v == 0:
+            b_ds += b_dz[None, :] * scale
+        else:
+            b_ds = b_ds
         b_dk += tl.dot((b_ds + b_ds * b_s).to(b_q.dtype),
                        tl.trans(b_q), allow_tf32=False)
 
@@ -236,7 +246,10 @@ def _parallel_based_bwd_dkv(
         b_s2 = tl.where(m_s, b_s2, 0)
 
         b_ds = tl.dot(b_v, b_do, allow_tf32=False)
-        b_ds += b_dz[None, :]
+        if i_v == 0:
+            b_ds += b_dz[None, :]
+        else:
+            b_ds = b_ds
         b_ds = tl.where(m_s, b_ds, 0) * scale
         # [BK, BD]
         b_dv += tl.dot(b_s2.to(b_q.dtype), tl.trans(b_do), allow_tf32=False)
@@ -297,6 +310,8 @@ class ParallelBasedFunction(torch.autograd.Function):
         NV = triton.cdiv(d_head_v, BV)
         grid = (NK * NV, triton.cdiv(seq_len, BTL), batch_size * n_heads)
 
+        assert NK == 1, "will encounter some synchronization issue if not."
+
         o = torch.empty(NK, batch_size, n_heads, seq_len,
                         d_head_v, dtype=torch.float32, device=q.device)
         z = torch.empty(NK, batch_size, n_heads, seq_len,
@@ -331,6 +346,8 @@ class ParallelBasedFunction(torch.autograd.Function):
         NK = triton.cdiv(d_head_qk, BK)
         NV = triton.cdiv(d_head_v, BV)
         grid = (NK * NV, triton.cdiv(seq_len, BTL), batch_size * n_heads)
+
+        assert NK == 1, "will encounter some synchronization issue if not"
 
         dq = torch.empty(NV, batch_size, n_heads, seq_len,
                          d_head_qk, dtype=q.dtype, device=q.device)

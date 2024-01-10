@@ -5,7 +5,6 @@ https://github.com/HazyResearch/zoology/blob/main/zoology/mixers/based.py
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import opt_einsum as oe
 from einops import rearrange
 
@@ -128,7 +127,7 @@ class BasedLinearAttention(nn.Module):
         self.dropout = nn.Identity()
         self.eps = eps
 
-    def forward(self, hidden_states: torch.Tensor, fwd_mode="fused_chunk", **kwargs):
+    def forward(self, hidden_states: torch.Tensor, fwd_mode="parallel", **kwargs):
         assert fwd_mode in ["fused_chunk", "parallel"]
         b, l, _ = hidden_states.size()
         q, k, v = self.proj_q(hidden_states), self.proj_k(
@@ -181,8 +180,6 @@ class BasedLinearAttention(nn.Module):
         return y.to(hidden_states.dtype)
 
 
-
-
 if __name__ == '__main__':
     batch = 4
     seq_len = 1024
@@ -190,8 +187,13 @@ if __name__ == '__main__':
     dtype = torch.float32
     x = torch.randn(batch, seq_len, d_model).to(
         dtype).cuda().requires_grad_(True)
+    dy = torch.randn(batch, seq_len, d_model).to(
+        dtype).cuda()
     model = BasedLinearAttention(d_model=d_model).to(dtype).cuda()
     y = model(x)
+    y.backward(dy, retain_graph=True)
+    x_grad, x.grad = x.grad, None
     y2 = model.forward_reference(x)
-    assert torch.allclose(y, y2), breakpoint()
-    
+    y2.backward(dy)
+    assert y.allclose(y2, 0, 1e-4), breakpoint()
+    assert x_grad.allclose(x.grad, 0, 1e-4), breakpoint()
