@@ -32,6 +32,7 @@ ln -s 3rdparty/flash-linear-attention/fla fla
 ```
 
 # Usage
+We provide "token mixing" linear attention layers in `fla.layers` for you to use. You can replace the standard multihead attention layer in your transformer with the other linear attention layers. Example usage is as follows: 
 ```py
 from fla.layers import MultiScaleRetention, GatedLinearAttention, BasedLinearAttention 
 
