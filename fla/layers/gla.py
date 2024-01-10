@@ -59,27 +59,23 @@ class GatedLinearAttention(nn.Module):
         nn.init.xavier_uniform_(self.gk_proj[0].weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.gk_proj[1].weight, gain=2 ** -2.5)
 
-    def forward(self, x, fwd_mode='chunk'):
-        assert fwd_mode in ['fused_chunk', 'chunk', 'fused_recurrent']
+    def forward(self, x, mode='chunk'):
+        assert mode in ['fused_chunk', 'chunk', 'fused_recurrent']
         assert x.shape[-1] % 16 == 0, "only support dimension divisible by 16 for now"
         assert x.shape[-2] % 16 == 0, "only support input length divisible by 16 for now"
-        q = rearrange(self.q_proj(
-            x), 'b n (h d) -> b h n d', h=self.num_heads)
-        k = rearrange(self.k_proj(
-            x), 'b n (h d) -> b h n d', h=self.num_heads)
-        v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d',
-                      h=self.num_heads)
+        q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
+        k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
+        v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         g = self.gk_proj(x)
         g = F.logsigmoid(g) / self.gate_logit_normalizer
-        g = rearrange(g, 'b n (h d) -> b h n d',
-                      h=self.num_heads)
-        if fwd_mode == 'fused_chunk':
+        g = rearrange(g, 'b n (h d) -> b h n d', h=self.num_heads)
+        if mode == 'fused_chunk':
             o = fused_chunk_gla(q, k, v, g)
-        elif fwd_mode == 'chunk':
+        elif mode == 'chunk':
             # for numumerical stable consideration
             g = torch.clamp(g, min=-3)
             o = chunk_gla(q, k, v, g)
-        elif fwd_mode == 'fused_recurrent':
+        elif mode == 'fused_recurrent':
             o = fused_recurrent_gla(q, k, v, g)
         else:
             raise NotImplementedError
@@ -91,8 +87,7 @@ if __name__ == '__main__':
     batch = 4
     seq_len = 1024
     d_model = 1024
-    x = torch.randn(batch, seq_len, d_model).to(
-        torch.bfloat16).cuda().requires_grad_(True)
+    x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
     model = GatedLinearAttention().to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)

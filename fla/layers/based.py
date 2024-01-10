@@ -1,14 +1,15 @@
 """
-Linear attention in Based. 
+Linear attention in Based.
 https://github.com/HazyResearch/zoology/blob/main/zoology/mixers/based.py
 """
 import math
+
+import opt_einsum as oe
 import torch
 import torch.nn as nn
-import opt_einsum as oe
 from einops import rearrange
 
-from fla.ops.triton.based import parallel_based, fused_chunk_based_dim16
+from fla.ops.triton.based import fused_chunk_based_dim16, parallel_based
 
 
 def init_feature_map(feature_map: str = 'none', **kwargs: any):
@@ -127,17 +128,17 @@ class BasedLinearAttention(nn.Module):
         self.dropout = nn.Identity()
         self.eps = eps
 
-    def forward(self, hidden_states: torch.Tensor, fwd_mode="parallel", **kwargs):
-        assert fwd_mode in ["fused_chunk", "parallel"]
+    def forward(self, hidden_states: torch.Tensor, mode="parallel", **kwargs):
+        assert mode in ["fused_chunk", "parallel"]
         b, l, _ = hidden_states.size()
         q, k, v = self.proj_q(hidden_states), self.proj_k(
             hidden_states), self.proj_v(hidden_states)
         q, k, v = map(lambda x: rearrange(
             x, "b l (h d) -> b h l d", h=self.num_heads), [q, k, v])
-        if fwd_mode == "fused_chunk":
+        if mode == "fused_chunk":
             assert q.shape[-1] <= 16
             o = fused_chunk_based_dim16(q, k, v, True, True)
-        elif fwd_mode == 'parallel':
+        elif mode == 'parallel':
             assert q.shape[-1] <= 128
             o = parallel_based(q, k, v, True, True)
         o = rearrange(o, "b h l d -> b l (h d)")
