@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 
+from fla.ops.triton.gla import fused_chunk_gla
+from fla.ops.triton.retention import fused_chunk_retention, parallel_retention
+from fla.ops.triton.based import parallel_based
 import torch
 import triton
 try:
@@ -7,9 +10,6 @@ try:
     HAS_FLASH = True
 except ImportError:
     HAS_FLASH = False
-
-from fla.ops.triton.based import parallel_based
-from fla.ops.triton.retention import fused_chunk_retention
 
 
 @triton.testing.perf_report(
@@ -21,12 +21,14 @@ from fla.ops.triton.retention import fused_chunk_retention
         # argument name whose value corresponds to a different line in the plot
         line_arg='provider',
         # possible values for `line_arg``
-        line_vals=['retention', 'based'] + (['flash'] if HAS_FLASH else []),
+        line_vals=['retention_parallel', 'retention_fused_chunk',
+                   'gla_fused_chunk', 'based_parallel'] + (['flash'] if HAS_FLASH else []),
         # label name for the lines
-        line_names=['retention', 'based'] + (['flash'] if HAS_FLASH else []),
+        line_names=['retention_parallel_fwdbwd', 'retention_fused_chunk_fwdbwd',
+                    'gla_fused_chunk_fwdbwd', 'based_parallel_fwdbwd'] + (['flash_fwdbwd'] if HAS_FLASH else []),
         # line styles
         styles=[('green', '-'), ('blue', '--'), ('red', '-.'), ('cyan', ':')] + \
-        ([('yellow', 'dotted'), ('black', 'dashed')] if HAS_FLASH else []),
+        ([('yellow', 'dotted')] if HAS_FLASH else []),
         ylabel="Execution Time (ms)",  # label name for the y-axis
         # name for the plot. Used also as a file name for saving the plot.
         plot_name="Performance",
@@ -37,7 +39,7 @@ def benchmark(seq_len, provider):
     device = 'cuda'
     dtype = torch.bfloat16
     requires_grad = True
-    batch_size, n_heads, d_head = 8, 32, 128
+    batch_size, n_heads, d_head = 16, 8, 128
 
     if provider == 'flash':
         q = torch.randn(batch_size, seq_len, n_heads, d_head,
@@ -46,6 +48,22 @@ def benchmark(seq_len, provider):
                         device=device, requires_grad=requires_grad, dtype=dtype)
         v = torch.randn(batch_size, seq_len, n_heads, d_head,
                         device=device, requires_grad=requires_grad, dtype=dtype)
+    elif "based" in provider:
+        q = torch.randn(batch_size, n_heads, seq_len, 16,
+                        device=device, requires_grad=requires_grad, dtype=dtype)
+        k = torch.randn(batch_size, n_heads, seq_len, 16,
+                        device=device, requires_grad=requires_grad, dtype=dtype)
+        v = torch.randn(batch_size, n_heads, seq_len, d_head,
+                        device=device, requires_grad=requires_grad, dtype=dtype)
+    elif "gla" in provider:
+        q = torch.randn(batch_size, n_heads, seq_len, d_head,
+                        device=device, requires_grad=requires_grad, dtype=dtype)
+        k = torch.randn(batch_size, n_heads, seq_len, d_head,
+                        device=device, requires_grad=requires_grad, dtype=dtype)
+        v = torch.randn(batch_size, n_heads, seq_len, d_head,
+                        device=device, requires_grad=requires_grad, dtype=dtype)
+        g = torch.randn(batch_size, n_heads, seq_len, d_head,
+                        device=device, requires_grad=requires_grad, dtype=dtype)
     else:
         q = torch.randn(batch_size, n_heads, seq_len, d_head,
                         device=device, requires_grad=requires_grad, dtype=dtype)
@@ -53,19 +71,27 @@ def benchmark(seq_len, provider):
                         device=device, requires_grad=requires_grad, dtype=dtype)
         v = torch.randn(batch_size, n_heads, seq_len, d_head,
                         device=device, requires_grad=requires_grad, dtype=dtype)
-    do = torch.ones_like(q, dtype=dtype)
+
+    do = torch.rand_like(v, dtype=dtype)
 
     quantiles = [0.5, 0.2, 0.8]
     results = 0, 0, 0
     if provider == 'flash':
         results = triton.testing.do_bench(lambda: flash_attn_func(
             q, k, v).backward(do), quantiles=quantiles)
-    elif provider == 'retention':
+    elif provider == 'retention_parallel':
+        results = triton.testing.do_bench(lambda: parallel_retention(
+            q, k, v).backward(do), quantiles=quantiles)
+    elif provider == 'retention_fused_chunk':
         results = triton.testing.do_bench(lambda: fused_chunk_retention(
             q, k, v).backward(do), quantiles=quantiles)
-    elif provider == 'based':
+    elif provider == 'based_parallel':
         results = triton.testing.do_bench(lambda: parallel_based(
             q, k, v).backward(do), quantiles=quantiles)
+    elif provider == 'gla_fused_chunk':
+        results = triton.testing.do_bench(lambda: fused_chunk_gla(
+            q, k, v, g).backward(do), quantiles=quantiles)
+
     return results
 
 
