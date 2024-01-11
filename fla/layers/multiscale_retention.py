@@ -2,12 +2,15 @@
 
 # Retentive Network: A Successor to Transformer for Large Language Models"[https://arxiv.org/pdf/2307.08621.pdf]
 
-from fla.ops.triton.retention import fused_chunk_retention, parallel_retention, fused_recurrent_retention
-from fla.module.rmsnorm import RMSNorm
-from einops import rearrange
 import torch.nn as nn
 import torch.nn.functional as F
-from fla.module.rotary import RotaryEmbedding
+from einops import rearrange
+
+from fla.modules.rmsnorm import RMSNorm
+from fla.modules.rotary import RotaryEmbedding
+from fla.ops.triton.retention import (fused_chunk_retention,
+                                      fused_recurrent_retention,
+                                      parallel_retention)
 
 
 def get_activation_fn(activation):
@@ -51,27 +54,24 @@ class MultiScaleRetention(nn.Module):
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -1)
 
-    def forward(self, x, fwd_mode='fused_chunk'):
-        assert fwd_mode in ['fused_chunk', 'parallel', 'chunk', 'fused_recurrent']
-        q1 = rearrange(self.q_proj(
-            x), '... (h d) -> ... h d', h=self.num_heads)
-        k1 = rearrange(self.k_proj(
-            x), '... (h d) -> ... h d', h=self.num_heads)
+    def forward(self, x, mode='fused_chunk'):
+        assert mode in ['fused_chunk', 'parallel', 'chunk', 'fused_recurrent']
+        q1 = rearrange(self.q_proj(x), '... (h d) -> ... h d', h=self.num_heads)
+        k1 = rearrange(self.k_proj(x), '... (h d) -> ... h d', h=self.num_heads)
         q, k = self.rotary(q1, k1)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
-        v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d',
-                      h=self.num_heads).contiguous()
-        if fwd_mode == 'fused_chunk':
+        v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
+        if mode == 'fused_chunk':
             o = fused_chunk_retention(q, k, v)
-        elif fwd_mode == 'parallel':
+        elif mode == 'parallel':
             o = parallel_retention(q, k, v)
-        elif fwd_mode == 'fused_recurrent':
+        elif mode == 'fused_recurrent':
             o = fused_recurrent_retention(q, k, v)
         # TODO: need fix to allow different d_head_qk and d_head_v for "chunk" form
         else:
             raise NotImplementedError
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
-        return self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.g_proj(x))
+        return self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.gate_fn(self.g_proj(x)))
 
 
 if __name__ == '__main__':
@@ -79,8 +79,7 @@ if __name__ == '__main__':
     batch = 4
     seq_len = 1024
     d_model = 1024
-    x = torch.randn(batch, seq_len, d_model).to(
-        torch.bfloat16).cuda().requires_grad_(True)
+    x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
     model = MultiScaleRetention().to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)

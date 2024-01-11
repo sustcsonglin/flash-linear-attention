@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 # from https://github.com/HazyResearch/zoology/blob/main/zoology/mixers/convolution.py
 import math
 
@@ -28,18 +30,18 @@ def fft_conv(u, k, dropout_mask, gelu=True, k_rev=None):
         return (out * rearrange(dropout_mask, "b H -> b H 1")).to(dtype=u.dtype)
     else:
         return out.to(dtype=u.dtype)
-    
+
 
 class ShortConvolution(nn.Module):
     """
-    Simple wrapper around nn.Conv1d that accepts dimension last. 
+    Simple wrapper around nn.Conv1d that accepts dimension last.
     """
 
     def __init__(
-        self, 
+        self,
         d_model: int,
         kernel_size: int
-    ): 
+    ):
         super().__init__()
         self.conv = nn.Conv1d(
             in_channels=d_model,
@@ -48,22 +50,22 @@ class ShortConvolution(nn.Module):
             groups=d_model,
             padding=kernel_size - 1,
         )
-    
+
     def forward(self, x: torch.Tensor):
         """
         Args:
             x: (b, l, d) tensor
-        Returns: 
+        Returns:
             y: (b, l, d) tensor
         """
         l = x.size(1)
         y = self.conv(x.transpose(1, 2))[..., :l].transpose(1, 2)
-        return y 
+        return y
 
 
 class LongConvolution(nn.Module):
     """
-    LongConvolution applies a convolution operation on the input tensor using a fixed 
+    LongConvolution applies a convolution operation on the input tensor using a fixed
     filter of length l_max.
     The filter is learned during training and is applied using FFT convolution.
     Args:
@@ -85,7 +87,7 @@ class LongConvolution(nn.Module):
             l_max (int): The maximum sequence length.
         """
         super().__init__()
-        self.d_model = d_model 
+        self.d_model = d_model
         self.filter = nn.Parameter(torch.randn(self.d_model, l_max), requires_grad=True)
 
     def forward(self, x: torch.Tensor, *args, **kwargs):
@@ -93,7 +95,7 @@ class LongConvolution(nn.Module):
         Applies the LongConvolution operation on the input tensor.
         Args:
             x: (b, l, d) tensor
-        Returns: 
+        Returns:
             y: (b, l, d) tensor
         """
         x = x.transpose(1, 2)
@@ -141,23 +143,23 @@ class ImplicitLongConvolution(nn.Module):
 
     """
 
-    
+
     def __init__(
         self,
         d_model: int,
         l_max: int,
-        d_emb: int=3, 
+        d_emb: int=3,
         d_hidden: int = 16,
         **kwargs,
     ):
         """
         Long convolution with implicit filter parameterized by an MLP.
 
-        
+
         """
         super().__init__()
-        self.d_model = d_model 
-        self.d_emb = d_emb 
+        self.d_model = d_model
+        self.d_emb = d_emb
 
 
         assert (
@@ -182,7 +184,7 @@ class ImplicitLongConvolution(nn.Module):
         """
         Args:
             x: (b, l, d) tensor
-        Returns: 
+        Returns:
             y: (b, l, d) tensor
         """
         x = x.transpose(1, 2)
