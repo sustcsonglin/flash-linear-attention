@@ -1,7 +1,9 @@
+from fla.ops.triton.utils import contiguous
 import torch
 import time
 import math
 from typing import Tuple, Union, Optional
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 
 import torch
@@ -240,12 +242,12 @@ def _bwd_kernel_dqk(Q, K, GK, DA,
         tl.store(DGK_K_ptr + q_high * stride_q4,
                  (dgk + prev_dq_gk).to(DGK_K_ptr.dtype.element_ty))
 
+
 class IntraCalA(torch.autograd.Function):
     @staticmethod
+    @custom_fwd
+    @contiguous
     def forward(ctx, q, k, gk):
-        q = q.contiguous()
-        k = k.contiguous()
-        gk = gk.contiguous()
 
         # assert gk.dtype==torch.float32
         # only support for Ampere now
@@ -291,8 +293,9 @@ class IntraCalA(torch.autograd.Function):
         return A.sum(0).to(q.dtype)
 
     @staticmethod
+    @custom_bwd
+    @contiguous
     def backward(ctx, dA):
-        dA = dA.contiguous()
         q, k,  gk = ctx.saved_tensors
 
         # appearantly, there is no sync issue when splitting K dim.
@@ -316,4 +319,4 @@ class IntraCalA(torch.autograd.Function):
             BLOCK_N=BLOCK_N, BLOCK_DMODEL_QK=ctx.BLOCK_DMODEL_QK, BLOCK_M=BLOCK_M, num_warps=8 if ctx.BLOCK_DMODEL_QK == 128 else 4, num_stages=5
         )
 
-        return dq, dk, dgk, None
+        return dq.to(q.dtype), dk.to(k.dtype), dgk.to(gk.dtype), None

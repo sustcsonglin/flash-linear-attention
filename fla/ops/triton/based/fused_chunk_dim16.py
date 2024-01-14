@@ -5,7 +5,7 @@ import triton
 import triton.language as tl
 
 from fla.ops.triton.utils import contiguous
-
+from torch.cuda.amp import custom_bwd, custom_fwd
 # on-the-fly computation without materializing hidden statets into HBMs
 
 
@@ -266,7 +266,7 @@ def fused_chunk_based_bwd_kernel(
         b_q = (b_q * scale).to(b_k.dtype)
 
         # intra chunk
-        b_ds = tl.dot(b_v, tl.trans(b_do), allow_tf32=False) 
+        b_ds = tl.dot(b_v, tl.trans(b_do), allow_tf32=False)
         if i_v == 0:
             b_ds += b_dz[None, :]
         b_ds = tl.where(m_s, b_ds, 0)
@@ -288,7 +288,7 @@ def fused_chunk_based_bwd_kernel(
         b_dv += b_dh_0o
 
         b_dk += tl.dot(b_v, tl.trans(b_dh_1o).to(b_k.dtype), allow_tf32=False)
-        
+
         if i_v == 0:
             b_dk += dq_1o
 
@@ -321,6 +321,7 @@ class FusedChunkBasedFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
+    @custom_fwd
     def forward(ctx, q, k, v, scale=1):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         # assert d_head_qk == 16, "currently we do not support feature dim other than 16"
@@ -352,10 +353,11 @@ class FusedChunkBasedFunction(torch.autograd.Function):
         z = z.sum(0)
         ctx.save_for_backward(q, k, v)
         ctx.scale = scale
-        return o, z
+        return o.to(q.dtype), z.to(z.dtype)
 
     @staticmethod
     @contiguous
+    @custom_bwd
     def backward(ctx, do, dz):
         q, k, v = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
@@ -386,7 +388,7 @@ class FusedChunkBasedFunction(torch.autograd.Function):
         dq = dq.sum(0)
         dk = dk.sum(0)
         dv = dv.sum(0)
-        return dq, dk, dv, None
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None
 
 
 triton_fused_chunk_based_dim16 = FusedChunkBasedFunction.apply
@@ -403,5 +405,5 @@ def fused_chunk_based_dim16(q, k, v, use_scale=True, use_normalize=True):
         o = o / (z[..., None] + 1e-6)
     else:
         o = o
-        
+
     return o.to(q.dtype)

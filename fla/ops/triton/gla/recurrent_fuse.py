@@ -6,7 +6,7 @@ import triton
 import triton.language as tl
 
 from fla.ops.triton.utils import contiguous
-
+from torch.cuda.amp import custom_bwd, custom_fwd
 # on-the-fly computation without materializing hidden statets into HBMs
 
 
@@ -62,7 +62,7 @@ def fused_recurrent_gla_fwd_kernel(
         _o = h * _q[None, :]
         _o = tl.sum(_o, axis=1)
         tl.store(p_o, _o.to(p_o.dtype.element_ty), mask=mask_bv)
-        
+
         p_q += DK
         p_k += DK
         p_o += DV
@@ -110,7 +110,7 @@ def fused_recurrent_gla_bwd_kernel(
     p_g = g + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
-    
+
     p_dq = dq + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK)
     mask_bk = i_k * BK + tl.arange(0, BK) < DK
     mask_bv = i_v * BV + tl.arange(0, BV) < DV
@@ -141,12 +141,14 @@ def fused_recurrent_gla_bwd_kernel(
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
     p_g = g + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
-    p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV    
-    p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV    
-    p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
-    p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
+    p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
+    p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
+    p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * \
+        BK + tl.arange(0, BK) + (T - 1) * DK
+    p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * \
+        BV + tl.arange(0, BV) + (T - 1) * DV
     d_h = tl.zeros([BK, BV], dtype=tl.float32)
-  
+
     for _ in range(T):
         _do = tl.load(p_do, mask=mask_bv, other=0).to(tl.float32)
         _q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
@@ -162,7 +164,7 @@ def fused_recurrent_gla_bwd_kernel(
         tl.store(p_dk, d_k.to(p_dk.dtype.element_ty), mask=mask_bk)
         tl.store(p_dv, d_v.to(p_dv.dtype.element_ty), mask=mask_bv)
 
-        p_do -= DV 
+        p_do -= DV
         p_q -= DK
         p_k -= DK
         p_v -= DV
@@ -175,6 +177,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
+    @custom_fwd
     def forward(ctx, q, k, v, g):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
@@ -189,7 +192,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
         grid = (NV, NK, batch_size * n_heads)
         fused_recurrent_gla_fwd_kernel[grid](
-            q, k, v, g, o, 
+            q, k, v, g, o,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             batch_size, n_heads, seq_len, scale,
@@ -200,10 +203,11 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
         o = o.sum(0)
         ctx.save_for_backward(q, k, v, g)
-        return o
+        return o.to(q.dtype)
 
     @staticmethod
     @contiguous
+    @custom_bwd
     def backward(ctx, do):
         q, k, v, g = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
@@ -235,7 +239,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         _dg = dq * q - dk * k
         _dg_cumsum = _dg.cumsum(-2)
         dg = _dg + _dg_cumsum[:, :, -1, None] - _dg_cumsum
-        return dq, dk, dv, dg
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype)
 
 
 fused_recurrent_gla = FusedRecurrentGLAFunction.apply

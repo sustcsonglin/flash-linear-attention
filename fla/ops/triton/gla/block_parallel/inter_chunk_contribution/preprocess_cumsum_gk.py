@@ -1,8 +1,10 @@
+from fla.ops.triton.utils import contiguous
 import triton
 import triton.language as tl
 import torch
 import torch.nn.functional as F
 import time
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 # def stable_logsigmoid(x):
 #     # Use the identity log(sigmoid(x)) = -log(1 + exp(-x))
@@ -182,11 +184,9 @@ def _bwd_preprocess_cumsum_gk(
 
 class PreprocessCumSum_GK(torch.autograd.Function):
     @staticmethod
+    @contiguous
+    @custom_fwd
     def forward(ctx, q, k, gk):
-        q = q.contiguous()
-        k = k.contiguous()
-        gk = gk.contiguous()
-
         B, H, NUM_CHUNK, CHUNK_SIZE, D = q.shape
 
         D_k = k.shape[-1]
@@ -214,11 +214,9 @@ class PreprocessCumSum_GK(torch.autograd.Function):
         return gk_cumsum, k_reduce, q_exp,  gk_last_exp
 
     @staticmethod
+    @custom_bwd
+    @contiguous
     def backward(ctx, dgk_cumsum, dk_reduce, dq_exp, dgk_last_exp):
-        dgk_cumsum = dgk_cumsum.contiguous()
-        dk_reduce = dk_reduce.contiguous()
-        dq_exp = dq_exp.contiguous()
-        dgk_last_exp = dgk_last_exp.contiguous()
         q, k, gk, gk_cumsum = ctx.saved_tensors
         grid = ctx.grid
 
@@ -238,4 +236,4 @@ class PreprocessCumSum_GK(torch.autograd.Function):
             D_MODEL_K=D_k, num_warps=8 if D_k >= 512 else 4
         )
 
-        return dq, dk, dgk, None, None, None
+        return dq.to(q.dtype), dk.to(k.dtype), dgk.to(gk.dtype), None, None, None

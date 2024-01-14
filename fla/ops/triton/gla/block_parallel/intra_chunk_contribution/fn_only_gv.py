@@ -1,3 +1,4 @@
+from fla.ops.triton.utils import contiguous
 import torch
 import time
 import math
@@ -12,6 +13,7 @@ import triton
 import triton.language as tl
 import numpy as np
 import math
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 
 @triton.jit
@@ -242,6 +244,8 @@ def _bwd_kernel_dav(V, GV, A, O,
 
 class IntraCalO(torch.autograd.Function):
     @staticmethod
+    @custom_fwd
+    @contiguous
     def forward(ctx, A, v, gv, chunk_size=16):
         assert gv.dtype == torch.float32
         # assert A.dtype == torch.float32
@@ -282,8 +286,9 @@ class IntraCalO(torch.autograd.Function):
         return o
 
     @staticmethod
+    @custom_bwd
+    @contiguous
     def backward(ctx, do):
-        do = do.contiguous()
         A, v,  gv, o = ctx.saved_tensors
         BLOCK_V = ctx.BLOCK_V
         assert v.shape[-1] % BLOCK_V == 0

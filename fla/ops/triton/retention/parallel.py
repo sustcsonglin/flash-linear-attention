@@ -6,6 +6,7 @@ import triton
 import triton.language as tl
 
 from fla.ops.triton.utils import contiguous
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 
 @triton.jit
@@ -270,8 +271,8 @@ def parallel_retention_bwd_kernel(
 class ParallelRetentionFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
+    @custom_fwd
     def forward(ctx, q, k, v):
-        q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
         BTL, BTS = 128, 32
         assert BTL % BTS == 0
         BK = min(128, triton.next_power_of_2(k.shape[-1]))
@@ -297,12 +298,12 @@ class ParallelRetentionFunction(torch.autograd.Function):
             num_stages=num_stages
         )
         ctx.save_for_backward(q, k, v)
-        return o.sum(0)
+        return o.sum(0).to(q.dtype)
 
     @staticmethod
     @contiguous
+    @custom_bwd
     def backward(ctx, do):
-        do = do.contiguous()
         q, k, v = ctx.saved_tensors
         BTL, BTS = 64, 32
         assert BTL % BTS == 0
@@ -317,7 +318,7 @@ class ParallelRetentionFunction(torch.autograd.Function):
         grid = (NK * NV, triton.cdiv(seq_len, BTL), batch_size * n_heads)
         scale = d_head_qk ** -0.5
 
-        dq = torch.zeros(NV, batch_size, n_heads, seq_len,
+        dq = torch.empty(NV, batch_size, n_heads, seq_len,
                          d_head_qk, dtype=q.dtype, device=q.device)
         dk = torch.empty(NV, batch_size, n_heads, seq_len,
                          d_head_qk, dtype=q.dtype, device=q.device)
@@ -334,7 +335,7 @@ class ParallelRetentionFunction(torch.autograd.Function):
             num_stages=num_stages
         )
 
-        return dq.sum(0), dk.sum(0), dv.sum(0)
+        return dq.sum(0).to(q.dtype), dk.sum(0).to(k.dtype), dv.sum(0).to(v.dtype)
 
 
 parallel_retention = ParallelRetentionFunction.apply

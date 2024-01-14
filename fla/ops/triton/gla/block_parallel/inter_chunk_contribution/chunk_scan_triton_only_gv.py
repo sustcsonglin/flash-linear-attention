@@ -1,9 +1,11 @@
+from fla.ops.triton.utils import contiguous
 import torch
 from einops import rearrange
 import triton
 import triton.language as tl
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 
 @triton.jit
@@ -122,10 +124,9 @@ def _bwd_recurrence(
 
 class Chunk_memory_update_only_gv(torch.autograd.Function):
     @staticmethod
+    @contiguous
+    @custom_fwd
     def forward(ctx,  decay_value_last, to_add):
-        decay_value_last = decay_value_last.contiguous()
-        to_add = to_add.contiguous()
-
         B, H, N, D_k, D_v = to_add.shape
         output = torch.empty_like(to_add)
         BLOCK_MODEL = 32
@@ -154,8 +155,9 @@ class Chunk_memory_update_only_gv(torch.autograd.Function):
         return output
 
     @staticmethod
+    @contiguous
+    @custom_bwd
     def backward(ctx, DO):
-        DO = DO.contiguous()
 
         output, decay_value_last = ctx.saved_tensors
 
@@ -188,4 +190,4 @@ class Chunk_memory_update_only_gv(torch.autograd.Function):
         D_p2[:, :, 0] = 0
         D_p2[:, :, -1] = 0
 
-        return D_p2.sum(-2), output
+        return D_p2.sum(-2).to(decay_value_last.dtype), output

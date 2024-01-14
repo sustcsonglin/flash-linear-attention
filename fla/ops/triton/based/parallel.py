@@ -1,12 +1,12 @@
 
 # -*- coding: utf-8 -*-
 
-from numpy import dtype
 import torch
 import triton
 import triton.language as tl
 
 from fla.ops.triton.utils import contiguous
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 # Based: An Educational and Effective Sequence Mixer
 # https://hazyresearch.stanford.edu/blog/2023-12-11-zoology2-based
@@ -134,7 +134,6 @@ def _parallel_based_bwd_dq(
                             (s_vo_d, s_vo_t), (i_v * BV, 0), (BV, BTS), (0, 1))
     p_dz = dz + i_bh * T + i_c * BTL + tl.arange(0, BTL)
     b_dz = tl.load(p_dz, mask=(i_c * BTL + tl.arange(0, BTL)) < T)
-    
 
     for _ in range(0, i_c * BTL, BTS):
         # [BTS, BK]
@@ -236,7 +235,7 @@ def _parallel_based_bwd_dkv(
             do + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i), (BV, BTS), (0, 1))
         p_dz = dz + i_bh * T + i + tl.arange(0, BTS)
         b_q = tl.load(p_q, boundary_check=(0, 1))  # [BD, BQ]
-        b_do = tl.load(p_do, boundary_check=(0, 1)).to(b_q.dtype)  
+        b_do = tl.load(p_do, boundary_check=(0, 1)).to(b_q.dtype)
         b_dz = tl.load(p_dz, mask=(i + tl.arange(0, BTS)) < T)
         # [BK, BQ]
         m_s = o_k[:, None] <= o_q[None, :]
@@ -294,8 +293,8 @@ def parallel_based_bwd_kernel(
 class ParallelBasedFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
+    @custom_fwd
     def forward(ctx, q, k, v, scale):
-        q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
         BTL, BTS = 128, 32
         assert BTL % BTS == 0
         # assert q.shape[-1] % 16 == 0
@@ -304,8 +303,8 @@ class ParallelBasedFunction(torch.autograd.Function):
         BK, BV = max(BK, 16), max(BV, 16)
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-        num_stages = 3 if BK <= 64 else 2
-        num_warps = 4 if (BK == 128 or BV == 128) else 2
+        num_stages = 2
+        num_warps = 4
         NK = triton.cdiv(d_head_qk, BK)
         NV = triton.cdiv(d_head_v, BV)
         grid = (NK * NV, triton.cdiv(seq_len, BTL), batch_size * n_heads)
@@ -313,9 +312,9 @@ class ParallelBasedFunction(torch.autograd.Function):
         assert NK == 1, "will encounter some synchronization issue if not."
 
         o = torch.empty(NK, batch_size, n_heads, seq_len,
-                        d_head_v, dtype=torch.float32, device=q.device)
+                        d_head_v, device=q.device)
         z = torch.empty(NK, batch_size, n_heads, seq_len,
-                        dtype=torch.float32, device=q.device)
+                        device=q.device)
         parallel_based_fwd_kernel[grid](
             q, k, v, o, z,
             q.stride(1), q.stride(2), q.stride(3),
@@ -327,9 +326,10 @@ class ParallelBasedFunction(torch.autograd.Function):
         )
         ctx.save_for_backward(q, k, v)
         ctx.scale = scale
-        return o.sum(0), z.sum(0)
+        return o.sum(0).to(q.dtype), z.sum(0).to(q.dtype)
 
     @staticmethod
+    @custom_bwd
     @contiguous
     def backward(ctx, do, dz):
         q, k, v = ctx.saved_tensors
@@ -341,8 +341,8 @@ class ParallelBasedFunction(torch.autograd.Function):
         BK, BV = max(BK, 16), max(BV, 16)
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-        num_stages = 3 if BK <= 64 else 2
-        num_warps = 4 if (BK == 128 or BV == 128) else 2
+        num_stages = 2
+        num_warps = 4
         NK = triton.cdiv(d_head_qk, BK)
         NV = triton.cdiv(d_head_v, BV)
         grid = (NK * NV, triton.cdiv(seq_len, BTL), batch_size * n_heads)
@@ -366,19 +366,21 @@ class ParallelBasedFunction(torch.autograd.Function):
             num_stages=num_stages
         )
 
-        return dq.sum(0), dk.sum(0), dv.sum(0), None
+        return dq.sum(0).to(q.dtype), dk.sum(0).to(k.dtype), dv.sum(0).to(v.dtype), None
 
 
 triton_parallel_based = ParallelBasedFunction.apply
 
 
-def parallel_based(q, k, v, use_scale=True, use_normalize=True):
+def parallel_based(q, k, v, use_scale=True, use_normalize=True, return_both=False):
     assert q.shape[-1] <= 128, "only support feature dim up to 128"
     if use_scale:
         scale = q.shape[-1] ** -0.5
     else:
         scale = 1
     o, z = triton_parallel_based(q, k, v, scale)
+    if return_both:
+        return o, z
     if use_normalize:
         o = o / (z[..., None] + 1e-6)
     else:

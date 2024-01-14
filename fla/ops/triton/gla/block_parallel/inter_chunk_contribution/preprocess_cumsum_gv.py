@@ -1,3 +1,4 @@
+from fla.ops.triton.utils import contiguous
 import triton
 import triton.language as tl
 import torch
@@ -163,10 +164,9 @@ def _bwd_preprocess_cumsum_gv(
 
 class PreprocessCumSum_GV(torch.autograd.Function):
     @staticmethod
+    @contiguous
+    @torch.cuda.amp.custom_fwd
     def forward(ctx, v, gv):
-        v = v.contiguous()
-        gv = gv.contiguous()
-
         B, H, NUM_CHUNK, CHUNK_SIZE, D_v = v.shape
 
         grid = (B * H, NUM_CHUNK)
@@ -185,18 +185,11 @@ class PreprocessCumSum_GV(torch.autograd.Function):
 
         ctx.grid = grid
         ctx.save_for_backward(v, gv, gv_cumsum)
-        ctx.normalizer_gv = normalizer_gv
-        ctx.clamp_min = clamp_min
-
         return gv_cumsum, v_reduce, gv_cumsum_exp, gv_last_exp
 
     @staticmethod
+    @contiguous
     def backward(ctx, dgv_cumsum, dv_reduce, dgv_cumsum_exp, dgv_last_exp):
-
-        dgv_cumsum = dgv_cumsum.contiguous()
-        dv_reduce = dv_reduce.contiguous()
-        dgv_cumsum_exp = dgv_cumsum_exp.contiguous()
-        dgv_last_exp = dgv_last_exp.contiguous()
         v, gv, gv_cumsum = ctx.saved_tensors
         grid = ctx.grid
 
@@ -210,4 +203,4 @@ class PreprocessCumSum_GV(torch.autograd.Function):
             CHUNK_SIZE=CHUNK_SIZE, NUM_CHUNK=NUM_CHUNK, L=CHUNK_SIZE * NUM_CHUNK,
             D_MODEL_V=D_v, num_warps=8 if D_v >= 512 else 4
         )
-        return dv, dgv
+        return dv.to(v.dtype), dgv.to(gv.dtype)
