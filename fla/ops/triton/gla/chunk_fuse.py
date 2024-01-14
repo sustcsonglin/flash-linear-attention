@@ -4,17 +4,16 @@
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
 # on-the-fly computation without materializing hidden statets into HBMs
 
-import warnings
-
 import torch
 import triton
 import triton.language as tl
 from einops import rearrange
 
-try:
-    from fla.ops.cuda.gla.semiring.cal_A.fn import cuda_cal_A, cuda_cal_A_bf16
-except Exception:
-    warnings.warn('Failed to import gla semiring modules. Please check your envs for building torch extensions.')
+# try:
+    # from fla.ops.cuda.gla.semiring.cal_A.fn import cuda_cal_A, cuda_cal_A_bf16
+# except Exception:
+#     warnings.warn('Failed to import gla semiring modules. Please check your envs for building torch extensions.')
+# cuda_cal_A, cuda_cal_A_bf16 = None, None
 from fla.ops.triton.utils import contiguous
 
 inv_ln2 = 1.44269504
@@ -313,6 +312,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
     def forward(ctx, q, k, v,
                 g  # log decay rate
                 ):
+        raise NotImplementedError
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
         scale = d_head_qk ** -0.5
@@ -381,6 +381,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     def backward(ctx, do):
+        raise NotImplementedError
         q, k, v, g, A, q_exp, k_exp = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]

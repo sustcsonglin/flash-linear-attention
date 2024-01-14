@@ -30,13 +30,16 @@ class GatedLinearAttention(nn.Module):
                  layernorm_eps=1e-5,
                  gate_logit_normalizer=16,
                  gate_low_rank_dim=16,
-                 training_mode='fused_chunk',
+                 training_mode='chunk',
+                 chunk_size=128,
                  *args,
                  **kwargs):
         super().__init__()
         self.d_model = d_model
-        self.mode = training_mode 
-        assert training_mode in ['fused_chunk', 'chunk', 'fused_recurrent']
+        self.mode = training_mode
+        assert training_mode in ['chunk', 'fused_recurrent']
+        self.chunk_size = chunk_size
+
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
         self.num_heads = num_heads
@@ -67,33 +70,44 @@ class GatedLinearAttention(nn.Module):
 
     def forward(self, x):
         mode = self.mode
-        assert x.shape[-1] % 16 == 0, "only support dimension divisible by 16 for now"
-        assert x.shape[-2] % 16 == 0, "only support input length divisible by 16 for now"
+        chunk_size = self.chunk_size
+
+        seq_len = x.shape[-2]
+        if mode == 'chunk':
+            if seq_len % self.chunk_size != 0:
+                x = F.pad(x, (0, 0, 0, chunk_size - seq_len % chunk_size))
+
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         g = self.gk_proj(x)
         g = F.logsigmoid(g) / self.gate_logit_normalizer
         g = rearrange(g, 'b n (h d) -> b h n d', h=self.num_heads)
+
         if mode == 'fused_chunk':
-            o = fused_chunk_gla(q, k, v, g)
+            # TODO: fix this. fused chunk has nan issue
+            assert NotImplementedError
         elif mode == 'chunk':
             # for numumerical stable consideration
             g = torch.clamp(g, min=-3)
-            o = chunk_gla(q, k, v, g)
+            o = chunk_gla(q, k, v, gk=g, gv=None, chunk_size=chunk_size)
         elif mode == 'fused_recurrent':
             o = fused_recurrent_gla(q, k, v, g)
         else:
             raise NotImplementedError
+
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
-        return self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.gate_fn(self.g_proj(x)))
+        o = self.out_proj(rearrange(o, 'b n h d -> b n (h d)')
+                          * self.gate_fn(self.g_proj(x)))
+        return o[:, :seq_len]
 
 
 if __name__ == '__main__':
     batch = 4
-    seq_len = 1024
+    seq_len = 1023
     d_model = 1024
-    x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
+    x = torch.randn(batch, seq_len, d_model).to(
+        torch.bfloat16).cuda().requires_grad_(True)
     model = GatedLinearAttention().to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)
