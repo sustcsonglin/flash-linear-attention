@@ -25,17 +25,24 @@ def get_activation_fn(activation):
 class MultiScaleRetention(nn.Module):
     def __init__(self,
                  d_model=1024,
-                 expansion_ratio=2,
+                 expand_k=1,
+                 expand_v=2,
                  num_heads=4,
                  gate_fn="swish",
                  layernorm_eps=1e-5,
+                 training_mode='fused_chunk',
                  *args, **kwargs):
         super().__init__()
         self.d_model = d_model
-        self.value_dim = d_model * expansion_ratio
+        self.mode = training_mode 
+        assert training_mode in ['fused_chunk', 'chunk', 'fused_recurrent']
+        self.value_dim = int(d_model * expand_v)
+        self.key_dim = int(d_model * expand_k)
         self.num_heads = num_heads
-        self.head_qk_dim = self.d_model // num_heads
-        self.head_v_dim = int(self.head_qk_dim * expansion_ratio)
+        assert self.key_dim % num_heads == 0, "key dim must be divisible by num_heads"
+        assert self.value_dim % num_heads == 0, "value dim must be divisible by num_heads"
+        self.head_qk_dim = self.key_dim // num_heads
+        self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = get_activation_fn(activation=str(gate_fn))
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
@@ -54,8 +61,8 @@ class MultiScaleRetention(nn.Module):
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -1)
 
-    def forward(self, x, mode='fused_chunk'):
-        assert mode in ['fused_chunk', 'parallel', 'chunk', 'fused_recurrent']
+    def forward(self, x):
+        mode = self.mode
         q1 = rearrange(self.q_proj(x), '... (h d) -> ... h d', h=self.num_heads)
         k1 = rearrange(self.k_proj(x), '... (h d) -> ... h d', h=self.num_heads)
         q, k = self.rotary(q1, k1)

@@ -96,11 +96,14 @@ class BasedLinearAttention(nn.Module):
         feature_name: "str" = "taylor_exp",
         eps: float = 1e-12,
         causal: bool = True,
+        training_mode: "str" = "parallel",
         **kwargs
     ):
         super().__init__()
         self.d_model = d_model
         self.l_max = l_max
+        self.mode = training_mode
+        assert self.mode in ["fused_chunk", "parallel"]
 
         # linear attention
         self.feature_name = feature_name
@@ -128,8 +131,8 @@ class BasedLinearAttention(nn.Module):
         self.dropout = nn.Identity()
         self.eps = eps
 
-    def forward(self, hidden_states: torch.Tensor, mode="parallel", **kwargs):
-        assert mode in ["fused_chunk", "parallel"]
+    def forward(self, hidden_states: torch.Tensor, **kwargs):
+        mode = self.mode
         b, l, _ = hidden_states.size()
         q, k, v = self.proj_q(hidden_states), self.proj_k(
             hidden_states), self.proj_v(hidden_states)

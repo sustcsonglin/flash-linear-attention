@@ -23,19 +23,25 @@ def get_activation_fn(activation):
 class GatedLinearAttention(nn.Module):
     def __init__(self,
                  d_model=1024,
-                 expansion_ratio=0.5,
-                 num_heads=4,
+                 expand_v=2,
+                 expand_k=1,
+                 num_heads=1,
                  gate_fn="swish",
                  layernorm_eps=1e-5,
                  gate_logit_normalizer=16,
                  gate_low_rank_dim=16,
+                 training_mode='fused_chunk',
                  *args,
                  **kwargs):
         super().__init__()
         self.d_model = d_model
-        self.value_dim = d_model
-        self.key_dim = int(d_model * expansion_ratio)
+        self.mode = training_mode 
+        assert training_mode in ['fused_chunk', 'chunk', 'fused_recurrent']
+        self.value_dim = int(d_model * expand_v)
+        self.key_dim = int(d_model * expand_k)
         self.num_heads = num_heads
+        assert self.key_dim % num_heads == 0, "key dim must be divisible by num_heads"
+        assert self.value_dim % num_heads == 0, "value dim must be divisible by num_heads"
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = get_activation_fn(activation=str(gate_fn))
@@ -59,8 +65,8 @@ class GatedLinearAttention(nn.Module):
         nn.init.xavier_uniform_(self.gk_proj[0].weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.gk_proj[1].weight, gain=2 ** -2.5)
 
-    def forward(self, x, mode='chunk'):
-        assert mode in ['fused_chunk', 'chunk', 'fused_recurrent']
+    def forward(self, x):
+        mode = self.mode
         assert x.shape[-1] % 16 == 0, "only support dimension divisible by 16 for now"
         assert x.shape[-2] % 16 == 0, "only support input length divisible by 16 for now"
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
