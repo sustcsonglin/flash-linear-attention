@@ -1,7 +1,5 @@
 #include <stdio.h>
 #include <cuda_runtime.h>
-#include "ATen/ATen.h"
-typedef at::BFloat16 bf16;
 
 #define CEIL_DIV(M, N) (((M) + (N)-1) / (N))
 
@@ -72,7 +70,6 @@ void run_fwd_inner_chunk16_dim16x(int batchSize, int M, int N_K,
   dim3 blockDim(256);
   fwd_inner_chunk16_dim16x<<<gridDim, blockDim>>>(batchSize, M, N_K, Q, K, gK, QK); 
 }
-
 
 
 __global__ void bwd_inner_chunk16_dim16x(int batchSize, int M, int N_K, 

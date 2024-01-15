@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-
 from fla.modules.rmsnorm import RMSNorm
 from fla.ops.triton.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
@@ -37,7 +36,7 @@ class GatedLinearAttention(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.mode = training_mode
-        assert training_mode in ['chunk', 'fused_recurrent']
+        assert training_mode in ['chunk', 'fused_recurrent', 'fused_chunk']
         self.chunk_size = chunk_size
 
         self.value_dim = int(d_model * expand_v)
@@ -83,7 +82,9 @@ class GatedLinearAttention(nn.Module):
 
         if mode == 'fused_chunk':
             # TODO: fix this. fused chunk has nan issue
-            assert NotImplementedError
+            # assert NotImplementedError
+            o = fused_chunk_gla(q, k, v, g)
+            
         elif mode == 'chunk':
             # for numumerical stable consideration
             g = torch.clamp(g, min=-3)

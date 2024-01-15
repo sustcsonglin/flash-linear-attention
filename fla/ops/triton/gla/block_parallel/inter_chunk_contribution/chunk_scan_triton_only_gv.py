@@ -1,10 +1,10 @@
-from fla.ops.triton.utils import contiguous
 import torch
-from einops import rearrange
-import triton
-import triton.language as tl
 import torch.nn as nn
 import torch.nn.functional as F
+import triton
+import triton.language as tl
+from einops import rearrange
+from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
 
 
@@ -120,6 +120,7 @@ def _bwd_recurrence(
         p2 -= D_MODEL_V
         # Dp1 -= D_MODEL_K * NUM_SPLIT_V
         Dp2 -= D_MODEL_V * NUM_SPLIT_K
+
 
 
 class Chunk_memory_update_only_gv(torch.autograd.Function):

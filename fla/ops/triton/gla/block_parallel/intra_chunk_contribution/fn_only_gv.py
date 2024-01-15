@@ -1,18 +1,14 @@
-from fla.ops.triton.utils import contiguous
-import torch
-import time
 import math
-from typing import Tuple, Union, Optional
+import time
+from typing import Optional, Tuple, Union
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-from einops import rearrange
-
-import torch
 import triton
 import triton.language as tl
-import numpy as np
-import math
+from einops import rearrange
+from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
 
 

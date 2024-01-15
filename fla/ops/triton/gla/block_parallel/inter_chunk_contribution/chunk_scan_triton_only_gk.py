@@ -1,10 +1,10 @@
-from fla.ops.triton.utils import contiguous
 import torch
-from einops import rearrange
-import triton
-import triton.language as tl
 import torch.nn as nn
 import torch.nn.functional as F
+import triton
+import triton.language as tl
+from einops import rearrange
+from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
 
 
@@ -179,4 +179,4 @@ class Chunk_memory_update_only_gk(torch.autograd.Function):
         D_p1[:, :, 0] = 0
         D_p1[:, :, -1] = 0
 
-        return D_p1.sum(-2).to(decay_key_last).dtype, output
+        return D_p1.sum(-2).to(decay_key_last.dtype), output
