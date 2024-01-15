@@ -6,23 +6,33 @@
 import torch
 import triton
 import triton.language as tl
+import torch.nn.functional as F
+
 from einops import rearrange
-from fla.ops.triton.utils import contiguous
 from fla.ops.triton.gla.block_parallel.inter_chunk_contribution.fn import inter_chunk_onc
 from fla.ops.triton.gla.block_parallel.intra_chunk_contribution.fn import intra_chunk_onc
 
 
+def pad_and_rearrange(x, chunk_size):
+    if x.shape[-2] % chunk_size != 0:
+        x = F.pad(x, (0, 0, 0, chunk_size - x.shape[-2] % chunk_size))
+    if x.shape[-1] % 32 != 0:
+        x = F.pad(x, (0, 32 - x.shape[-1] % 32))
+    x = rearrange(x, '... (n c) d -> ... n c d', c=chunk_size)
+    return x
+
+
 def chunk_gla(q, k, v, gk=None, gv=None, chunk_size=128):
-    q = rearrange(q, 'b h (n c) d -> b h n c d',
-                  c=chunk_size).contiguous() * (q.shape[-1])**-0.5
-    k = rearrange(k, 'b h (n c) d -> b h n c d', c=chunk_size).contiguous()
-    v = rearrange(v, 'b h (n c) d -> b h n c d', c=chunk_size).contiguous()
+    scale = (q.shape[-1])**-0.5
+    seq_len = q.shape[-2]
+    output_dim = v.shape[-1]
+    q, k, v = map(lambda x: pad_and_rearrange(x, chunk_size), [q, k, v])
+    q = q * scale
     if gk is not None:
-        gk = rearrange(gk, 'b h (n c) d -> b h n c d',
-                       c=chunk_size).contiguous()
+        gk = pad_and_rearrange(gk, chunk_size)
     if gv is not None:
-        gv = rearrange(gv, 'b h (n c) d -> b h n c d',
-                       c=chunk_size).contiguous()
+        gv = pad_and_rearrange(gv, chunk_size)
     gk, gv, o1 = inter_chunk_onc(q, k, v, gk, gv)
     o2 = intra_chunk_onc(q, k, v, gk, gv)
-    return rearrange(o1+o2, 'b h n c d -> b h (n c) d')
+    o = rearrange(o1+o2, 'b h n c d -> b h (n c) d')
+    return o[:, :, :seq_len, :output_dim]

@@ -73,9 +73,6 @@ class GatedLinearAttention(nn.Module):
         chunk_size = self.chunk_size
 
         seq_len = x.shape[-2]
-        if mode == 'chunk':
-            if seq_len % self.chunk_size != 0:
-                x = F.pad(x, (0, 0, 0, chunk_size - seq_len % chunk_size))
 
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
@@ -99,7 +96,7 @@ class GatedLinearAttention(nn.Module):
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
         o = self.out_proj(rearrange(o, 'b n h d -> b n (h d)')
                           * self.gate_fn(self.g_proj(x)))
-        return o[:, :seq_len]
+        return o
 
 
 if __name__ == '__main__':

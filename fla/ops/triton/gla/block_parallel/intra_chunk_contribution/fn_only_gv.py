@@ -246,7 +246,7 @@ class IntraCalO(torch.autograd.Function):
     @staticmethod
     @custom_fwd
     @contiguous
-    def forward(ctx, A, v, gv, chunk_size=16):
+    def forward(ctx, A, v, gv):
         assert gv.dtype == torch.float32
         # assert A.dtype == torch.float32
 
@@ -282,7 +282,6 @@ class IntraCalO(torch.autograd.Function):
 
         ctx.save_for_backward(A, v, gv, o)
         ctx.grid = grid
-        ctx.chunk_size = chunk_size
         return o
 
     @staticmethod
@@ -319,4 +318,4 @@ class IntraCalO(torch.autograd.Function):
             BLOCK_DMODEL_V=ctx.BLOCK_V, num_warps=8, num_stages=4
         )
 
-        return dA.sum(0).to(A), dv.to(v), dgv.to(gv), None
+        return dA.sum(0).to(A), dv.to(v), dgv.to(gv)

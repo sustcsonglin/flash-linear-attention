@@ -319,4 +319,4 @@ class IntraCalA(torch.autograd.Function):
             BLOCK_N=BLOCK_N, BLOCK_DMODEL_QK=ctx.BLOCK_DMODEL_QK, BLOCK_M=BLOCK_M, num_warps=8 if ctx.BLOCK_DMODEL_QK == 128 else 4, num_stages=5
         )
 
-        return dq.to(q.dtype), dk.to(k.dtype), dgk.to(gk.dtype), None
+        return dq.to(q.dtype), dk.to(k.dtype), dgk.to(gk.dtype)
