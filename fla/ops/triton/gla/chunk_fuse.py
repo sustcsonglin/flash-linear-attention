@@ -4,19 +4,32 @@
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
 # on-the-fly computation without materializing hidden statets into HBMs
 
+from math import ceil
+
 import torch
+import torch.nn.functional as F
 import triton
 import triton.language as tl
 from einops import rearrange
-
-# try:
-    # from fla.ops.cuda.gla.semiring.cal_A.fn import cuda_cal_A, cuda_cal_A_bf16
-# except Exception:
-#     warnings.warn('Failed to import gla semiring modules. Please check your envs for building torch extensions.')
-# cuda_cal_A, cuda_cal_A_bf16 = None, None
+from fla.ops.cuda.gla.semiring.cal_A.fn import cuda_cal_A, cuda_cal_A_bf16
 from fla.ops.triton.utils import contiguous
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 inv_ln2 = 1.44269504
+
+
+def ceildiv(a, b):
+    return -(a // -b)
+
+
+def pad(x, chunk_size=16):
+    seq_len = x.shape[-2]
+    padded_seq_len = ceildiv(seq_len, chunk_size) * chunk_size
+    if x.shape[-2] % chunk_size != 0:
+        x = F.pad(x, (0, 0, 0, padded_seq_len - seq_len))
+    if x.shape[-1] % 32 != 0:
+        x = F.pad(x, (0, 32 - x.shape[-1] % 32))
+    return x
 
 
 @triton.jit
@@ -309,18 +322,15 @@ def _bwd_post_process_cumsum(
 class FusedChunkGLAFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
-    def forward(ctx, q, k, v,
-                g  # log decay rate
+    @custom_fwd
+    def forward(ctx, q, k, v, g, scale
                 ):
-        raise NotImplementedError
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-        scale = d_head_qk ** -0.5
 
         # inter-chunk
         BT = 16  # chunk_size
         assert seq_len % 16 == 0
-        n_chunks = seq_len // BT
 
         # preprocess cumsum.
         BK = min(d_head_qk, 32)
@@ -376,16 +386,17 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         o2 = rearrange(o2, 'b h n c d -> b h (n c) d')
         o2.add_(o.sum(0))
         ctx.save_for_backward(q, k, v, g, A, q_exp, k_exp)
-        return o2
+        ctx.scale = scale
+        return o2.to(q.dtype)
 
     @staticmethod
     @contiguous
+    @custom_bwd
     def backward(ctx, do):
-        raise NotImplementedError
         q, k, v, g, A, q_exp, k_exp = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-        scale = d_head_qk ** -0.5
+        scale = ctx.scale
 
         # inter-chunk
         BT = 16
@@ -445,7 +456,13 @@ class FusedChunkGLAFunction(torch.autograd.Function):
                                        dg2.stride(1), dg2.stride(
                                            2), dg2.stride(3),
                                        batch_size, n_heads, seq_len, BT, BK, d_head_qk, NV, num_warps=2)
-        return dq2.to(q), dk2.to(k), dv2.to(v), dg2.to(g)
+        return dq2.to(q), dk2.to(k), dv2.to(v), dg2.to(g), None
 
 
-fused_chunk_gla = FusedChunkGLAFunction.apply
+def fused_chunk_gla(q, k, v, g):
+    seq_len = v.shape[-2]
+    d_head_qk = q.shape[-1]
+    d_head_v = v.shape[-1]
+    q, k, v, g = map(lambda x: pad(x), [q, k, v, g])
+    o = FusedChunkGLAFunction.apply(q, k, v, g, d_head_qk**-0.5)
+    return o[..., :seq_len, :d_head_v]
