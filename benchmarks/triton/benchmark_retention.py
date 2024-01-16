@@ -2,15 +2,17 @@
 
 import torch
 import triton
-
-from fla.ops.triton.retention import (fused_chunk_retention, naive_retention,
-                                      parallel_retention, fused_recurrent_retention, chunk_retention)
+from fla.ops.torch.retention import naive_retention
+from fla.ops.triton.retention import (chunk_retention, fused_chunk_retention,
+                                      fused_recurrent_retention,
+                                      parallel_retention)
 
 try:
     from flash_attn import flash_attn_func
     HAS_FLASH = True
 except BaseException:
     HAS_FLASH = False
+
 
     
 
