@@ -2,8 +2,7 @@ import chunk
 
 import torch
 import torch.nn.functional as F
-from fla.ops.triton.gla.chunk import chunk_gla
-from fla.ops.triton.gla.chunk_fuse import fused_chunk_gla
+from fla.ops.triton.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
 
 def ceildiv(a, b):
@@ -73,16 +72,16 @@ if __name__ == "__main__":
     B = 4
     H = 4
     L = 512
-    D = 256
-    dtype = torch.bfloat16
+    D = 128
+    dtype = torch.float32
     q = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(True)
     k = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(True)
     v = torch.randn(B, H, L, D).cuda().to(dtype).requires_grad_(True)
     g = F.logsigmoid(torch.rand(B, H, L, D)).cuda(
-    ).clamp_min(-1).to(dtype).requires_grad_(True)
+    ).clamp_min(-1).to(torch.float32).requires_grad_(True)
 
     do = torch.randn_like(v).cuda() 
-    ref = naive_chunk_gla(q, k, v, g, stop_grad=False)
+    ref = fused_recurrent_gla(q, k, v, g)
     ref.backward(do, retain_graph=True)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
@@ -101,5 +100,5 @@ if __name__ == "__main__":
     assert ref_dk.allclose(tri_dk, 0, 1e-5), breakpoint()
     assert ref_dv.allclose(tri_dv, 0, 1e-5), breakpoint()
     assert ref_dg.allclose(tri_dg, 0, 1e-4), breakpoint()
-
+    breakpoint()
     print("Pass")

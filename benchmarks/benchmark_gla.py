@@ -54,10 +54,9 @@ for causal in causal_vals:
 
             q = torch.randn(batch_size, nheads, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
             k = torch.randn(batch_size, nheads, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-            g = F.logsigmoid(torch.randn(batch_size, nheads, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)).clamp_min(-5).requires_grad_(True)
+            g = F.logsigmoid(torch.randn(batch_size, nheads, seqlen, headdim, device=device, requires_grad=True)).clamp_min(-5).requires_grad_(True)
             v = torch.randn(batch_size, nheads, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
             
-        
             fb = time_fwd_bwd(
                fused_chunk_gla, q, k, v, g, verbose=False
             )

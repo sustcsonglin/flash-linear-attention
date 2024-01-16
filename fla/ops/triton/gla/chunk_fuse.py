@@ -4,14 +4,12 @@
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
 # on-the-fly computation without materializing hidden statets into HBMs
 
-from math import ceil
-
 import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
 from einops import rearrange
-from fla.ops.cuda.gla.semiring.cal_A.fn import cuda_cal_A, cuda_cal_A_bf16
+from fla.ops.cuda.gla.semiring.cal_A.fn import semiring_cal_A
 from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
 
@@ -345,16 +343,10 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         )
 
         # main func
-        if batch_size * n_heads > 100:
-            BK, BV = min(d_head_qk, 64), min(d_head_v, 64)
-            num_stages = 1
-            num_warps = 2
-        else:
-            # SM is not fully utilized so we add more parallelism in the hidden state dimension.
-            BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
-            num_stages = 1
-            num_warps = 1
-
+        # if batch_size * n_heads > 100:
+        BK, BV = min(d_head_qk, 128), min(d_head_v, 128)
+        num_stages = 1
+        num_warps = 4 if d_head_qk >= 128 else 2
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
 
@@ -377,11 +369,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         k2 = rearrange(k, 'b h (n c) d -> b h n c d', n=num_chunk)
         v2 = rearrange(v, 'b h (n c) d -> b h n c d', n=num_chunk)
         g2 = rearrange(g, 'b h (n c) d -> b h n c d', n=num_chunk)
-        if q.dtype == torch.bfloat16:
-            A = cuda_cal_A_bf16.forward(q2, k2, g2) * scale
-        else:
-            A = (cuda_cal_A.forward(q2.float(), k2.float(),
-                 g2.float()) * scale).to(v2.dtype)
+        A = semiring_cal_A.forward(q2, k2, g2) * scale
         o2 = A @ v2
         o2 = rearrange(o2, 'b h n c d -> b h (n c) d')
         o2.add_(o.sum(0))
@@ -400,14 +388,13 @@ class FusedChunkGLAFunction(torch.autograd.Function):
 
         # inter-chunk
         BT = 16
-        if batch_size * n_heads > 100:
-            BK, BV = min(d_head_qk, 64), min(d_head_v, 64)
-            num_stages = 1
-            num_warps = 4
-        else:
-            BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
-            num_stages = 1
-            num_warps = 2
+        BK, BV = min(d_head_qk, 64), min(d_head_v, 64)
+        num_stages = 1
+        num_warps = 4 if d_head_qk >= 128 else 2
+        # else:
+        #     BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
+        #     num_stages = 1
+        #     num_warps = 2
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
 
         dq = torch.empty(NV, batch_size, n_heads,  seq_len,
@@ -438,11 +425,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         do2 = rearrange(do, 'b h (n c) d -> b h n c d', n=num_chunk)
         dA2 = (do2 @ v2.transpose(-2, -1)) * scale
         dv2 = A.transpose(-1, -2) @ do2
-        if q.dtype == torch.bfloat16:
-            dq2, dk2, dg2 = cuda_cal_A_bf16.backward(q2, k2, g2, dA2)
-        else:
-            dq2, dk2, dg2 = cuda_cal_A.backward(
-                q2.float(), k2.float(), g2.float(), dA2.float())
+        dq2, dk2, dg2 = semiring_cal_A.backward(q2, k2, g2, dA2)
         dq2 = rearrange(dq2, '... h n c d -> ... h (n c) d').contiguous()
         dk2 = rearrange(dk2, '... h n c d -> ... h (n c) d').contiguous()
         dv2 = rearrange(dv2, '... h n c d -> ... h (n c) d').contiguous()

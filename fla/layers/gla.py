@@ -29,8 +29,8 @@ class GatedLinearAttention(nn.Module):
                  layernorm_eps=1e-5,
                  gate_logit_normalizer=16,
                  gate_low_rank_dim=16,
-                 training_mode='chunk',
-                 chunk_size=128,
+                 training_mode='fused_chunk',
+                 chunk_size=64,  ##only need for chunk mode. fused_chunk mode will ignore this parameter and always use 16.
                  *args,
                  **kwargs):
         super().__init__()
@@ -76,18 +76,16 @@ class GatedLinearAttention(nn.Module):
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
-        g = self.gk_proj(x)
+        g = self.gk_proj(x).to(torch.float32)
         g = F.logsigmoid(g) / self.gate_logit_normalizer
         g = rearrange(g, 'b n (h d) -> b h n d', h=self.num_heads)
 
         if mode == 'fused_chunk':
-            # TODO: fix this. fused chunk has nan issue
-            # assert NotImplementedError
             o = fused_chunk_gla(q, k, v, g)
             
         elif mode == 'chunk':
-            # for numumerical stable consideration
-            g = torch.clamp(g, min=-3)
+            # for numumerical stable consideration. fused_chunk has better numerical stability
+            g.clamp_min_(-3)
             o = chunk_gla(q, k, v, gk=g, gv=None, chunk_size=chunk_size)
         elif mode == 'fused_recurrent':
             o = fused_recurrent_gla(q, k, v, g)
