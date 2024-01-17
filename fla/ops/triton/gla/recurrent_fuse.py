@@ -222,7 +222,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
         o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
 
-        if output_final_state is not None:
+        if output_final_state:
             final_state = q.new_empty(batch_size, n_heads, d_head_qk, d_head_v)
         else:
             final_state = None
@@ -288,7 +288,9 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
 
 # if scale is None, use d_head_qk ** -0.5 by default. Otherwise specify the scale yourself. e.g. scale = 1.0
-def fused_recurrent_gla(q, k, v, g, scale=None, initial_state=None, output_final_state=False):
+def fused_recurrent_gla(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, scale: int = -1, initial_state: torch.Tensor = None, output_final_state: bool = False):
+    if scale == -1:
+        scale = q.shape[-1] ** -0.5
     if initial_state is not None:
         initial_state = initial_state.detach()
     o, final_state = FusedRecurrentGLAFunction.apply(

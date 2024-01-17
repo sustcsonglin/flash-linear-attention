@@ -474,15 +474,14 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         return dq2.to(q), dk2.to(k), dv2.to(v), dg2.to(g), None, None, None
 
 
-def fused_chunk_gla(q, k, v, g, scale=None, initial_state=None, output_final_state=None):
+def fused_chunk_gla(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, scale: int = -1, initial_state: torch.Tensor = None, output_final_state: bool = False):
+    if scale == -1:
+        scale = q.shape[-1] ** -0.5
     if initial_state is not None:
         initial_state = initial_state.detach()
     seq_len = v.shape[-2]
-    d_head_qk = q.shape[-1]
     d_head_v = v.shape[-1]
     q, k, v, g = map(lambda x: pad(x), [q, k, v, g])
-    if scale is None:
-        scale = d_head_qk**-0.5
     o, final_state = FusedChunkGLAFunction.apply(
         q, k, v, g, scale, initial_state, output_final_state)
     o = o[..., :seq_len, :d_head_v]
