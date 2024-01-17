@@ -1,5 +1,5 @@
 # flash-linear-attention
-This repo contains fast Triton-based implementation (maybe CUTLASS/CUTE in the future) of **causal linear attention (i.e., RNNs with 2D hidden states)**, with a specific focus on modern decoder-only language models. Join [discord](https://discord.gg/2RCJhZRu) if you are interested in this project!  
+This repo contains fast Triton-based implementation (maybe CUTLASS/CUTE in the future) of **causal linear attention (i.e., RNNs with 2D hidden states)**, with a specific focus on modern decoder-only language models. Join [discord](https://discord.gg/vDaJTmKNcS) if you are interested in this project!  
 
 # Models
 Order by my expected implementation time. If you are not using the Triton nightly release version, please avoid using the FusedChunk implementation (see [issue](https://github.com/openai/triton/issues/2852))
