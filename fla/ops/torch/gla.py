@@ -8,6 +8,7 @@ from fla.ops.triton.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 def ceildiv(a, b):
     return -(a // -b)
 
+
 def naive_loop(q, k, v, gk, stop_grad=False):
     orig_dtype = q.dtype
     q, k, v, gk = map(lambda x: x.float(), (q, k, v, gk))
@@ -26,7 +27,7 @@ def naive_loop(q, k, v, gk, stop_grad=False):
         kv_i = k_i[..., None] * v_i[..., None, :]
         h = h * gk_i[..., None] + kv_i
         o_i = (q_i[..., None] * h).sum(-2)
-        o[:, :, i] =  o_i 
+        o[:, :, i] = o_i
 
     return o.to(orig_dtype)
 
@@ -68,6 +69,7 @@ def naive_chunk_gla(q, k, v, gk, stop_grad=False):
 
     return o.to(orig_dtype)
 
+
 if __name__ == "__main__":
     B = 4
     H = 4
@@ -80,15 +82,19 @@ if __name__ == "__main__":
     g = F.logsigmoid(torch.rand(B, H, L, D)).cuda(
     ).clamp_min(-1).to(torch.float32).requires_grad_(True)
 
-    do = torch.randn_like(v).cuda() 
-    ref = fused_recurrent_gla(q, k, v, g)
+    do = torch.randn_like(v).cuda()
+    intial_state = torch.randn(B, H, D, D).cuda()
+
+    ref, ref_state = fused_recurrent_gla(
+        q, k, v, g, scale=1, intial_state=intial_state, output_final_state=True)
     ref.backward(do, retain_graph=True)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
     ref_dv, v.grad = v.grad.clone(), None
-    ref_dg, g.grad = g.grad.clone(), None 
+    ref_dg, g.grad = g.grad.clone(), None
 
-    tri = fused_chunk_gla(q, k, v, g)
+    tri, tri_state = fused_chunk_gla(
+        q, k, v, g, scale=1, initial_state=intial_state, output_final_state=True)
     tri.backward(do, retain_graph=True)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None

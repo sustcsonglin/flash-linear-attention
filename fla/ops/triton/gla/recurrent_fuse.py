@@ -4,9 +4,9 @@
 import torch
 import triton
 import triton.language as tl
-
 from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
 # on-the-fly computation without materializing hidden statets into HBMs
 
 
@@ -18,6 +18,9 @@ def fused_recurrent_gla_fwd_kernel(
     v,  # value [B, H, L, D_head_V]
     g,  # log gate [B, H, L, D_head_K]
     o,  # output [B, H, L, D_head_V]
+    # initial hidden state initialization [B, H, D_head_K, D_head_V]
+    initial_state,
+    final_state,  # final hidden state [B, H, D_head_K, D_head_V]
 
     s_qk_h,  # stride size: L * D_head_K
     s_qk_t,  # stride size: D_head_K
@@ -35,6 +38,8 @@ def fused_recurrent_gla_fwd_kernel(
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     DK: tl.constexpr,  # D_head_K
     DV: tl.constexpr,  # D_head_V
+    USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
+    STORE_FINAL_STATE: tl.constexpr,  # whether to store final state
 ):
     # indices
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -50,6 +55,14 @@ def fused_recurrent_gla_fwd_kernel(
     mask_bv = (i_v * BV + tl.arange(0, BV)) < DV
 
     h = tl.zeros([BV, BK], dtype=tl.float32)
+
+    mask_kv = mask_bk[None, :] & mask_bv[:, None]
+
+    if USE_INITIAL_STATE is not None:
+        p_init_s = initial_state + i_bh * DK * DV + \
+            (i_k * BK + tl.arange(0, BK)[None, :]) * \
+            DV + (i_v * BV + tl.arange(0, BV)[:, None])
+        h += tl.load(p_init_s, mask=mask_kv, other=0).to(tl.float32)
 
     for _ in range(0, T):
         _k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
@@ -69,6 +82,12 @@ def fused_recurrent_gla_fwd_kernel(
         p_v += DV
         p_g += DK
 
+    if STORE_FINAL_STATE:
+        p_final_s = final_state + i_bh * DK * DV + \
+            (i_k * BK + tl.arange(0, BK)[None, :]) * \
+            DV + (i_v * BV + tl.arange(0, BV)[:, None])
+        tl.store(p_final_s, h.to(p_final_s.dtype.element_ty), mask=mask_kv)
+
 
 # Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
 @triton.jit
@@ -84,6 +103,9 @@ def fused_recurrent_gla_bwd_kernel(
     dq,  # gradient of query [NV, B, H, L, D_head_K]
     dk,  # gradient of key [NV, B, H, L, D_head_K]
     dv,  # gradient of value [NK, B, H, L, D_head_V]
+
+    # initial hidden state initialization [B, H, D_head_K, D_head_V]
+    intiial_state,
 
     s_qk_h,  # stride size: L * D_head_K
     s_qk_t,  # stride size: D_head_K
@@ -101,6 +123,7 @@ def fused_recurrent_gla_bwd_kernel(
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     DK: tl.constexpr,  # D_head_K
     DV: tl.constexpr,  # D_head_V
+    USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
@@ -114,8 +137,15 @@ def fused_recurrent_gla_bwd_kernel(
     p_dq = dq + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK)
     mask_bk = i_k * BK + tl.arange(0, BK) < DK
     mask_bv = i_v * BV + tl.arange(0, BV) < DV
+    mask_kv = mask_bk[:, None] & mask_bv[None, :]
 
     h = tl.zeros([BK, BV], dtype=tl.float32)
+
+    if USE_INITIAL_STATE:
+        p_init_s = intiial_state + i_bh * DK * DV + \
+            (i_k * BK + tl.arange(0, BK)[:, None]) * \
+            DV + (i_v * BV + tl.arange(0, BV)[None, :])
+        h += tl.load(p_init_s, mask=mask_kv, other=0).to(tl.float32)
 
     for i in range(0, T):
         _k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
@@ -178,11 +208,13 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @custom_fwd
-    def forward(ctx, q, k, v, g):
+    def forward(ctx, q, k, v, g, scale=None, initial_state=None, output_final_state=False):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
+        # default scale
+        if scale is None:
+            scale = d_head_qk ** -0.5
 
-        scale = d_head_qk ** -0.5
         BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         num_stages = 1
@@ -190,29 +222,41 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
         o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
 
+        if output_final_state is not None:
+            final_state = q.new_empty(batch_size, n_heads, d_head_qk, d_head_v)
+        else:
+            final_state = None
+
         grid = (NV, NK, batch_size * n_heads)
         fused_recurrent_gla_fwd_kernel[grid](
-            q, k, v, g, o,
+            q, k, v, g, o, initial_state, final_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             batch_size, n_heads, seq_len, scale,
             DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
+            USE_INITIAL_STATE=initial_state is not None,
+            STORE_FINAL_STATE=final_state is not None,
             num_warps=num_warps,
             num_stages=num_stages
         )
 
         o = o.sum(0)
-        ctx.save_for_backward(q, k, v, g)
-        return o.to(q.dtype)
+        ctx.save_for_backward(q, k, v, g, initial_state, final_state)
+        ctx.scale = scale
+        # we do not need the gradient of the final state from the next chunk
+        # similiar to Trunctated BPTT
+        if final_state is not None:
+            final_state = final_state.detach()
+        return o.to(q.dtype), final_state
 
     @staticmethod
     @contiguous
     @custom_bwd
-    def backward(ctx, do):
-        q, k, v, g = ctx.saved_tensors
+    def backward(ctx, do, d_final_state=None):
+        q, k, v, g, initial_state, final_state = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-        scale = d_head_qk ** -0.5
+        scale = ctx.scale
 
         BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
@@ -225,13 +269,14 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         grid = (NV, NK, batch_size * n_heads)
 
         fused_recurrent_gla_bwd_kernel[grid](
-            q, k, v, g, do, dq, dk, dv,
+            q, k, v, g, do, dq, dk, dv, initial_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             batch_size, n_heads, seq_len, scale,
             DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
             num_warps=num_warps,
-            num_stages=num_stages
+            num_stages=num_stages,
+            USE_INITIAL_STATE=initial_state is not None,
         )
         dq = dq.sum(0)
         dk = dk.sum(0)
@@ -239,7 +284,15 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         _dg = dq * q - dk * k
         _dg_cumsum = _dg.cumsum(-2)
         dg = _dg + _dg_cumsum[:, :, -1, None] - _dg_cumsum
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype)
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, None, None
 
 
-fused_recurrent_gla = FusedRecurrentGLAFunction.apply
+# if scale is None, use d_head_qk ** -0.5 by default. Otherwise specify the scale yourself. e.g. scale = 1.0
+def fused_recurrent_gla(q, k, v, g, scale=None, intial_state=None, output_final_state=False):
+    if intial_state is not None:
+        intial_state = intial_state.detach()
+    o, final_state = FusedRecurrentGLAFunction.apply(
+        q, k, v, g, scale, intial_state, output_final_state)
+    if output_final_state:
+        return o, final_state
+    return o
