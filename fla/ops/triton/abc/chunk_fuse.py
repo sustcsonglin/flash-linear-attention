@@ -37,7 +37,7 @@ def chunk_abc_fwd_kernel_s(
 
     p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
     p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
-    p_s = tl.make_block_ptr(s + (i_k * n_bh + i_bh) * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
+    p_s = tl.make_block_ptr(s + (i_k * n_bh + i_bh)*s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
     p_rk = tl.make_block_ptr(rk + i_bh * s_sk_t * NT, (NT * DM,), (s_sk_m,), (i_m * BM,), (BM,), (0,))
     p_ck = tl.make_block_ptr(ck + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
     p_pk = tl.make_block_ptr(pk + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
@@ -103,7 +103,7 @@ def chunk_abc_fwd_kernel_o(
 
     p_p = tl.make_block_ptr(p + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
     p_v = tl.make_block_ptr(v + i_bh * s_qk_h, (T, DV), (s_qk_t, s_qk_d), (0, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o + (i_m * n_bh + i_bh) * s_qk_h, (T, DV), (s_qk_t, s_qk_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + (i_m * n_bh + i_bh)*s_qk_h, (T, DV), (s_qk_t, s_qk_d), (0, i_v * BV), (BT, BV), (1, 0))
     p_rv = tl.make_block_ptr(rv + i_bh * s_sk_t * NT, (NT * DM,), (s_sk_m,), (i_m * BM,), (BM,), (0,))
     p_cv = tl.make_block_ptr(cv + i_bh * s_sk_h, (DM, T), (s_sk_m, s_sk_t), (i_m * BM, 0), (BM, BT), (0, 1))
     p_pv = tl.make_block_ptr(pv + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
@@ -175,7 +175,7 @@ def chunk_abc_bwd_kernel_dp(
     p_cv = tl.make_block_ptr(cv + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
     p_pv = tl.make_block_ptr(pv + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
     p_do = tl.make_block_ptr(do + i_bh * s_qk_h, (T, DV), (s_qk_t, s_qk_d), (0, i_v * BV), (BT, BV), (1, 0))
-    p_dp = tl.make_block_ptr(dp + (i_v * n_bh + i_bh) * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
+    p_dp = tl.make_block_ptr(dp + (i_v * n_bh + i_bh)*s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
 
     o_i = tl.arange(0, BT)
     # [BT, BT]
@@ -196,8 +196,7 @@ def chunk_abc_bwd_kernel_dp(
 
         # [BT, BM]
         b_inter = tl.dot(b_do, b_hv.to(b_do.dtype), allow_tf32=False) * b_rv[None, :]
-        b_intra = tl.where(m_s, tl.dot(b_do, b_v, allow_tf32=False), 0).to(b_v.dtype)
-        b_intra = tl.dot(b_intra, b_cv, allow_tf32=False)
+        b_intra = tl.dot(tl.where(m_s, tl.dot(b_do, b_v, allow_tf32=False), 0).to(b_v.dtype), b_cv, allow_tf32=False)
         b_dp = (b_inter + b_intra) * b_pv
         # [BV, BM]
         b_hv = b_hv * b_rv[None, :] + tl.dot(b_v, b_cv, allow_tf32=False)
@@ -239,7 +238,7 @@ def chunk_abc_bwd_kernel_dq(
     p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
     p_rk = tl.make_block_ptr(rk + i_bh * s_sk_t * NT, (NT * DM,), (s_sk_m,), (i_m * BM,), (BM,), (0,))
     p_ck = tl.make_block_ptr(ck + i_bh * s_sk_h, (DM, T), (s_sk_m, s_sk_t), (i_m * BM, 0), (BM, BT), (0, 1))
-    p_dq = tl.make_block_ptr(dq + (i_m * n_bh + i_bh) * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
+    p_dq = tl.make_block_ptr(dq + (i_m * n_bh + i_bh)*s_qk_h, (T, DK), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
     p_ds = tl.make_block_ptr(ds + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (0, i_m * BM), (BT, BM), (1, 0))
 
     o_i = tl.arange(0, BT)
@@ -260,8 +259,7 @@ def chunk_abc_bwd_kernel_dq(
 
         # [BT, BK]
         b_inter = tl.dot((b_ds * b_rk[None, :]).to(b_k.dtype), b_hk.to(b_k.dtype), allow_tf32=False)
-        b_intra = tl.where(m_s, tl.dot(b_ds.to(b_k.dtype), b_ck, allow_tf32=False), 0)
-        b_intra = tl.dot(b_intra.to(b_k.dtype), b_k, allow_tf32=False)
+        b_intra = tl.dot(tl.where(m_s, tl.dot(b_ds, b_ck, allow_tf32=False), 0).to(b_k.dtype), b_k, allow_tf32=False)
         b_dq = b_inter + b_intra
         # [BM, BK]
         b_hk = b_hk * b_rk[:, None] + tl.dot(b_ck, b_k, allow_tf32=False)
@@ -301,13 +299,13 @@ def chunk_abc_bwd_kernel_dk(
     i_k, i_m, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     n_bh = tl.num_programs(2)
 
-    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - BT, i_k * BK), (BT, BK), (1, 0))
-    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - BT), (BK, BT), (0, 1))
+    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), ((NT-1)*BT, i_k * BK), (BT, BK), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, (NT-1)*BT), (BK, BT), (0, 1))
     p_rk = tl.make_block_ptr(rk + i_bh * s_sk_t * NT, (NT * DM,), (s_sk_m,), (i_m * BM,), (BM,), (0,))
-    p_ck = tl.make_block_ptr(ck + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (T - BT, i_m * BM), (BT, BM), (1, 0))
-    p_ds = tl.make_block_ptr(ds + i_bh * s_sk_h, (DM, T), (s_sk_m, s_sk_t), (i_m * BM, T - BT), (BM, BT), (0, 1))
-    p_dk = tl.make_block_ptr(dk + (i_m*n_bh+i_bh) * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - BT, i_k * BK), (BT, BK), (1, 0))
-    p_dsk = tl.make_block_ptr(dsk + (i_k*n_bh+i_bh) * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (T - BT, i_m * BM), (BT, BM), (1, 0))
+    p_ck = tl.make_block_ptr(ck + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), ((NT-1)*BT, i_m * BM), (BT, BM), (1, 0))
+    p_ds = tl.make_block_ptr(ds + i_bh * s_sk_h, (DM, T), (s_sk_m, s_sk_t), (i_m * BM, (NT-1)*BT), (BM, BT), (0, 1))
+    p_dk = tl.make_block_ptr(dk + (i_m*n_bh+i_bh)*s_qk_h, (T, DK), (s_qk_t, s_qk_d), ((NT-1)*BT, i_k * BK), (BT, BK), (1, 0))
+    p_dsk = tl.make_block_ptr(dsk + (i_k*n_bh+i_bh)*s_sk_h, (T, DM), (s_sk_t, s_sk_m), ((NT-1)*BT, i_m * BM), (BT, BM), (1, 0))
 
     o_i = tl.arange(0, BT)
     # [BT, BT]
@@ -317,7 +315,6 @@ def chunk_abc_bwd_kernel_dk(
     b_dhk = tl.zeros([BM, BK], dtype=tl.float32)
     for i in range(NT):
         p_rk = tl.make_block_ptr(rk + i_bh * s_sk_t * NT, (NT * DM,), (s_sk_m,), (((NT-i) % NT) * DM + i_m * BM,), (BM,), (0,))
-
         # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         # [BK, BT]
@@ -379,13 +376,13 @@ def chunk_abc_bwd_kernel_dv(
     i_v, i_m, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     n_bh = tl.num_programs(2)
 
-    p_do = tl.make_block_ptr(do + i_bh * s_qk_h, (T, DV), (s_qk_t, s_qk_d), (T - BT, i_v * BV), (BT, BV), (1, 0))
-    p_v = tl.make_block_ptr(v + i_bh * s_qk_h, (DV, T), (s_qk_d, s_qk_t), (i_v * BV, T - BT), (BV, BT), (0, 1))
+    p_do = tl.make_block_ptr(do + i_bh * s_qk_h, (T, DV), (s_qk_t, s_qk_d), ((NT-1)*BT, i_v * BV), (BT, BV), (1, 0))
+    p_v = tl.make_block_ptr(v + i_bh * s_qk_h, (DV, T), (s_qk_d, s_qk_t), (i_v * BV, (NT-1)*BT), (BV, BT), (0, 1))
     p_rv = tl.make_block_ptr(rv + i_bh * s_sk_t * NT, (NT * DM,), (s_sk_m,), (i_m * BM,), (BM,), (0,))
-    p_cv = tl.make_block_ptr(cv + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (T - BT, i_m * BM), (BT, BM), (1, 0))
-    p_p = tl.make_block_ptr(p + i_bh * s_sk_h, (DM, T), (s_sk_m, s_sk_t), (i_m * BM, T - BT), (BM, BT), (0, 1))
-    p_dv = tl.make_block_ptr(dv + (i_m*n_bh+i_bh) * s_qk_h, (T, DV), (s_qk_t, s_qk_d), (T - BT, i_v * BV), (BT, BV), (1, 0))
-    p_dsv = tl.make_block_ptr(dsv + (i_v*n_bh+i_bh) * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (T - BT, i_m * BM), (BT, BM), (1, 0))
+    p_cv = tl.make_block_ptr(cv + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), ((NT-1)*BT, i_m * BM), (BT, BM), (1, 0))
+    p_p = tl.make_block_ptr(p + i_bh * s_sk_h, (DM, T), (s_sk_m, s_sk_t), (i_m * BM, (NT-1)*BT), (BM, BT), (0, 1))
+    p_dv = tl.make_block_ptr(dv + (i_m*n_bh+i_bh)*s_qk_h, (T, DV), (s_qk_t, s_qk_d), ((NT-1)*BT, i_v * BV), (BT, BV), (1, 0))
+    p_dsv = tl.make_block_ptr(dsv + (i_v*n_bh+i_bh)*s_sk_h, (T, DM), (s_sk_t, s_sk_m), ((NT-1)*BT, i_m * BM), (BT, BM), (1, 0))
 
     o_i = tl.arange(0, BT)
     # [BT, BT]
@@ -395,7 +392,6 @@ def chunk_abc_bwd_kernel_dv(
     b_dhv = tl.zeros([BM, BV], dtype=tl.float32)
     for i in range(NT):
         p_rv = tl.make_block_ptr(rv + i_bh * s_sk_t * NT, (NT * DM,), (s_sk_m,), (((NT-i) % NT) * DM + i_m * BM,), (BM,), (0,))
-
         # [BT, BV]
         b_do = tl.load(p_do, boundary_check=(0, 1))
         # [BV, BT]
@@ -497,9 +493,9 @@ def chunk_abc_bwd_kernel_rcum(
     NT: tl.constexpr
 ):
     i_m, i_bh = tl.program_id(0), tl.program_id(1)
-    p_s = tl.make_block_ptr(s + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (T - BT, i_m * BM), (BT, BM), (1, 0))
-    p_c = tl.make_block_ptr(c + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (T - BT, i_m * BM), (BT, BM), (1, 0))
-    p_o = tl.make_block_ptr(o + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), (T - BT, i_m * BM), (BT, BM), (1, 0))
+    p_s = tl.make_block_ptr(s + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), ((NT-1)*BT, i_m * BM), (BT, BM), (1, 0))
+    p_c = tl.make_block_ptr(c + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), ((NT-1)*BT, i_m * BM), (BT, BM), (1, 0))
+    p_o = tl.make_block_ptr(o + i_bh * s_sk_h, (T, DM), (s_sk_t, s_sk_m), ((NT-1)*BT, i_m * BM), (BT, BM), (1, 0))
 
     o_i = tl.arange(0, BT)
     # [BT, BT]
