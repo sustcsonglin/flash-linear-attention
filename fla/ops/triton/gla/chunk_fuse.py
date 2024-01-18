@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 # Copyright (c) 2023, Songlin Yang
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
 # on-the-fly computation without materializing hidden statets into HBMs
@@ -8,9 +9,10 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 from einops import rearrange
-from fla.ops.cuda.gla.semiring.cal_A.fn import semiring_cal_A
-from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.cuda.gla.semiring.cal_A.fn import semiring_cal_A
+from fla.ops.triton.utils import contiguous, require_version
 
 inv_ln2 = 1.44269504
 
@@ -48,17 +50,12 @@ def fused_chunk_gla_fwd_kernel(
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
 
     # make block pointers
-    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK),
-                            (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
-    p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK),
-                            (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
+    p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
     p_db = g + i_bh * s_qk_h + (BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
-    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T),
-                            (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
-    p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV),
-                            (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o + (i_bh + i_k * B * H) * s_vo_h,
-                            (T, DV), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
+    p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + (i_bh + i_k * B * H) * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
 
     for i in range(0, tl.cdiv(T, BT)):
         # [BK, BT]
@@ -123,18 +120,12 @@ def fused_chunk_gla_bwd_kernel(
     b_h = tl.zeros([BV, BK], dtype=tl.float32)
 
     for i in range(0, tl.cdiv(T, BT)):
-        p_k = tl.make_block_ptr(
-            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(
-            g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_db = g + i_bh * s_qk_h + \
-            ((i+1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
-        p_v = tl.make_block_ptr(
-            v + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
-        p_do = tl.make_block_ptr(
-            do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dq = tl.make_block_ptr(dq + (i_bh + i_v * B * H) * s_qk_h,
-                                 (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_db = g + i_bh * s_qk_h + ((i+1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
+        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
+        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dq = tl.make_block_ptr(dq + (i_bh+i_v*B*H)*s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
         b_dq = tl.zeros([BT, BK], dtype=tl.float32)
         # [BT, DK]
         b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -145,8 +136,7 @@ def fused_chunk_gla_bwd_kernel(
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BT, DV]
         b_do = tl.load(p_do, boundary_check=(0, 1))
-        b_dq += tl.dot(b_do, b_h.to(b_do.dtype),
-                       allow_tf32=False)
+        b_dq += tl.dot(b_do, b_h.to(b_do.dtype), allow_tf32=False)
         # [DV, DK]
         b_k *= tl.math.exp2(d_b[None, :] - b_g)
         b_h *= tl.math.exp2(d_b)[None, :]
@@ -162,18 +152,12 @@ def fused_chunk_gla_bwd_kernel(
 
     # cum = tl.zeros([BK], dtype=tl.float32)
     for i in range(1, tl.cdiv(T, BT) + 1):
-        p_q = tl.make_block_ptr(
-            q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
-        p_k = tl.make_block_ptr(
-            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(
-            g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_db = g + i_bh * s_qk_h + \
-            (T - (i-1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
-        p_v = tl.make_block_ptr(
-            v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_do = tl.make_block_ptr(
-            do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
+        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_db = g + i_bh * s_qk_h + (T - (i-1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
+        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
         p_dk = tl.make_block_ptr(dk + (i_bh + i_v * B * H) * s_qk_h, (T, DK),
                                  (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
         # p_dg = tl.make_block_ptr(dg + (i_bh + i_v * B * H) * s_qk_h, (T, DK),
@@ -194,10 +178,8 @@ def fused_chunk_gla_bwd_kernel(
         g_k = tl.math.exp2(b_db[None, :] - b_g)
         b_k *= g_k
         b_q *= tl.math.exp2(tl.trans(b_g))
-        b_dk = tl.trans(tl.dot(b_dh.to(b_v.dtype), tl.trans(b_v),
-                               allow_tf32=False)) * scale * g_k
-        b_dv = tl.dot((b_k).to(b_v.dtype),
-                      b_dh.to(b_v.dtype), allow_tf32=False) * scale
+        b_dk = tl.trans(tl.dot(b_dh.to(b_v.dtype), tl.trans(b_v), allow_tf32=False)) * scale * g_k
+        b_dv = tl.dot((b_k).to(b_v.dtype), b_dh.to(b_v.dtype), allow_tf32=False) * scale
 
         # [DK, DV]
         b_dh *= tl.math.exp2(b_db)[:, None]
@@ -208,12 +190,12 @@ def fused_chunk_gla_bwd_kernel(
 
 
 class FusedChunkGLAFunction(torch.autograd.Function):
+
     @staticmethod
     @contiguous
     @custom_fwd
-    def forward(ctx, q, k, v,
-                g  # log decay rate
-                ):
+    @require_version('triton>=2.2', 'Numerical stability consideration!')
+    def forward(ctx, q, k, v, g):
         ctx.g_dtype = g.dtype
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
@@ -283,12 +265,9 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         num_stages = 1
         num_warps = 2
 
-        dq = torch.empty(NV, batch_size, n_heads,  seq_len,
-                         d_head_qk, dtype=q.dtype, device=q.device)
-        dk = torch.empty(NV, batch_size, n_heads,  seq_len,
-                         d_head_qk, dtype=q.dtype, device=q.device)
-        dv = torch.empty(NK, batch_size, n_heads,  seq_len,
-                         d_head_v, dtype=q.dtype, device=q.device)
+        dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
+        dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
+        dv = q.new_empty(NK, batch_size, n_heads,  seq_len, d_head_v)
 
         grid = (NV, NK, batch_size * n_heads)
         fused_chunk_gla_bwd_kernel[grid](
