@@ -39,7 +39,7 @@ git submodule add https://github.com/sustcsonglin/flash-linear-attention.git 3rd
 ln -s 3rdparty/flash-linear-attention/fla fla
 ```
 ### Caveats on numerical stability!!
-If you are not using the Triton v2.2 or its nightly release version, please avoid using the FusedChunk implementation (see [issue](https://github.com/openai/triton/issues/2852)). A quick way to test is to run ``python test_fused_chunk.py``. If you see no difference, you can feel free to use FusedChunk impl.
+If you are not using the Triton v2.2 or its nightly release version with **CUDA12**, please avoid using the FusedChunk implementation (see [issue](https://github.com/openai/triton/issues/2852)). A quick way to test is to run ``python test_fused_chunk.py``. If you see no difference, you can feel free to use FusedChunk impl.
 
 
 # Usage
