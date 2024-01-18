@@ -112,7 +112,7 @@ If you find this repo useful, please consider citing our works:
 
 @software{yang2024fla,
   title  = {FLA: A Triton-Based Library for Hardware-Efficient Implementations of Linear Attention Mechanism},
-  author = {Songlin, Yang and Zhang, Yu},
+  author = {Yang, Songlin and Zhang, Yu},
   url    = {https://github.com/sustcsonglin/flash-linear-attention},
   month  = jan,
   year   = {2024}
