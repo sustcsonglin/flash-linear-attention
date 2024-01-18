@@ -1,8 +1,9 @@
-import chunk
+# -*- coding: utf-8 -*-
 
 import torch
 import torch.nn.functional as F
-from fla.ops.triton.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
+
+from fla.ops.triton.gla import fused_chunk_gla, fused_recurrent_gla
 
 
 def ceildiv(a, b):

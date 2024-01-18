@@ -3,14 +3,16 @@
 import torch
 import triton
 
-from fla.ops.triton.based import (parallel_based, fused_chunk_based_dim16, parallel_chunk_based)
-from fla.ops.torch.based import (torch_parallel_based)
+from fla.ops.torch.based import torch_parallel_based
+from fla.ops.triton.based import (fused_chunk_based_dim16, parallel_based,
+                                  parallel_chunk_based)
 
 try:
     from flash_attn import flash_attn_func
     HAS_FLASH = True
 except Exception:
     HAS_FLASH = False
+
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -20,12 +22,12 @@ except Exception:
         x_vals=[128 * 2 ** i for i in range(3, 8)],
         # argument name whose value corresponds to a different line in the plot
         line_arg='provider',
-        line_vals=['fused_chunk', 'torch', 'parallel', 'parallel_chunk',
-                   'fused_chunk_bwd', 'torch_bwd', 'parallel_bwd', 'parallel_chunk_bwd'] + (['flash', 'flash_bwd'] if HAS_FLASH else []),
+        line_vals=['fused_chunk', 'torch', 'parallel', 'parallel_chunk', 'fused_chunk_bwd', 'torch_bwd',
+                   'parallel_bwd', 'parallel_chunk_bwd'] + (['flash', 'flash_bwd'] if HAS_FLASH else []),
         # label name for the lines
         line_names=['fused_chunk_fwd', 'torch_fwd', 'parallel_fwd',  'parallel_chunk_fwd',
-                    'fused_chunk_fwdbwd',
-                    'torch_fwdbwd', 'parallel_fwdbwd',  'parallel_chunk_fwdbwd'] + (['flash_fwd', 'flash_fwdbwd'] if HAS_FLASH else []),
+                    'fused_chunk_fwdbwd', 'torch_fwdbwd', 'parallel_fwdbwd',
+                    'parallel_chunk_fwdbwd'] + (['flash_fwd', 'flash_fwdbwd'] if HAS_FLASH else []),
 
         # line styles
         styles=[('green', '-'), ('blue', '-'), ('red', '-'), ('green', 'dotted'), ('blue', 'dotted'),
@@ -64,7 +66,7 @@ def benchmark(seq_len, provider):
         if seq_len > 1024:
             return results
         results = triton.testing.do_bench(
-                lambda: torch_parallel_based(q, k, v), quantiles=quantiles)
+            lambda: torch_parallel_based(q, k, v), quantiles=quantiles)
     elif provider == 'fused_chunk':
         results = triton.testing.do_bench(
             lambda: fused_chunk_based_dim16(q, k, v), quantiles=quantiles)
@@ -95,6 +97,7 @@ def benchmark(seq_len, provider):
         results = triton.testing.do_bench(lambda: parallel_chunk_based(
             q, k, v).backward(do), quantiles=quantiles)
     return results
+
 
 if __name__ == '__main__':
     benchmark.run(print_data=True, show_plots=True, save_path='.')

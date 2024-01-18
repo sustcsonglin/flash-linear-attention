@@ -104,10 +104,10 @@ Please refer to Sectiton 2.3 of [GLA paper](https://arxiv.org/pdf/2312.06635.pdf
 If you find this repo useful, please consider citing our work:
 ```
 @article{yang2023gated,
-  title={Gated Linear Attention Transformers with Hardware-Efficient Training},
-  author={Yang, Songlin and Wang, Bailin and Shen, Yikang and Panda, Rameswar and Kim, Yoon},
-  journal={arXiv preprint arXiv:2312.06635},
-  year={2023}
+  title   = {Gated Linear Attention Transformers with Hardware-Efficient Training},
+  author  = {Yang, Songlin and Wang, Bailin and Shen, Yikang and Panda, Rameswar and Kim, Yoon},
+  journal = {arXiv preprint arXiv:2312.06635},
+  year    = {2023}
 }
 
 ```

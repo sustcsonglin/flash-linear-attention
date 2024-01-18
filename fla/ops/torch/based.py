@@ -2,11 +2,11 @@
 
 import torch
 from einops import rearrange
+
 from fla.ops.triton.based import fused_chunk_based_dim16, parallel_based
 
 
-
-def torch_parallel_based(q, k, v, use_scale=True, use_norm=True):
+def naive_parallel_based(q, k, v, use_scale=True, use_norm=True):
     if use_scale:
         q = q * (q.shape[-1] ** -0.5)
     attn = q @ k.transpose(-2, -1)
@@ -14,14 +14,14 @@ def torch_parallel_based(q, k, v, use_scale=True, use_norm=True):
     attn.masked_fill_(~torch.tril(torch.ones(
         q.shape[-2], q.shape[-2], dtype=torch.bool, device=q.device)), 0)
     o = attn @ v
-    if use_norm:    
+    if use_norm:
         z = attn.sum(-1)
         return o / (z[..., None] + 1e-6)
     else:
         return o
 
 
-def torch_chunk_based(q, k, v, chunk_size=256):
+def naive_chunk_based(q, k, v, chunk_size=256):
     q = q * (q.shape[-1] ** -0.5)
 
     # compute normalizer.
@@ -58,9 +58,7 @@ def torch_chunk_based(q, k, v, chunk_size=256):
     kv = kv.cumsum(2)
     kv = torch.cat([torch.zeros_like(kv[:, :, :1]), kv[:, :, :-1]], dim=2)
 
-    o += 0.5 * \
-        torch.einsum(
-            'b h n x y z, b h n c x, b h n c y -> b h n c z', kv, q, q)
+    o += 0.5 * torch.einsum('b h n x y z, b h n c x, b h n c y -> b h n c z', kv, q, q)
 
     # linear term
     kv = torch.einsum('b h n c x, b h n c y -> b h n x y', k, v)
@@ -82,15 +80,15 @@ if __name__ == "__main__":
     q = (torch.randn(B, H, L, 16).cuda().to(dtype)).requires_grad_(True)
     k = (torch.randn(B, H, L, 16).cuda().to(dtype)).requires_grad_(True)
     v = torch.randn(B, H, L, 128).cuda().to(dtype).requires_grad_(True)
-    
-    do = torch.randn_like(v).cuda() 
-    ref = torch_parallel_based(q, k, v, True, True)
+
+    do = torch.randn_like(v).cuda()
+    ref = naive_parallel_based(q, k, v, True, True)
     ref.backward(do, retain_graph=True)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
     ref_dv, v.grad = v.grad.clone(), None
 
-    # tri = torch_chunk_based(q, k, v)
+    # tri = naive_chunk_based(q, k, v)
     # tri.backward(do, retain_graph=True)
     # tri_dq, q.grad = q.grad.clone(), None
     # tri_dk, k.grad = k.grad.clone(), None

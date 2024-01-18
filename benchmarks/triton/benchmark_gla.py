@@ -2,11 +2,11 @@
 
 import torch
 import triton
-
-from fla.ops.triton.retention import (fused_chunk_retention, naive_retention,
-                                      parallel_retention, fused_recurrent_retention)
-from fla.ops.triton.gla import (fused_recurrent_gla, fused_chunk_gla, chunk_gla)
 from torch.nn import functional as F
+
+from fla.ops.torch import naive_retention
+from fla.ops.triton.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
+from fla.ops.triton.retention import fused_chunk_retention, parallel_retention
 
 
 @triton.testing.perf_report(
@@ -40,7 +40,8 @@ def benchmark(seq_len, provider):
 
     q = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
     k = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
-    g = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, d_head, device=device, dtype=dtype)).clamp_min(-5).requires_grad_(requires_grad)
+    g = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, d_head, device=device,
+                     dtype=dtype)).clamp_min(-5).requires_grad_(requires_grad)
     v = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
 
     do = torch.ones_like(q, dtype=dtype)
@@ -79,4 +80,3 @@ def benchmark(seq_len, provider):
 
 if __name__ == '__main__':
     benchmark.run(print_data=True, save_path='.')
-

@@ -2,7 +2,8 @@
 
 import torch
 import triton
-from fla.ops.torch.retention import naive_retention
+
+from fla.ops.torch import naive_retention
 from fla.ops.triton.retention import (chunk_retention, fused_chunk_retention,
                                       fused_recurrent_retention,
                                       parallel_retention)
@@ -13,8 +14,6 @@ try:
 except BaseException:
     HAS_FLASH = False
 
-
-    
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -28,9 +27,11 @@ except BaseException:
         line_vals=['fused_chunk', 'chunk', 'parallel',
                    'fused_chunk_bwd', 'chunk_bwd', 'parallel_bwd'] + (['flash', 'flash_bwd'] if HAS_FLASH else []),
         # label name for the lines
-        line_names=['fused_chunk_fwd', 'chunk_fwd', 'parallel_fwd', 'fused_chunk_fwdbwd', 'chunk_fwdbwd', 'parallel_fwdbwd'] + (['flash_fwd', 'flash_fwdbwd'] if HAS_FLASH else []),
+        line_names=['fused_chunk_fwd', 'chunk_fwd', 'parallel_fwd', 'fused_chunk_fwdbwd',
+                    'chunk_fwdbwd', 'parallel_fwdbwd'] + (['flash_fwd', 'flash_fwdbwd'] if HAS_FLASH else []),
         # line styles
-        styles=[('green', '-'), ('blue', '-'), ('red', '-'), ('green', 'dotted'), ('blue', 'dotted'), ('red', 'dotted')] + ([('cyan', '-'), ('cyan', 'dotted')] if HAS_FLASH else []),
+        styles=[('green', '-'), ('blue', '-'), ('red', '-'), ('green', 'dotted'), ('blue', 'dotted'),
+                ('red', 'dotted')] + ([('cyan', '-'), ('cyan', 'dotted')] if HAS_FLASH else []),
         ylabel="Execution Time (ms)",  # label name for the y-axis
         # name for the plot. Used also as a file name for saving the plot.
         plot_name="Performance",
@@ -79,7 +80,7 @@ def benchmark(seq_len, provider):
         results = triton.testing.do_bench(lambda: fused_chunk_retention(q, k, v).backward(do), quantiles=quantiles)
     elif provider == 'parallel_bwd':
         results = triton.testing.do_bench(lambda: parallel_retention(q, k, v).backward(do), quantiles=quantiles)
-    
+
     elif provider == 'flash':
         results = triton.testing.do_bench(lambda: flash_attn_func(q, k, v, causal=True), quantiles=quantiles)
     elif provider == 'flash_bwd':
