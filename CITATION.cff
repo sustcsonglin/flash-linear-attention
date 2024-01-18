@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Songlin"
+  given-names: "Yang"
+  orcid: "https://orcid.org/0000-0002-5944-0110"
+- family-names: "Zhang"
+  given-names: "Yu"
+  orcid: "https://orcid.org/0000-0002-8345-3835"
+title: "FLA: Fast triton-based implementations of causal linear attention"
+version: 0.0.1
+date-released: 2024-01-18
+url: "https://github.com/sustcsonglin/flash-linear-attention"
