@@ -101,7 +101,7 @@ Please refer to Sectiton 2.3 of [GLA paper](https://arxiv.org/pdf/2312.06635.pdf
 
 
 # Citation
-If you find this repo useful, please consider citing our work:
+If you find this repo useful, please consider citing our works:
 ```
 @article{yang2023gated,
   title   = {Gated Linear Attention Transformers with Hardware-Efficient Training},
@@ -110,4 +110,11 @@ If you find this repo useful, please consider citing our work:
   year    = {2023}
 }
 
+@software{yang2024fla,
+  title  = {FLA: Fast triton-based implementations of causal linear attention},
+  author = {Songlin, Yang and Zhang, Yu},
+  url    = {https://github.com/sustcsonglin/flash-linear-attention},
+  month  = jan,
+  year   = {2024}
+}
 ```
