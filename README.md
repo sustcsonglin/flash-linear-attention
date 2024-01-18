@@ -111,7 +111,7 @@ If you find this repo useful, please consider citing our works:
 }
 
 @software{yang2024fla,
-  title  = {FLA: Fast triton-based implementations of causal linear attention},
+  title  = {FlashLinearAttention: Hardware-efficient Implementations of Linear Attention Algorithms},
   author = {Songlin, Yang and Zhang, Yu},
   url    = {https://github.com/sustcsonglin/flash-linear-attention},
   month  = jan,
