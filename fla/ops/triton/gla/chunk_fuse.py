@@ -4,11 +4,13 @@
 # on-the-fly computation without materializing hidden statets into HBMs
 
 import torch
+import torch.nn.functional as F
 import triton
 import triton.language as tl
 from einops import rearrange
 from fla.ops.cuda.gla.semiring.cal_A.fn import semiring_cal_A
 from fla.ops.triton.utils import contiguous
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 inv_ln2 = 1.44269504
 
@@ -208,6 +210,7 @@ def fused_chunk_gla_bwd_kernel(
 class FusedChunkGLAFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
+    @custom_fwd
     def forward(ctx, q, k, v,
                 g  # log decay rate
                 ):
@@ -219,7 +222,6 @@ class FusedChunkGLAFunction(torch.autograd.Function):
 
         # inter-chunk
         BT = 16  # chunk_size
-        assert seq_len % 16 == 0
         if batch_size * n_heads > 100:
             BK, BV = min(d_head_qk, 64), min(d_head_v, 64)
             num_stages = 1
@@ -267,6 +269,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
+    @custom_bwd
     def backward(ctx, do):
         q, k, v, g, A = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
@@ -325,8 +328,29 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         dv.add_(dv2.to(dv))
         dg.add_(dg2.to(dg))
         _dg_cumsum = -dg.cumsum(-2)
-        _dg_cumsum.add_(dg).add_(_dg_cumsum[:, :, -1, None])        
+        _dg_cumsum.add_(dg).add_(_dg_cumsum[:, :, -1, None])
         return dq.to(q), dk.to(k), dv.to(v), dg.to(g)
 
 
-fused_chunk_gla = FusedChunkGLAFunction.apply
+def pad(x, chunk_size=16):
+    seq_len = x.shape[-2]
+    padded_seq_len = ceildiv(seq_len, chunk_size) * chunk_size
+    if x.shape[-2] % chunk_size != 0:
+        x = F.pad(x, (0, 0, 0, padded_seq_len - seq_len))
+    if x.shape[-1] % 32 != 0:
+        x = F.pad(x, (0, 32 - x.shape[-1] % 32))
+    return x
+
+
+def ceildiv(a, b):
+    return -(a // -b)
+
+
+def fused_chunk_gla(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor):
+    seq_len = v.shape[-2]
+    d_head_v = v.shape[-1]
+    q, k, v, g = map(lambda x: pad(x), [q, k, v, g])
+    o = FusedChunkGLAFunction.apply(
+        q, k, v, g)
+    o = o[..., :seq_len, :d_head_v]
+    return o
