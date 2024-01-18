@@ -5,7 +5,7 @@ from setuptools import find_packages, setup
 setup(
     name='fla',
     version='0.0.1',
-    author='Songlin Yang',
+    author='Songlin Yang, Yu Zhang',
     author_email='bestsonta@gmail.com',
     license='MIT',
     description='Fast Triton-based implementations of causal linear attention',
