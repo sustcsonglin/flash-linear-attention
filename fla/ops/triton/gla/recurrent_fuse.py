@@ -58,7 +58,7 @@ def fused_recurrent_gla_fwd_kernel(
 
     mask_kv = mask_bk[None, :] & mask_bv[:, None]
 
-    if USE_INITIAL_STATE is not None:
+    if USE_INITIAL_STATE:
         p_init_s = initial_state + i_bh * DK * DV + \
             (i_k * BK + tl.arange(0, BK)[None, :]) * \
             DV + (i_v * BV + tl.arange(0, BV)[:, None])
