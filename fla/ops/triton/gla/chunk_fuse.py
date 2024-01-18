@@ -97,7 +97,7 @@ def fused_chunk_gla_fwd_kernel(
         b_q = tl.load(p_q, boundary_check=(0, 1))
 
         d_b = tl.exp(tl.load(p_db).to(tl.float32))
-        b_o = tl.dot(b_q, b_h.to(b_v.dtype), allow_tf32=False) * scale
+        b_o = tl.dot(b_q, b_h.to(b_q.dtype), allow_tf32=False) * scale
         b_h *= d_b[:, None]
         b_h += tl.dot(b_k, b_v, allow_tf32=False)
 
@@ -199,11 +199,11 @@ def fused_chunk_gla_bwd_kernel(
         p_k = tl.make_block_ptr(
             k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
         p_v = tl.make_block_ptr(
-            v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+            v + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, T - i * BT), (BV, BT), (0, 1))
         p_do = tl.make_block_ptr(
             do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dk = tl.make_block_ptr(dk + (i_bh + i_v * B * H) * s_qk_h, (T, DK),
-                                 (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_dk = tl.make_block_ptr(dk + (i_bh + i_v * B * H) * s_qk_h, (DK, T),
+                                 (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
         p_db = g + i_bh * s_qk_h + \
             (T - (i-1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
         # p_dg = tl.make_block_ptr(dg + (i_bh + i_v * B * H) * s_qk_h, (T, DK),
@@ -221,10 +221,8 @@ def fused_chunk_gla_bwd_kernel(
         b_db = tl.exp(tl.load(p_db).to(tl.float32))
 
         # inter-chunk
-        b_dk = tl.trans(tl.dot(b_dh.to(b_v.dtype), tl.trans(b_v),
-                               allow_tf32=False)) * scale
-        b_dv = tl.dot((b_k).to(b_v.dtype),
-                      b_dh.to(b_v.dtype), allow_tf32=False) * scale
+        b_dk = tl.dot(b_dh.to(b_v.dtype), b_v, allow_tf32=False) * scale
+        b_dv = tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False) * scale
 
         # [DK, DV]
         b_dh *= b_db[:, None]
