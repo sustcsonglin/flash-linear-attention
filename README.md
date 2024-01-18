@@ -16,10 +16,16 @@ Order by my expected implementation time.
 | 2021-10 |                            [**ABC**] Attention with Bounded-memory Control (@UW)                             |                             [arxiv](https://arxiv.org/abs/2110.02488)                              |                                                                                                                                              -                                                                                                                                               |                        TODO                         |
 | 2023-09 |                    🔥[**VQ-transformer**] Linear-Time Transformers via Vector Quantization                    |                             [arxiv](https://arxiv.org/abs/2309.16354)                              |                                                                    [[official]](https://github.com/transformer-vq/transformer_vq) ![](https://img.shields.io/github/stars/transformer-vq/transformer_vq.svg?style=social)                                                                    |                        TODO                         |
 
+
+
 # Installation
 
 The following requirements should be satisfied 
 - [PyTorch](https://pytorch.org/) >= 2.0
+- [Triton 2.2](https://github.com/openai/triton) >=2.2
+```
+pip install triton
+```
 - [Triton](https://github.com/openai/triton) latest nightly release
 ```
 pip install -U --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/Triton-Nightly/pypi/simple/ triton-nightly
@@ -32,6 +38,9 @@ If you do need to use `fla` modules/ops and contemplate further explorations, an
 git submodule add https://github.com/sustcsonglin/flash-linear-attention.git 3rdparty/flash-linear-attention
 ln -s 3rdparty/flash-linear-attention/fla fla
 ```
+### Caveats on numerical stability!!
+If you are not using the Triton v2.2 or its nightly release version, please avoid using the FusedChunk implementation (see [issue](https://github.com/openai/triton/issues/2852)). A quick way to test is to run ``python test_fused_chunk.py``. If you see no difference, you can feel free to use FusedChunk impl.
+
 
 # Usage
 We provide "token mixing" linear attention layers in `fla.layers` for you to use. You can replace the standard multihead attention layer in your transformer with the other linear attention layers. Example usage is as follows: 
@@ -55,10 +64,6 @@ y3 = based(x)
 
 asssert y1.shape == y2.shape == y3.shape == x.shape
 ```
-
-# Caveats on numerical stability
-If you are not using the Triton nightly release version, please avoid using the FusedChunk implementation (see [issue](https://github.com/openai/triton/issues/2852)). A quick way to test is to run ``python test_fused_chunk.py``. If you see no difference, you can feel free to use FusedChunk impl.
-
 
 # Benchmark
 We compared our Triton-based RetNet implementation with CUDA-based FlashAttention2, using a batch size of 8, 32 heads, and a head dimension of 128, across different sequence lengths. These tests were conducted on a single A100 80GB GPU, as illustrated in the following graph
@@ -84,8 +89,8 @@ Please refer to Sectiton 2.3 of [GLA paper](https://arxiv.org/pdf/2312.06635.pdf
 
 - **Parallel**: Self-attention-styled computation in $O(L^2)$ time with sequence parallelism.
 - **FusedRecurrent**: Recurrent computation in $O(L)$ time. Hidden states are computed on-the-fly in shared memory without any materialization to global memory (see Algorithm1 of [this paper](https://arxiv.org/pdf/2006.16236.pdf) for more details!). This saves a lot of I/O cost and should be a strong baseline for speed comparison.
-- **FusedChunk**: Chunkwise computation in $O(LC)$ time where $C$ is the chunk size. Hidden states are computed on-the-fly without any materialization to global memory likewise **FusedRecurrent**. This version is usually better than FusedReuccurent because tensor cores can be used for sequence level "reduction", whilst FusedRecurrent cannot use tensor cores at all.  Note that there is no sequence level parallelism in this implementation. More memory efficient than ParallelChunk though.
-- **ParallelChunk**: Chunkwise computation with sequence parallelism. Need to materialize hidden states to global memory for each chunk. $C$ is needed to set properly to achieve good performance because when $C$ is small there are too many hidden states to load/store to global memory; and when $C$ is too large the FLOPs are high. Recommened $C$ is 128 or 256. This function is generally faster than FusedChunk but less memory efficient.
+- **FusedChunk**: Chunkwise computation in $O(LC)$ time where $C$ is the chunk size. Hidden states are computed on-the-fly without any materialization to global memory likewise **FusedRecurrent**. This version is usually better than FusedReuccurent because tensor cores can be used for sequence level "reduction", whilst FusedRecurrent cannot use tensor cores at all.  Note that there is no sequence level parallelism in this implementation, so this impl is not suitable for the very small batch size setting. Should be more memory efficient than ParallelChunk. 
+- **ParallelChunk**: Chunkwise computation with sequence parallelism. Need to materialize hidden states to global memory for each chunk. $C$ is needed to set properly to achieve good performance because when $C$ is small there are too many hidden states to load/store to global memory; and when $C$ is too large the FLOPs are high. Recommened $C$ is [64, 128, 256]
 
 
 # Citation
