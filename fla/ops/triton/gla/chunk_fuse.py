@@ -9,10 +9,9 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 from einops import rearrange
-from torch.cuda.amp import custom_bwd, custom_fwd
-
 from fla.ops.cuda.gla.semiring.cal_A.fn import semiring_cal_A
 from fla.ops.triton.utils import contiguous, require_version
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 inv_ln2 = 1.44269504
 
@@ -305,9 +304,10 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         dq.add_(dq2.to(dq))
         dk.add_(dk2.to(dk))
         dv.add_(dv2.to(dv))
-        dg.add_(dg2.to(dg))
-        _dg_cumsum = -dg.cumsum(-2)
-        _dg_cumsum.add_(dg).add_(_dg_cumsum[:, :, -1, None])
+        dg = dg.float()
+        dg.add_(dg2)
+        dg_cumsum = dg.cumsum(-2)
+        dg = dg - dg_cumsum + dg_cumsum[:, :, -1, None]
         return dq.to(q), dk.to(k), dv.to(v), dg.to(g)
 
 
