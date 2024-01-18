@@ -5,7 +5,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-
 from fla.modules.rmsnorm import RMSNorm
 from fla.modules.rotary import RotaryEmbedding
 from fla.ops.triton.retention import (fused_chunk_retention,
@@ -59,7 +58,7 @@ class MultiScaleRetention(nn.Module):
         nn.init.xavier_uniform_(self.k_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.v_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -1)
+        nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -2.5)
 
     def forward(self, x):
         mode = self.mode

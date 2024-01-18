@@ -63,7 +63,7 @@ class GatedLinearAttention(nn.Module):
         nn.init.xavier_uniform_(self.k_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.v_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -1)
+        nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.gk_proj[0].weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.gk_proj[1].weight, gain=2 ** -2.5)
 
