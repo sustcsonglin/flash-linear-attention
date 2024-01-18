@@ -25,6 +25,9 @@ def fused_chunk_gla_fwd_kernel(
     g,  # cumulative sum of log decay [B, H, L, D_head_K]
     o,  # output [B, H, L, D_head_V]
 
+    initial_state,  # initial state of the chunk [B, H, D_head_K, D_head_V]
+    final_state,  # final state of the chunk [B, H, D_head_K, D_head_V]
+
     s_qk_h,  # stride size: L * D_head_K
     s_qk_t,  # stride size: D_head_K
     s_qk_d,  # stride size: 1
@@ -42,6 +45,8 @@ def fused_chunk_gla_fwd_kernel(
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     DK: tl.constexpr,  # D_head_K
     DV: tl.constexpr,  # D_head_V
+    USE_INITIAL_STATE: tl.constexpr,
+    STORE_FINAL_STATE: tl.constexpr,
 ):
     # indices
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -49,12 +54,22 @@ def fused_chunk_gla_fwd_kernel(
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
 
     # make block pointers
-    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
-    p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK),
+                            (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
+    p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK),
+                            (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
     p_db = g + i_bh * s_qk_h + (BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
-    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
-    p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o + (i_bh + i_k * B * H) * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T),
+                            (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
+    p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV),
+                            (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + (i_bh + i_k * B * H) * s_vo_h,
+                            (T, DV), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
+
+    if USE_INITIAL_STATE:
+        p_h = tl.make_block_ptr(initial_state + i_bh * DK * DV,
+                                (DK, DV), (DV, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
 
     for i in range(0, tl.cdiv(T, BT)):
         # [BK, BT]
@@ -72,7 +87,7 @@ def fused_chunk_gla_fwd_kernel(
         b_q = (b_q * scale * tl.math.exp2(b_g))
         b_k = b_k * tl.trans(tl.math.exp2(-b_g + d_b[None, :]))
 
-        b_o = tl.dot(b_q.to(b_v.dtype), b_h.to(b_v.dtype), allow_tf32=True)
+        b_o = tl.dot(b_q.to(b_v.dtype), b_h.to(b_v.dtype), allow_tf32=False)
         b_h *= tl.math.exp2(d_b)[:, None]
         b_h += tl.dot(b_k.to(b_v.dtype), b_v, allow_tf32=False)
 
@@ -85,6 +100,12 @@ def fused_chunk_gla_fwd_kernel(
         p_o = tl.advance(p_o, (BT, 0))
         p_db += BT * DK
 
+    if STORE_FINAL_STATE:
+        p_final = tl.make_block_ptr(
+            final_state + i_bh * DK * DV, (DK, DV), (DV, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        tl.store(p_final, b_h.to(p_final.dtype.element_ty),
+                 boundary_check=(0, 1))
+
 
 # Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
 @triton.jit
@@ -94,6 +115,8 @@ def fused_chunk_gla_bwd_kernel(
     dq,  # gradient of query [NV, B, H, L, D_head_K]
     dk,  # gradient of key [NV, B, H, L, D_head_K]
     dv,  # gradient of value [NK, B, H, L, D_head_V]
+
+    initial_state,  # initial state of the chunk [B, H, D_head_K, D_head_V]
 
     s_qk_h,  # stride size: L * D_head_K
     s_qk_t,  # stride size: D_head_K
@@ -113,18 +136,30 @@ def fused_chunk_gla_bwd_kernel(
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     DK: tl.constexpr,  # D_head_K
     DV: tl.constexpr,  # D_head_V
+    USE_INITIAL_STATE: tl.constexpr
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     # [BV, BK]
     b_h = tl.zeros([BV, BK], dtype=tl.float32)
 
+    if USE_INITIAL_STATE:
+        p_h = tl.make_block_ptr(initial_state + i_bh * DK * DV,
+                                (DV, DK), (1, DV), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
+        b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
+
     for i in range(0, tl.cdiv(T, BT)):
-        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_db = g + i_bh * s_qk_h + ((i+1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
-        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
-        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dq = tl.make_block_ptr(dq + (i_bh+i_v*B*H)*s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(
+            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_g = tl.make_block_ptr(
+            g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_db = g + i_bh * s_qk_h + \
+            ((i+1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
+        p_v = tl.make_block_ptr(
+            v + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
+        p_do = tl.make_block_ptr(
+            do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dq = tl.make_block_ptr(dq + (i_bh+i_v*B*H)*s_qk_h, (T, DK),
+                                 (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
         b_dq = tl.zeros([BT, BK], dtype=tl.float32)
         # [BT, DK]
         b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -139,7 +174,7 @@ def fused_chunk_gla_bwd_kernel(
         # [DV, DK]
         b_k *= tl.math.exp2(d_b[None, :] - b_g)
         b_h *= tl.math.exp2(d_b)[None, :]
-        b_h += tl.dot(b_v, b_k.to(b_v.dtype), allow_tf32=True)
+        b_h += tl.dot(b_v, b_k.to(b_v.dtype), allow_tf32=False)
         b_dq *= scale * tl.math.exp2(b_g)
         tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
 
@@ -151,12 +186,18 @@ def fused_chunk_gla_bwd_kernel(
 
     # cum = tl.zeros([BK], dtype=tl.float32)
     for i in range(1, tl.cdiv(T, BT) + 1):
-        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
-        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_db = g + i_bh * s_qk_h + (T - (i-1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
-        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_q = tl.make_block_ptr(
+            q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
+        p_k = tl.make_block_ptr(
+            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_g = tl.make_block_ptr(
+            g + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_db = g + i_bh * s_qk_h + \
+            (T - (i-1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
+        p_v = tl.make_block_ptr(
+            v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_do = tl.make_block_ptr(
+            do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
         p_dk = tl.make_block_ptr(dk + (i_bh + i_v * B * H) * s_qk_h, (T, DK),
                                  (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
         # p_dg = tl.make_block_ptr(dg + (i_bh + i_v * B * H) * s_qk_h, (T, DK),
@@ -177,8 +218,10 @@ def fused_chunk_gla_bwd_kernel(
         g_k = tl.math.exp2(b_db[None, :] - b_g)
         b_k *= g_k
         b_q *= tl.math.exp2(tl.trans(b_g))
-        b_dk = tl.trans(tl.dot(b_dh.to(b_v.dtype), tl.trans(b_v), allow_tf32=False)) * scale * g_k
-        b_dv = tl.dot((b_k).to(b_v.dtype), b_dh.to(b_v.dtype), allow_tf32=False) * scale
+        b_dk = tl.trans(tl.dot(b_dh.to(b_v.dtype), tl.trans(
+            b_v), allow_tf32=False)) * scale * g_k
+        b_dv = tl.dot((b_k).to(b_v.dtype), b_dh.to(
+            b_v.dtype), allow_tf32=False) * scale
 
         # [DK, DV]
         b_dh *= tl.math.exp2(b_db)[:, None]
@@ -194,23 +237,17 @@ class FusedChunkGLAFunction(torch.autograd.Function):
     @contiguous
     @custom_fwd
     @require_version('triton>=2.2', 'Numerical stability consideration!')
-    def forward(ctx, q, k, v, g):
+    def forward(ctx, q, k, v, g, scale, initial_state, output_final_state):
         ctx.g_dtype = g.dtype
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-
-        scale = d_head_qk ** -0.5
+        ctx.scale = scale
 
         # inter-chunk
         BT = 16  # chunk_size
-        if batch_size * n_heads > 100:
-            BK, BV = min(d_head_qk, 64), min(d_head_v, 64)
-            num_stages = 1
-            num_warps = 2
-        else:
-            BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
-            num_stages = 1
-            num_warps = 1
+        BK, BV = min(d_head_qk, 64), min(d_head_v, 64)
+        num_stages = 1
+        num_warps = 2
 
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
@@ -219,15 +256,23 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         g = g.float().cumsum(-2)
         g = rearrange(g, 'b h n c d -> b h (n c) d')
 
+        if output_final_state:
+            final_state = q.new_empty(
+                batch_size, n_heads, d_head_qk, d_head_v, dtype=torch.float32, requires_grad=False)
+        else:
+            final_state = None
+
         grid = (NV, NK, batch_size * n_heads)
         fused_chunk_gla_fwd_kernel[grid](
-            q, k, v, g, o,
+            q, k, v, g, o, initial_state, final_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             batch_size, n_heads, seq_len, scale,
             # clamp_min=-3,
             BT=BT, DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
             # USE_SIGMOID=True, USE_EXP=False,
+            USE_INITIAL_STATE=initial_state is not None,
+            STORE_FINAL_STATE=output_final_state,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -245,17 +290,17 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         o2 = A @ v2
         o2 = rearrange(o2, 'b h n c d -> b h (n c) d')
         o.add_(o2)
-        ctx.save_for_backward(q, k, v, g, A)
-        return o
+        ctx.save_for_backward(q, k, v, g, A, initial_state)
+        return o.to(v), final_state
 
     @staticmethod
     @contiguous
     @custom_bwd
-    def backward(ctx, do):
-        q, k, v, g, A = ctx.saved_tensors
+    def backward(ctx, do, d_final_state=None):
+        q, k, v, g, A, initial_state = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-        scale = d_head_qk ** -0.5
+        scale = ctx.scale
 
         # inter-chunk
         BT = 16
@@ -270,15 +315,15 @@ class FusedChunkGLAFunction(torch.autograd.Function):
 
         grid = (NV, NK, batch_size * n_heads)
         fused_chunk_gla_bwd_kernel[grid](
-            q, k, v, g, do, dq, dk, dv,
+            q, k, v, g, do, dq, dk, dv, initial_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             batch_size, n_heads, seq_len, scale,
             # clamp_min=-3,
             BT=BT, DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
+            USE_INITIAL_STATE=initial_state is not None,
             num_warps=num_warps,
             num_stages=num_stages,
-            # USE_SIGMOID=True, USE_EXP=False
         )
         dq = dq.sum(0)
         dk = dk.sum(0)
@@ -308,7 +353,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         dg.add_(dg2)
         dg_cumsum = dg.cumsum(-2)
         dg = dg - dg_cumsum + dg_cumsum[:, :, -1, None]
-        return dq.to(q), dk.to(k), dv.to(v), dg.to(g)
+        return dq.to(q), dk.to(k), dv.to(v), dg.to(ctx.g_dtype), None, None, None
 
 
 def pad(x, chunk_size=16):
@@ -325,11 +370,17 @@ def ceildiv(a, b):
     return -(a // -b)
 
 
-def fused_chunk_gla(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor):
+def fused_chunk_gla(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, scale: int = -1, initial_state: torch.Tensor = None, output_final_state: bool = False):
+    if scale == -1:
+        scale = q.shape[-1] ** -0.5
+    if initial_state is not None:
+        initial_state = initial_state.detach()
     seq_len = v.shape[-2]
     d_head_v = v.shape[-1]
     q, k, v, g = map(lambda x: pad(x), [q, k, v, g])
-    o = FusedChunkGLAFunction.apply(
-        q, k, v, g)
+    o, final_state = FusedChunkGLAFunction.apply(
+        q, k, v, g, scale, initial_state, output_final_state)
     o = o[..., :seq_len, :d_head_v]
+    if output_final_state:
+        return o, final_state
     return o

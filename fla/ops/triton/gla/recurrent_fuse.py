@@ -220,7 +220,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         num_stages = 1
         num_warps = 1
 
-        o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
+        o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v, dtype=torch.float32)
 
         if output_final_state:
             final_state = q.new_empty(batch_size, n_heads, d_head_qk, d_head_v)
@@ -263,9 +263,9 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         num_stages = 1
         num_warps = 1
 
-        dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-        dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-        dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
+        dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk, dtype=torch.float32)
+        dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk, dtype=torch.float32)
+        dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v, dtype=torch.float32)
         grid = (NV, NK, batch_size * n_heads)
 
         fused_recurrent_gla_bwd_kernel[grid](
@@ -281,7 +281,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         dq = dq.sum(0)
         dk = dk.sum(0)
         dv = dv.sum(0)
-        _dg = dq * q - dk * k
+        _dg = dq * q.float() - dk * k.float()
         _dg_cumsum = _dg.cumsum(-2)
         dg = _dg + _dg_cumsum[:, :, -1, None] - _dg_cumsum
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, None, None

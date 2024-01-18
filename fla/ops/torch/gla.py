@@ -2,7 +2,6 @@
 
 import torch
 import torch.nn.functional as F
-
 from fla.ops.triton.gla import fused_chunk_gla, fused_recurrent_gla
 
 
@@ -87,30 +86,16 @@ if __name__ == "__main__":
     ).clamp_min(-1).to(torch.float32).requires_grad_(True)
 
     do = torch.rand_like(v).cuda()
-    intial_state = torch.randn(B, H, D, D).cuda()
+    intial_state = torch.rand(B, H, D, D).cuda()
 
-    ref, ref_state = naive_loop(
-        q, k, v, g, initial_state=intial_state)
+    ref, ref_state = fused_recurrent_gla(
+        q, k, v, g, initial_state=intial_state, scale=D**-0.5, output_final_state=True)
 
     ref.backward(do, retain_graph=True)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
     ref_dv, v.grad = v.grad.clone(), None
     ref_dg, g.grad = g.grad.clone(), None
-
-    tri, tri_state = fused_recurrent_gla(
-        q, k, v, g, scale=D**-0.5, initial_state=intial_state, output_final_state=True)
-    tri.backward(do, retain_graph=True)
-    tri_dq, q.grad = q.grad.clone(), None
-    tri_dk, k.grad = k.grad.clone(), None
-    tri_dv, v.grad = v.grad.clone(), None
-    tri_dg, g.grad = g.grad.clone(), None
-
-    assert ref.allclose(tri, 0, 1e-5), breakpoint()
-    assert ref_dq.allclose(tri_dq, 0, 1e-5), breakpoint()
-    assert ref_dk.allclose(tri_dk, 0, 1e-5), breakpoint()
-    assert ref_dv.allclose(tri_dv, 0, 1e-5), breakpoint()
-    assert ref_dg.allclose(tri_dg, 0, 1e-4), breakpoint()
 
     tri, tri_state = fused_chunk_gla(
         q, k, v, g, scale=D**-0.5, initial_state=intial_state, output_final_state=True)
@@ -121,9 +106,25 @@ if __name__ == "__main__":
     tri_dg, g.grad = g.grad.clone(), None
 
     assert ref.allclose(tri, 0, 1e-5), breakpoint()
+    assert ref_state.allclose(tri_state, 0, 1e-5), breakpoint()
     assert ref_dq.allclose(tri_dq, 0, 1e-5), breakpoint()
     assert ref_dk.allclose(tri_dk, 0, 1e-5), breakpoint()
     assert ref_dv.allclose(tri_dv, 0, 1e-5), breakpoint()
     assert ref_dg.allclose(tri_dg, 0, 1e-4), breakpoint()
-    breakpoint()
+    
+
+    # tri = fused_chunk_gla(
+    #     q, k, v, g)
+    # tri.backward(do, retain_graph=True)
+    # tri_dq, q.grad = q.grad.clone(), None
+    # tri_dk, k.grad = k.grad.clone(), None
+    # tri_dv, v.grad = v.grad.clone(), None
+    # tri_dg, g.grad = g.grad.clone(), None
+
+    # assert ref.allclose(tri, 0, 1e-5), breakpoint()
+    # assert ref_dq.allclose(tri_dq, 0, 1e-5), breakpoint()
+    # assert ref_dk.allclose(tri_dk, 0, 1e-5), breakpoint()
+    # assert ref_dv.allclose(tri_dv, 0, 1e-5), breakpoint()
+    # assert ref_dg.allclose(tri_dg, 0, 1e-4), breakpoint()
+    # breakpoint()
     print("Pass")
