@@ -32,14 +32,17 @@ pip install -U --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/
 ```
 - [einops](https://einops.rocks/)
 
-Currently `fla` is actively developed, and no released packages are provided at this time.
+As `fla` is actively developed now, no released packages are provided at this time.
 If you do need to use `fla` modules/ops and contemplate further explorations, an alternative way is to manage `fla` with submodules
 ```sh
 git submodule add https://github.com/sustcsonglin/flash-linear-attention.git 3rdparty/flash-linear-attention
 ln -s 3rdparty/flash-linear-attention/fla fla
 ```
-### Caveats on numerical stability!!
-If you are not using the Triton v2.2 or its nightly release version with **CUDA12**, please avoid using the FusedChunk implementation (see [issue](https://github.com/openai/triton/issues/2852)). A quick way to test is to run ``python test_fused_chunk.py``. If you see no difference, you can feel free to use FusedChunk impl.
+
+### ⚠️ Caveats on numerical stability!!
+If you are not using the Triton v2.2 or its nightly release version (**CUDA12** required), please avoid using the FusedChunk implementation (see [issue](https://github.com/openai/triton/issues/2852)). 
+A quick way to test is to run ``python test_fused_chunk.py``. 
+If you see no difference, you can feel free to use FusedChunk impl.
 
 
 # Usage
