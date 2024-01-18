@@ -111,7 +111,7 @@ If you find this repo useful, please consider citing our works:
 }
 
 @software{yang2024fla,
-  title  = {FlashLinearAttention: Hardware-efficient Implementations of Linear Attention Algorithms},
+  title  = {FLA: A library for hard-efficient implementations of linear attention mechanism},
   author = {Songlin, Yang and Zhang, Yu},
   url    = {https://github.com/sustcsonglin/flash-linear-attention},
   month  = jan,
