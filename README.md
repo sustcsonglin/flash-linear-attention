@@ -1,8 +1,9 @@
 # flash-linear-attention
 This repo contains fast Triton-based implementation (maybe CUTLASS/CUTE in the future) of **causal linear attention (i.e., RNNs with 2D hidden states)**, with a specific focus on modern decoder-only language models. Join [discord](https://discord.gg/vDaJTmKNcS) if you are interested in this project!  
 
+
 # Models
-Order by my expected implementation time. If you are not using the Triton nightly release version, please avoid using the FusedChunk implementation (see [issue](https://github.com/openai/triton/issues/2852))
+Order by my expected implementation time. 
 
 |  Date   |                                                    Title                                                     |                                               Paper                                                |                                                                                                                                             Code                                                                                                                                             |                       Support                       |
 | :-----: | :----------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------: |
@@ -54,6 +55,10 @@ y3 = based(x)
 
 asssert y1.shape == y2.shape == y3.shape == x.shape
 ```
+
+# Caveats on numerical stability
+If you are not using the Triton nightly release version, please avoid using the FusedChunk implementation (see [issue](https://github.com/openai/triton/issues/2852)). A quick way to test is to run ``python test_fused_chunk.py``. If you see no difference, you can feel free to use FusedChunk impl.
+
 
 # Benchmark
 We compared our Triton-based RetNet implementation with CUDA-based FlashAttention2, using a batch size of 8, 32 heads, and a head dimension of 128, across different sequence lengths. These tests were conducted on a single A100 80GB GPU, as illustrated in the following graph
