@@ -347,6 +347,9 @@ class FusedChunkGLAFunction(torch.autograd.Function):
     @custom_fwd
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state
                 ):
+        # for numerical stability consideration. cumulative decay should be stored in fp32 later.
+        ctx.g_dtype = g.dtype
+        g = g.float()
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
 
@@ -471,7 +474,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
                                        dg2.stride(1), dg2.stride(
                                            2), dg2.stride(3),
                                        batch_size, n_heads, seq_len, BT, BK, d_head_qk, NV, num_warps=2)
-        return dq2.to(q), dk2.to(k), dv2.to(v), dg2.to(g), None, None, None
+        return dq2.to(q), dk2.to(k), dv2.to(v), dg2.to(ctx.g_dtype), None, None, None
 
 
 def fused_chunk_gla(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, scale: int = -1, initial_state: torch.Tensor = None, output_final_state: bool = False):
