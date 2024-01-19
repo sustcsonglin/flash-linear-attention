@@ -2,9 +2,12 @@
 
 # Retentive Network: A Successor to Transformer for Large Language Models"[https://arxiv.org/pdf/2307.08621.pdf]
 
+from __future__ import annotations
+
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+
 from fla.modules.rmsnorm import RMSNorm
 from fla.modules.rotary import RotaryEmbedding
 from fla.ops.triton.retention import (fused_chunk_retention,
@@ -13,33 +16,36 @@ from fla.ops.triton.retention import (fused_chunk_retention,
 
 
 def get_activation_fn(activation):
-    if activation == "swish":
+    if activation == 'swish':
         return F.silu
-    elif activation == "gelu":
+    elif activation == 'gelu':
         return F.gelu
     else:
         raise NotImplementedError
 
 
 class MultiScaleRetention(nn.Module):
-    def __init__(self,
-                 d_model=1024,
-                 expand_k=1,
-                 expand_v=2,
-                 num_heads=4,
-                 gate_fn="swish",
-                 layernorm_eps=1e-5,
-                 training_mode='fused_chunk',
-                 *args, **kwargs):
+    def __init__(
+        self,
+        d_model: str = 1024,
+        expand_k: str = 1,
+        expand_v: str = 2,
+        num_heads: str = 4,
+        gate_fn: str = 'swish',
+        layernorm_eps: float = 1e-5,
+        mode: str = 'fused_chunk',
+    ) -> MultiScaleRetention:
         super().__init__()
+
+        assert mode in ['fused_chunk', 'chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
+        assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
+        assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
+
         self.d_model = d_model
-        self.mode = training_mode 
-        assert training_mode in ['fused_chunk', 'chunk', 'fused_recurrent']
+        self.mode = mode
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
         self.num_heads = num_heads
-        assert self.key_dim % num_heads == 0, "key dim must be divisible by num_heads"
-        assert self.value_dim % num_heads == 0, "value dim must be divisible by num_heads"
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = get_activation_fn(activation=str(gate_fn))
@@ -90,4 +96,5 @@ if __name__ == '__main__':
     y = model(x)
     print(y.shape)
     y.sum().backward()
+    print(x.grad.shape)
     print(x.grad.shape)

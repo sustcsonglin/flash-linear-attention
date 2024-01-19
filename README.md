@@ -75,7 +75,8 @@ asssert y1.shape == y2.shape == y3.shape == x.shape
 # Benchmark
 We compared our Triton-based RetNet implementation with CUDA-based FlashAttention2, using a batch size of 8, 32 heads, and a head dimension of 128, across different sequence lengths. These tests were conducted on a single A100 80GB GPU, as illustrated in the following graph
 ```py
-➜  benchmarks git:(main) ✗ python benchmark_retention.py
+# you might have to first install `fla` to enable its import via `pip install -e .`, ensuring any previous versions are removed if needed
+$ python benchmark_retention.py
 Performance:
    seq_len  fused_chunk_fwd  chunk_fwd  parallel_fwd  fused_chunk_fwdbwd  chunk_fwdbwd  parallel_fwdbwd  flash_fwd  flash_fwdbwd
 0    128.0         0.093184   0.185344      0.067584            1.009664      1.591296         1.044480   0.041984      0.282624
@@ -102,7 +103,7 @@ Please refer to Sectiton 2.3 of [GLA paper](https://arxiv.org/pdf/2312.06635.pdf
 
 # Citation
 If you find this repo useful, please consider citing our works:
-```
+```bib
 @article{yang2023gated,
   title   = {Gated Linear Attention Transformers with Hardware-Efficient Training},
   author  = {Yang, Songlin and Wang, Bailin and Shen, Yikang and Panda, Rameswar and Kim, Yoon},
@@ -112,7 +113,7 @@ If you find this repo useful, please consider citing our works:
 
 @software{yang2024fla,
   title  = {FLA: A Triton-Based Library for Hardware-Efficient Implementations of Linear Attention Mechanism},
-  author = {Songlin, Yang and Zhang, Yu},
+  author = {Yang, Songlin and Zhang, Yu},
   url    = {https://github.com/sustcsonglin/flash-linear-attention},
   month  = jan,
   year   = {2024}
