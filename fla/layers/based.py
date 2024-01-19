@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 """
 Linear attention in Based.
 https://github.com/HazyResearch/zoology/blob/main/zoology/mixers/based.py
@@ -93,16 +95,15 @@ class BasedLinearAttention(nn.Module):
         feature_dim: int = 16,
         num_key_value_heads: int = 12,
         num_heads: int = 12,
-        feature_name: "str" = "taylor_exp",
+        feature_name: str = "taylor_exp",
         eps: float = 1e-12,
         causal: bool = True,
-        training_mode: "str" = "parallel",
-        **kwargs
+        mode: str = "parallel",
     ):
         super().__init__()
         self.d_model = d_model
         self.l_max = l_max
-        self.mode = training_mode
+        self.mode = mode
         assert self.mode in ["fused_chunk", "parallel"]
 
         # linear attention
@@ -173,11 +174,9 @@ class BasedLinearAttention(nn.Module):
 
         # Compute attention
         if self.causal:
-            y = ((q * (k * v).cumsum(dim=2)).sum(dim=-1) /
-                 ((q * k.cumsum(dim=2)).sum(dim=-1) + self.eps))
+            y = ((q * (k * v).cumsum(2)).sum(-1) / ((q * k.cumsum(2)).sum(-1) + self.eps))
         else:
-            y = ((q * (k * v).sum(dim=2, keepdim=True)).sum(dim=-1) /
-                 ((q * k.sum(dim=2, keepdim=True)).sum(dim=-1) + self.eps))
+            y = ((q * (k * v).sum(2, True)).sum(-1) / ((q * k.sum(2, True)).sum(-1) + self.eps))
         y = rearrange(y, 'b h l d -> b l (h d)')
         y = self.proj_o(y.to(hidden_states.dtype))
         y = self.dropout(y)
