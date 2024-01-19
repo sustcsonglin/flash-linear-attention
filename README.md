@@ -1,7 +1,7 @@
 # flash-linear-attention
-This repo contains fast Triton-based implementations of ~~causal~~ **linear attention (i.e., RNNs with 2D hidden states)**. ~~with a specific focus on modern decoder-only language models~~. for both autoregressive and bidirectional modeling.
+This repo aims at providing efficient Triton-based implementations of state-of-the-art linear attention models.
 
-Join [discord](https://discord.gg/vDaJTmKNcS) if you are interested in this project!  
+Join [discord](https://discord.gg/vDaJTmKNcS) if you are interested in this project or have any questions!  
 
 
 # Models
