@@ -40,6 +40,7 @@ def fused_recurrent_gla_fwd_kernel(
     DV: tl.constexpr,  # D_head_V
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
     STORE_FINAL_STATE: tl.constexpr,  # whether to store final state
+    REVERSE: tl.constexpr  # whether to do autoregressive modeling in the reverse direction
 ):
     # indices
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -50,6 +51,13 @@ def fused_recurrent_gla_fwd_kernel(
     p_g = g + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     p_o = o + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV)
+
+    if REVERSE:
+        p_q += (T - 1) * DK
+        p_k += (T - 1) * DK
+        p_g += (T - 1) * DK
+        p_v += (T - 1) * DV
+        p_o += (T - 1) * DV
 
     mask_bk = (i_k * BK + tl.arange(0, BK)) < DK
     mask_bv = (i_v * BV + tl.arange(0, BV)) < DV
@@ -76,11 +84,18 @@ def fused_recurrent_gla_fwd_kernel(
         _o = tl.sum(_o, axis=1)
         tl.store(p_o, _o.to(p_o.dtype.element_ty), mask=mask_bv)
 
-        p_q += DK
-        p_k += DK
-        p_o += DV
-        p_v += DV
-        p_g += DK
+        if not REVERSE:
+            p_q += DK
+            p_k += DK
+            p_o += DV
+            p_v += DV
+            p_g += DK
+        else:
+            p_q -= DK
+            p_k -= DK
+            p_o -= DV
+            p_v -= DV
+            p_g -= DK
 
     if STORE_FINAL_STATE:
         p_final_s = final_state + i_bh * DK * DV + \
@@ -105,7 +120,7 @@ def fused_recurrent_gla_bwd_kernel(
     dv,  # gradient of value [NK, B, H, L, D_head_V]
 
     # initial hidden state initialization [B, H, D_head_K, D_head_V]
-    intiial_state,
+    initial_state,
 
     s_qk_h,  # stride size: L * D_head_K
     s_qk_t,  # stride size: D_head_K
@@ -124,6 +139,7 @@ def fused_recurrent_gla_bwd_kernel(
     DK: tl.constexpr,  # D_head_K
     DV: tl.constexpr,  # D_head_V
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
+    REVERSE: tl.constexpr  # whether to do autoregressive modeling in the reverse direction
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
@@ -142,10 +158,18 @@ def fused_recurrent_gla_bwd_kernel(
     h = tl.zeros([BK, BV], dtype=tl.float32)
 
     if USE_INITIAL_STATE:
-        p_init_s = intiial_state + i_bh * DK * DV + \
+        p_init_s = initial_state + i_bh * DK * DV + \
             (i_k * BK + tl.arange(0, BK)[:, None]) * \
             DV + (i_v * BV + tl.arange(0, BV)[None, :])
         h += tl.load(p_init_s, mask=mask_kv, other=0).to(tl.float32)
+
+    if REVERSE:
+        p_q += (T - 1) * DK
+        p_k += (T - 1) * DK
+        p_g += (T - 1) * DK
+        p_v += (T - 1) * DV
+        p_do += (T - 1) * DV
+        p_dq += (T - 1) * DK
 
     for i in range(0, T):
         _k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
@@ -159,24 +183,37 @@ def fused_recurrent_gla_bwd_kernel(
         d_q = tl.sum(_d_q, axis=1) * scale
         tl.store(p_dq, d_q.to(p_dq.dtype.element_ty), mask=mask_bk)
 
-        p_k += DK
-        p_do += DV
-        p_v += DV
-        p_dq += DK
-        p_g += DK
+        if not REVERSE:
+            p_k += DK
+            p_do += DV
+            p_v += DV
+            p_dq += DK
+            p_g += DK
+        else:
+            p_k -= DK
+            p_do -= DV
+            p_v -= DV
+            p_dq -= DK
+            p_g -= DK
 
     # sync threads
     tl.debug_barrier()
 
-    p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
-    p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
-    p_g = g + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
-    p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
-    p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
+    p_q = q + i_bh * s_qk_h + i_k * BK + \
+        tl.arange(0, BK) + ((T - 1) * DK if not REVERSE else 0)
+    p_k = k + i_bh * s_qk_h + i_k * BK + \
+        tl.arange(0, BK) + ((T - 1) * DK if not REVERSE else 0)
+    p_g = g + i_bh * s_qk_h + i_k * BK + \
+        tl.arange(0, BK) + ((T - 1) * DK if not REVERSE else 0)
+    p_do = do + i_bh * s_vo_h + i_v * BV + \
+        tl.arange(0, BV) + ((T - 1) * DV if not REVERSE else 0)
+    p_v = v + i_bh * s_vo_h + i_v * BV + \
+        tl.arange(0, BV) + ((T - 1) * DV if not REVERSE else 0)
     p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * \
-        BK + tl.arange(0, BK) + (T - 1) * DK
+        BK + tl.arange(0, BK) + ((T - 1) * DK if not REVERSE else 0)
     p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * \
-        BV + tl.arange(0, BV) + (T - 1) * DV
+        BV + tl.arange(0, BV) + ((T - 1) * DV if not REVERSE else 0)
+
     d_h = tl.zeros([BK, BV], dtype=tl.float32)
 
     for _ in range(T):
@@ -194,13 +231,22 @@ def fused_recurrent_gla_bwd_kernel(
         tl.store(p_dk, d_k.to(p_dk.dtype.element_ty), mask=mask_bk)
         tl.store(p_dv, d_v.to(p_dv.dtype.element_ty), mask=mask_bv)
 
-        p_do -= DV
-        p_q -= DK
-        p_k -= DK
-        p_v -= DV
-        p_dk -= DK
-        p_dv -= DV
-        p_g -= DK
+        if not REVERSE:
+            p_do -= DV
+            p_q -= DK
+            p_k -= DK
+            p_v -= DV
+            p_dk -= DK
+            p_dv -= DV
+            p_g -= DK
+        else:
+            p_do += DV
+            p_q += DK
+            p_k += DK
+            p_v += DV
+            p_dk += DK
+            p_dv += DV
+            p_g += DK
 
 
 class FusedRecurrentGLAFunction(torch.autograd.Function):
@@ -208,7 +254,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @custom_fwd
-    def forward(ctx, q, k, v, g, scale=None, initial_state=None, output_final_state=False):
+    def forward(ctx, q, k, v, g, scale=None, initial_state=None, output_final_state=False, reverse=False):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
         # default scale
@@ -220,7 +266,8 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         num_stages = 1
         num_warps = 1
 
-        o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v, dtype=torch.float32)
+        o = q.new_empty(NK, batch_size, n_heads, seq_len,
+                        d_head_v, dtype=torch.float32)
 
         if output_final_state:
             final_state = q.new_empty(batch_size, n_heads, d_head_qk, d_head_v)
@@ -236,6 +283,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
             DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
             USE_INITIAL_STATE=initial_state is not None,
             STORE_FINAL_STATE=final_state is not None,
+            REVERSE=reverse,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -243,6 +291,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         o = o.sum(0)
         ctx.save_for_backward(q, k, v, g, initial_state, final_state)
         ctx.scale = scale
+        ctx.reverse = reverse
         # we do not need the gradient of the final state from the next chunk
         # similiar to Trunctated BPTT
         if final_state is not None:
@@ -263,9 +312,12 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         num_stages = 1
         num_warps = 1
 
-        dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk, dtype=torch.float32)
-        dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk, dtype=torch.float32)
-        dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v, dtype=torch.float32)
+        dq = q.new_empty(NV, batch_size, n_heads,  seq_len,
+                         d_head_qk, dtype=torch.float32)
+        dk = q.new_empty(NV, batch_size, n_heads,  seq_len,
+                         d_head_qk, dtype=torch.float32)
+        dv = q.new_empty(NK, batch_size, n_heads, seq_len,
+                         d_head_v, dtype=torch.float32)
         grid = (NV, NK, batch_size * n_heads)
 
         fused_recurrent_gla_bwd_kernel[grid](
@@ -277,24 +329,38 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
             num_warps=num_warps,
             num_stages=num_stages,
             USE_INITIAL_STATE=initial_state is not None,
+            REVERSE=ctx.reverse
         )
         dq = dq.sum(0)
         dk = dk.sum(0)
         dv = dv.sum(0)
         _dg = dq * q.float() - dk * k.float()
-        _dg_cumsum = _dg.cumsum(-2)
-        dg = _dg + _dg_cumsum[:, :, -1, None] - _dg_cumsum
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, None, None
+        if ctx.reverse:
+            dg = _dg.cumsum(-2)
+        else:
+            _dg_cumsum = _dg.cumsum(-2)
+            dg = _dg + _dg_cumsum[:, :, -1, None] - _dg_cumsum
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, None, None, None
 
 
 # if scale is None, use d_head_qk ** -0.5 by default. Otherwise specify the scale yourself. e.g. scale = 1.0
-def fused_recurrent_gla(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, scale: int = -1, initial_state: torch.Tensor = None, output_final_state: bool = False):
+def fused_recurrent_gla(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, scale: int = -1, initial_state: torch.Tensor = None, output_final_state: bool = False, causal: bool = True):
     if scale == -1:
         scale = q.shape[-1] ** -0.5
     if initial_state is not None:
         initial_state = initial_state.detach()
-    o, final_state = FusedRecurrentGLAFunction.apply(
-        q, k, v, g, scale, initial_state, output_final_state)
-    if output_final_state:
-        return o, final_state
-    return o
+    if causal:
+        o, final_state = FusedRecurrentGLAFunction.apply(
+            q, k, v, g, scale, initial_state, output_final_state)
+        if output_final_state:
+            return o, final_state
+        return o
+    else:
+        # do not support initial_state yet. looks very strange for bidirectional modeling
+        assert initial_state is None
+        assert output_final_state is False
+        o, final_state = FusedRecurrentGLAFunction.apply(
+            q, k, v, g, scale, initial_state, output_final_state, False)
+        o_reversed, final_state = FusedRecurrentGLAFunction.apply(
+            q, k, v, g, scale, initial_state, output_final_state, True)
+        return [o, o_reversed]
