@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-
 from fla.modules.rmsnorm import RMSNorm
 from fla.ops.triton.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
@@ -37,25 +36,25 @@ class GatedLinearAttention(nn.Module):
         gate_logit_normalizer: int = 16,
         gate_low_rank_dim: int = 16,
         mode: str = 'fused_chunk',
-        chunk_size: int = 64
+        chunk_size: int = 64,
+        *args, **kwargs
     ) -> GatedLinearAttention:
         super().__init__()
-
-        assert mode in ['chunk', 'fused_recurrent', 'fused_chunk'], f"Not suppoerted mode `{mode}`."
-        assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
-        assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
 
         if mode != 'chunk' and chunk_size != 16:
             warnings.warn(
                 f" `chunk_size` is only used for `chunk` mode."
                 f" The `{mode}` mode will suppress the passed value of {chunk_size} and always use 16."
             )
-
         self.d_model = d_model
         self.mode = mode
         self.chunk_size = chunk_size
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
+        assert mode in ['chunk', 'fused_recurrent',
+                        'fused_chunk'], f"Not suppoerted mode `{mode}`."
+        assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
+        assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
         self.num_heads = num_heads
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
@@ -104,7 +103,8 @@ class GatedLinearAttention(nn.Module):
             raise NotImplementedError
 
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
-        o = self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.gate_fn(self.g_proj(x)))
+        o = self.out_proj(rearrange(o, 'b n h d -> b n (h d)')
+                          * self.gate_fn(self.g_proj(x)))
         return o
 
 
@@ -112,7 +112,8 @@ if __name__ == '__main__':
     batch = 4
     seq_len = 1023
     d_model = 1024
-    x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
+    x = torch.randn(batch, seq_len, d_model).to(
+        torch.bfloat16).cuda().requires_grad_(True)
     model = GatedLinearAttention().to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)

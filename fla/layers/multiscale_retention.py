@@ -7,7 +7,6 @@ from __future__ import annotations
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-
 from fla.modules.rmsnorm import RMSNorm
 from fla.modules.rotary import RotaryEmbedding
 from fla.ops.triton.retention import (fused_chunk_retention,
@@ -34,18 +33,18 @@ class MultiScaleRetention(nn.Module):
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
         mode: str = 'fused_chunk',
+        *args, **kwargs
     ) -> MultiScaleRetention:
         super().__init__()
-
-        assert mode in ['fused_chunk', 'chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
-        assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
-        assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
 
         self.d_model = d_model
         self.mode = mode
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
         self.num_heads = num_heads
+        assert mode in ['fused_chunk', 'chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
+        assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
+        assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = get_activation_fn(activation=str(gate_fn))
@@ -58,6 +57,7 @@ class MultiScaleRetention(nn.Module):
         self.group_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
         self.rotary = RotaryEmbedding(dim=self.head_qk_dim, interleaved=False)
         self.reset_parameters()
+
 
     def reset_parameters(self):
         nn.init.xavier_uniform_(self.q_proj.weight, gain=2 ** -2.5)
