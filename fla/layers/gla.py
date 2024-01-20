@@ -33,19 +33,26 @@ class GatedLinearAttention(nn.Module):
         num_heads: int = 1,
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
-        gate_logit_normalizer: int = 16,
-        gate_low_rank_dim: int = 16,
+        gate_logit_normalizer: int = 32,
+        gate_low_rank_dim: int = 32,
         mode: str = 'fused_chunk',
         chunk_size: int = 64,
+        use_gk: bool = True,  # gate associated with key, i.e., $\alpha$ in the paper
+        use_gv: bool = False,  # gate associated with value, i.e., $\beta$ in the paper
         *args, **kwargs
     ) -> GatedLinearAttention:
         super().__init__()
-
+        if use_gv is True:
+            assert mode == 'chunk', "Only `chunk` mode supports `use_gv`"
+        if mode == 'fused_chunk' or mode == 'fused_recurrent':
+            assert use_gk is True
         if mode != 'chunk' and chunk_size != 16:
             warnings.warn(
                 f" `chunk_size` is only used for `chunk` mode."
                 f" The `{mode}` mode will suppress the passed value of {chunk_size} and always use 16."
             )
+        self.use_gk = use_gk        
+        self.use_gv = use_gv
         self.d_model = d_model
         self.mode = mode
         self.chunk_size = chunk_size
@@ -63,8 +70,18 @@ class GatedLinearAttention(nn.Module):
         self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
         self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
-        self.gk_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
+
+        if self.use_gk:
+            self.gk_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
                                      nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
+        else:
+            self.gk_proj = False
+        if self.use_gv:
+            self.gv_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
+                                     nn.Linear(gate_low_rank_dim, self.value_dim, 
+                                               bias=True))
+        else:
+            self.gv_proj = False
         self.out_proj = nn.Linear(self.value_dim, d_model, bias=False)
         self.group_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
         self.gate_logit_normalizer = gate_logit_normalizer
@@ -87,20 +104,32 @@ class GatedLinearAttention(nn.Module):
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
-        g = self.gk_proj(x).to(torch.float32)
-        g = F.logsigmoid(g) / self.gate_logit_normalizer
-        g = rearrange(g, 'b n (h d) -> b h n d', h=self.num_heads)
 
-        if mode == 'fused_chunk':
-            o = fused_chunk_gla(q, k, v, g)
-        elif mode == 'chunk':
+        if mode == 'chunk':
             # for numumerical stable consideration. fused_chunk has better numerical stability
-            g.clamp_min_(-3)
-            o = chunk_gla(q, k, v, gk=g, gv=None, chunk_size=chunk_size)
-        elif mode == 'fused_recurrent':
-            o = fused_recurrent_gla(q, k, v, g)
+            if self.use_gk:
+                gk = self.gk_proj(x).to(torch.float32)
+                gk = (F.logsigmoid(gk) / self.gate_logit_normalizer).clamp_min_(-3)
+                gk = rearrange(gk, 'b n (h d) -> b h n d', h=self.num_heads)
+            else:
+                gk = None 
+            if self.use_gv:
+                gv = self.gv_proj(x).to(torch.float32)
+                gv = (F.logsigmoid(gv) / self.gate_logit_normalizer).clamp_min_(-3)
+                gv = rearrange(gv, 'b n (h d) -> b h n d', h=self.num_heads)
+            else:
+                gv = None
+            o = chunk_gla(q, k, v, gk=gk, gv=gv, chunk_size=chunk_size)
         else:
-            raise NotImplementedError
+            g = self.gk_proj(x).to(torch.float32)
+            g = F.logsigmoid(g) / self.gate_logit_normalizer
+            g = rearrange(g, 'b n (h d) -> b h n d', h=self.num_heads)
+            if mode == 'fused_chunk':
+                o = fused_chunk_gla(q, k, v, g)
+            elif mode == 'fused_recurrent':
+                o = fused_recurrent_gla(q, k, v, g)
+            else:
+                raise NotImplementedError
 
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
         o = self.out_proj(rearrange(o, 'b n h d -> b n (h d)')
