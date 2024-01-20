@@ -34,6 +34,7 @@ class GatedLinearAttention(nn.Module):
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
         gate_logit_normalizer: int = 32,
+        gate_logit_multiplier: int = 1,
         gate_low_rank_dim: int = 32,
         mode: str = 'fused_chunk',
         chunk_size: int = 64,
@@ -75,16 +76,17 @@ class GatedLinearAttention(nn.Module):
             self.gk_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
                                          nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
         else:
-            self.gk_proj = False
+            self.gk_proj = None
         if self.use_gv:
             self.gv_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
                                          nn.Linear(gate_low_rank_dim, self.value_dim,
                                                    bias=True))
         else:
-            self.gv_proj = False
+            self.gv_proj = None
         self.out_proj = nn.Linear(self.value_dim, d_model, bias=False)
         self.group_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
         self.gate_logit_normalizer = gate_logit_normalizer
+        self.gate_logit_multiplier = gate_logit_multiplier
 
         self.reset_parameters()
 
@@ -126,7 +128,7 @@ class GatedLinearAttention(nn.Module):
             o = chunk_gla(q, k, v, gk=gk, gv=gv, chunk_size=chunk_size)
         else:
             g = self.gk_proj(x).to(torch.float32)
-            g = F.logsigmoid(g) / self.gate_logit_normalizer
+            g = F.logsigmoid(g * self.gate_logit_multiplier) / self.gate_logit_normalizer
             g = rearrange(g, 'b n (h d) -> b h n d', h=self.num_heads)
             if mode == 'fused_chunk':
                 o = fused_chunk_gla(q, k, v, g)
