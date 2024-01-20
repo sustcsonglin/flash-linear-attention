@@ -51,7 +51,7 @@ class GatedLinearAttention(nn.Module):
                 f" `chunk_size` is only used for `chunk` mode."
                 f" The `{mode}` mode will suppress the passed value of {chunk_size} and always use 16."
             )
-        self.use_gk = use_gk        
+        self.use_gk = use_gk
         self.use_gv = use_gv
         self.d_model = d_model
         self.mode = mode
@@ -73,13 +73,13 @@ class GatedLinearAttention(nn.Module):
 
         if self.use_gk:
             self.gk_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
-                                     nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
+                                         nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
         else:
             self.gk_proj = False
         if self.use_gv:
             self.gv_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
-                                     nn.Linear(gate_low_rank_dim, self.value_dim, 
-                                               bias=True))
+                                         nn.Linear(gate_low_rank_dim, self.value_dim,
+                                                   bias=True))
         else:
             self.gv_proj = False
         self.out_proj = nn.Linear(self.value_dim, d_model, bias=False)
@@ -94,8 +94,12 @@ class GatedLinearAttention(nn.Module):
         nn.init.xavier_uniform_(self.v_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.gk_proj[0].weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.gk_proj[1].weight, gain=2 ** -2.5)
+        if self.gk_proj is not None:
+            nn.init.xavier_uniform_(self.gk_proj[0].weight, gain=2 ** -2.5)
+            nn.init.xavier_uniform_(self.gk_proj[1].weight, gain=2 ** -2.5)
+        if self.gv_proj is not None:
+            nn.init.xavier_uniform_(self.gv_proj[0].weight, gain=2 ** -2.5)
+            nn.init.xavier_uniform_(self.gv_proj[1].weight, gain=2 ** -2.5)
 
     def forward(self, x):
         mode = self.mode
@@ -112,7 +116,7 @@ class GatedLinearAttention(nn.Module):
                 gk = (F.logsigmoid(gk) / self.gate_logit_normalizer).clamp_min_(-3)
                 gk = rearrange(gk, 'b n (h d) -> b h n d', h=self.num_heads)
             else:
-                gk = None 
+                gk = None
             if self.use_gv:
                 gv = self.gv_proj(x).to(torch.float32)
                 gv = (F.logsigmoid(gv) / self.gate_logit_normalizer).clamp_min_(-3)
