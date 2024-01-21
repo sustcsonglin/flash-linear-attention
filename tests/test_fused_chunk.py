@@ -18,11 +18,12 @@ def attention_fwd_kernel(
     s_hh,
     s_ht,
     T,
-    TD,
     scale,
     BT: tl.constexpr,
     BD: tl.constexpr,
-    STORE: tl.constexpr
+    NT: tl.constexpr,
+    STORE: tl.constexpr,
+    IFCOND: tl.constexpr
 ):
     i_bh = tl.program_id(0)
 
@@ -32,9 +33,11 @@ def attention_fwd_kernel(
         p_q = tl.make_block_ptr(q + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i * BT, 0), (BT, BD), (1, 0))
         p_k = tl.make_block_ptr(k + i_bh * s_qh, (BD, T), (s_qd, s_qt), (0, i * BT), (BD, BT), (0, 1))
         p_v = tl.make_block_ptr(v + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i * BT, 0), (BT, BD), (1, 0))
-        p_h = tl.make_block_ptr(h + i_bh * s_hh, (TD, BD), (s_ht, s_qd), (i * BD, 0), (BD, BD), (1, 0))
+        p_h = tl.make_block_ptr(h + i_bh * s_hh, (NT * BD, BD), (s_ht, s_qd), (i * BD, 0), (BD, BD), (1, 0))
         p_o = tl.make_block_ptr(o + i_bh * s_qh, (T, BD), (s_qt, s_qd), (i * BT, 0), (BT, BD), (1, 0))
 
+        if STORE:
+            tl.store(p_h, b_h.to(p_h.dtype.element_ty))
         # [BT, BD]
         b_q = tl.load(p_q)
         b_q = (b_q * scale).to(b_q.dtype)
@@ -46,36 +49,40 @@ def attention_fwd_kernel(
         # [BT, BT]
         b_s = tl.dot(b_q, b_k, allow_tf32=False)
         # [BT, BD]
-        b_o = tl.dot(b_q, b_h.to(b_q.dtype), allow_tf32=False)
-        b_o += tl.dot(b_s.to(b_q.dtype), b_v, allow_tf32=False)
+        b_o = tl.dot(b_s.to(b_q.dtype), b_v, allow_tf32=False)
+        if IFCOND:
+            if i == 0:
+                b_h = tl.dot(b_k, b_v, allow_tf32=False)
+            else:
+                b_o += tl.dot(b_q, b_h.to(b_q.dtype), allow_tf32=False)
+                b_h += tl.dot(b_k, b_v, allow_tf32=False)
+        else:
+            b_o += tl.dot(b_q, b_h.to(b_q.dtype), allow_tf32=False)
+            b_h += tl.dot(b_k, b_v, allow_tf32=False)
 
-        if STORE:
-            tl.store(p_h, b_h.to(p_h.dtype.element_ty))
         tl.store(p_o, b_o.to(p_o.dtype.element_ty))
-
-        # [BD, BD]
-        b_h = b_h + tl.dot(b_k, b_v, allow_tf32=False)
 
 
 class AttentionFunction(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q, k, v, store=False):
+    def forward(ctx, q, k, v, store=False, ifcond=False):
         batch_size, n_heads, seq_len, d_head = q.shape
         scale = d_head ** -0.5
         BD = q.shape[-1]
         BT = 32
+        NT = triton.cdiv(seq_len, BT)
         num_stages = 3 if d_head <= 64 else 2
         num_warps = 4
 
-        h = q.new_empty(batch_size, n_heads, triton.cdiv(seq_len, BT) * BD, BD)
+        h = q.new_empty(batch_size, n_heads, NT * BD, BD)
         o = torch.empty_like(q)
         grid = (batch_size * n_heads,)
         attention_fwd_kernel[grid](
             q, k, v, h, o,
             q.stride(1), q.stride(2), q.stride(3), h.stride(1), h.stride(2),
-            seq_len, h.shape[2], scale,
-            BT=BT, BD=BD, STORE=store,
+            seq_len, scale,
+            BT=BT, BD=BD, NT=NT, STORE=store, IFCOND=ifcond,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -91,17 +98,11 @@ if __name__ == '__main__':
     k = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
     v = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
 
-    print('Testing Float...')
-    ref = AttentionFunction.apply(q, k, v, True)
-    tri = AttentionFunction.apply(q, k, v, False)
-    print(ref[0, 0])
-    print(tri[0, 0])
-    print('Diff:', (ref - tri).abs().max(), '\n\n')
-
-    print('Testing BFloat16...')
-    q, k, v = q.bfloat16(), k.bfloat16(), v.bfloat16()
-    ref = AttentionFunction.apply(q, k, v, True)
-    tri = AttentionFunction.apply(q, k, v, False)
-    print(ref[0, 0])
-    print(tri[0, 0])
-    print('Diff:', (ref - tri).abs().max(), '\n\n')
+    ref = AttentionFunction.apply(q, k, v)
+    print("DTYPE\t\tSTORE\tIFCOND\tDIFF")
+    for dtype in (torch.float, torch.bfloat16):
+        q, k, v = q.clone().to(dtype), k.clone().to(dtype), v.clone().to(dtype)
+        for store in [False, True]:
+            for ifcond in [False, True]:
+                tri = AttentionFunction.apply(q, k, v, store, ifcond)
+                print(f"{q.dtype}\t{store}\t{ifcond}\t{(ref - tri).abs().max()}")
