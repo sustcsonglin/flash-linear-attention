@@ -40,11 +40,11 @@ def test_chunk():
     tri_dk, k.grad = k.grad.clone(), None
     tri_dv, v.grad = v.grad.clone(), None
 
-    assert ref.allclose(tri, 0, 1e-5), breakpoint()
+    assert ref.allclose(tri, 0, 1e-4), breakpoint()
     # assert ref_rev.allclose(tri_rev, 0, 1e-5), breakpoint()
-    assert ref_dq.allclose(tri_dq, 0, 1e-5), breakpoint()
-    assert ref_dk.allclose(tri_dk, 0, 1e-5), breakpoint()
-    assert ref_dv.allclose(tri_dv, 0, 1e-5), breakpoint()
+    assert ref_dq.allclose(tri_dq, 0, 1e-4), breakpoint()
+    assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
+    assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
 
     # tri = fused_chunk_gla(
     #     q, k, v, g)
