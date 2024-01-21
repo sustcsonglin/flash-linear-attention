@@ -4,6 +4,8 @@
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
 # on-the-fly computation without materializing hidden statets into HBMs
 
+import warnings
+
 import torch
 import torch.nn.functional as F
 import triton
@@ -11,8 +13,13 @@ import triton.language as tl
 from einops import rearrange
 from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.ops.cuda.gla.semiring.cal_A.fn import semiring_cal_A
 from fla.ops.triton.utils import contiguous, require_version
+
+try:
+    import semiring_cal_A
+except ImportError:
+    warnings.warning('Failed to import semiring_cal_A. Do not use FusedChunk implementation of GLA.')
+
 
 inv_ln2 = 1.44269504
 
