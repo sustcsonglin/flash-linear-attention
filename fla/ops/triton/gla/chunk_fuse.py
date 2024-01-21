@@ -11,15 +11,13 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 from einops import rearrange
-from torch.cuda.amp import custom_bwd, custom_fwd
-
 from fla.ops.triton.utils import contiguous, require_version
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 try:
     import semiring_cal_A
 except ImportError:
-    warnings.warning('Failed to import semiring_cal_A. Do not use FusedChunk implementation of GLA.')
-
+    warnings.warn('Failed to import semiring_cal_A. Do not use FusedChunk implementation of GLA.')
 
 inv_ln2 = 1.44269504
 
