@@ -1,11 +1,11 @@
-import time
+# -*- coding: utf-8 -*-
 
 import torch
-import torch.nn.functional as F
 import triton
 import triton.language as tl
-from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.triton.utils import contiguous
 
 # def stable_logsigmoid(x):
 #     # Use the identity log(sigmoid(x)) = -log(1 + exp(-x))
@@ -13,11 +13,18 @@ from torch.cuda.amp import custom_bwd, custom_fwd
 #     neg_abs_x = -torch.abs(x)
 #     return torch.where(x < 0, x, neg_abs_x) - torch.log1p(torch.exp(neg_abs_x))
 
+
 @triton.jit
 def _fwd_preprocess_cumsum_gk(
-    Q, K, GK, GK_cumsum,
-    Q_exp, K_reduce, GK_last_exp,
-    NUM_CHUNK, L,
+    Q,
+    K,
+    GK,
+    GK_cumsum,
+    Q_exp,
+    K_reduce,
+    GK_last_exp,
+    NUM_CHUNK,
+    L,
     D_MODEL_K: tl.constexpr,
     D_BLOCK_K: tl.constexpr,
     CHUNK_SIZE: tl.constexpr,
@@ -75,16 +82,21 @@ def _fwd_preprocess_cumsum_gk(
         K_reduce_ptr += D_MODEL_K
 
 
-
 @triton.jit
 def _bwd_preprocess_cumsum_gk(
-    Q, K, GK, GK_cumsum,
-
-    DQ_exp, DK_reduce, DGK_last_exp, DGK_cumsum,
-
-    DQ, DK, DGK,
-
-    NUM_CHUNK, L,
+    Q,
+    K,
+    GK,
+    GK_cumsum,
+    DQ_exp,
+    DK_reduce,
+    DGK_last_exp,
+    DGK_cumsum,
+    DQ,
+    DK,
+    DGK,
+    NUM_CHUNK,
+    L,
     D_MODEL_K: tl.constexpr,
     D_BLOCK_K: tl.constexpr,
     CHUNK_SIZE: tl.constexpr,
@@ -118,7 +130,7 @@ def _bwd_preprocess_cumsum_gk(
         CHUNK_SIZE * D_MODEL_K + tl.arange(0, D_BLOCK_K) + D_BLOCK_K * offset_nk
 
     D_GK_last_exp_ptr = DGK_last_exp + offset_bh * NUM_CHUNK * \
-        D_MODEL_K + offset_c * D_MODEL_K + tl.arange(0, D_BLOCK_K) + D_BLOCK_K * offset_nk 
+        D_MODEL_K + offset_c * D_MODEL_K + tl.arange(0, D_BLOCK_K) + D_BLOCK_K * offset_nk
     #
     cumsum_gradient = tl.zeros([D_BLOCK_K], dtype=tl.float32)
     grad_gk_last = tl.zeros([D_BLOCK_K], dtype=tl.float32)
@@ -138,7 +150,6 @@ def _bwd_preprocess_cumsum_gk(
     DQ_ptr += (CHUNK_SIZE - 1) * D_MODEL_K
     DK_ptr += (CHUNK_SIZE - 1) * D_MODEL_K
     DGK_ptr += (CHUNK_SIZE - 1) * D_MODEL_K
-
 
     for idx in range(CHUNK_SIZE - 1, -1, -1):
         gk_cs = tl.load(GK_cumsum_ptr, mask=mask, other=0).to(tl.float32)
@@ -171,9 +182,9 @@ def _bwd_preprocess_cumsum_gk(
         DGK_ptr -= D_MODEL_K
 
     DGK_ptr = DGK + offset_bh * L * D_MODEL_K + offset_c * CHUNK_SIZE * \
-        D_MODEL_K + tl.arange(0, D_BLOCK_K) + (CHUNK_SIZE - 1) * D_MODEL_K +  D_BLOCK_K * offset_nk
+        D_MODEL_K + tl.arange(0, D_BLOCK_K) + (CHUNK_SIZE - 1) * D_MODEL_K + D_BLOCK_K * offset_nk
     GK_ptr = GK + offset_bh * L * D_MODEL_K + offset_c * CHUNK_SIZE * \
-        D_MODEL_K + tl.arange(0, D_BLOCK_K) + (CHUNK_SIZE - 1) * D_MODEL_K +  D_BLOCK_K * offset_nk
+        D_MODEL_K + tl.arange(0, D_BLOCK_K) + (CHUNK_SIZE - 1) * D_MODEL_K + D_BLOCK_K * offset_nk
 
     # tl.store(D_GK_last_exp_ptr, cumsum_gradient)
 

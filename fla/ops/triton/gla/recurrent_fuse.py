@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
+
 # Copyright (c) 2023, Songlin Yang
 
 import torch
 import triton
 import triton.language as tl
-from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.triton.utils import contiguous
 
 # on-the-fly computation without materializing hidden statets into HBMs
 
@@ -355,7 +357,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
                 _dgk_cumsum = _dgk.cumsum(-2)
                 dgk = _dgk + _dgk_cumsum[:, :, -1, None] - _dgk_cumsum
         else:
-            dgk = None 
+            dgk = None
 
         if gv is not None:
             _dgv = do.float() * o.float() - dv * v.float()
@@ -366,7 +368,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
                 dgv = _dgv + _dgv_cumsum[:, :, -1, None] - _dgv_cumsum
         else:
             dgv = None
-     
+
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dgk, dgv, None, None, None, None
 
 

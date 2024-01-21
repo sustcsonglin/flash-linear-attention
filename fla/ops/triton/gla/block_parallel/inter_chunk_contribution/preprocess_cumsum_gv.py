@@ -1,16 +1,22 @@
-from fla.ops.triton.utils import contiguous
+# -*- coding: utf-8 -*-
+
+import torch
 import triton
 import triton.language as tl
-import torch
-import torch.nn.functional as F
-import time
+
+from fla.ops.triton.utils import contiguous
 
 
 @triton.jit
 def _fwd_preprocess_cumsum_gv(
-    V, GV,
-    GV_cumsum, GV_exp, V_reduce, GV_last_exp,
-    NUM_CHUNK, L,
+    V,
+    GV,
+    GV_cumsum,
+    GV_exp,
+    V_reduce,
+    GV_last_exp,
+    NUM_CHUNK,
+    L,
     D_MODEL_V: tl.constexpr,
     CHUNK_SIZE: tl.constexpr,
 ):
@@ -67,12 +73,17 @@ def _fwd_preprocess_cumsum_gv(
 
 @triton.jit
 def _bwd_preprocess_cumsum_gv(
-    V, GV, GV_cumsum,
-
-    DGV_cumsum_exp, DV_reduce, DGV_last_exp, DGV_cumsum,
-    DV, DGV,
-
-    NUM_CHUNK, L,
+    V,
+    GV,
+    GV_cumsum,
+    DGV_cumsum_exp,
+    DV_reduce,
+    DGV_last_exp,
+    DGV_cumsum,
+    DV,
+    DGV,
+    NUM_CHUNK,
+    L,
     D_MODEL_V: tl.constexpr,
     CHUNK_SIZE: tl.constexpr,
 ):
@@ -156,7 +167,6 @@ def _bwd_preprocess_cumsum_gv(
     for idx in range(CHUNK_SIZE - 1, -1, -1):
         dgv = tl.load(DGV_ptr).to(tl.float32)
         dgv += grad_gv_last
-        gv = tl.load(GV_ptr).to(tl.float32)
         tl.store(DGV_ptr, dgv.to(DGV_ptr.dtype.element_ty))
         DGV_ptr -= D_MODEL_V
         GV_ptr -= D_MODEL_V

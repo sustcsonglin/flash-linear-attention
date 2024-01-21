@@ -1,19 +1,21 @@
+# -*- coding: utf-8 -*-
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import triton
 import triton.language as tl
-from einops import rearrange
-from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.triton.utils import contiguous
 
 
 @triton.jit
 def _fwd_recurrence(
-    S, p1,
+    S,
+    p1,
     O,
     NUM_BLOCK,
-    D_MODEL_K: tl.constexpr, D_MODEL_V: tl.constexpr,
+    D_MODEL_K: tl.constexpr,
+    D_MODEL_V: tl.constexpr,
     BLOCK_MODEL: tl.constexpr
 ):
     offset_bh = tl.program_id(0)
@@ -54,8 +56,11 @@ def _fwd_recurrence(
 def _bwd_recurrence(
     S, p1,
     DS, Dp1,
-    NUM_BLOCK, NUM_SPLIT_K, NUM_SPLIT_V,
-    D_MODEL_K: tl.constexpr, D_MODEL_V: tl.constexpr,
+    NUM_BLOCK,
+    NUM_SPLIT_K,
+    NUM_SPLIT_V,
+    D_MODEL_K: tl.constexpr,
+    D_MODEL_V: tl.constexpr,
     BLOCK_MODEL: tl.constexpr
 ):
     offset_bh = tl.program_id(0)

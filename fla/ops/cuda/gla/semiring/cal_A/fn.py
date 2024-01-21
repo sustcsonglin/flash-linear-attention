@@ -18,24 +18,17 @@ except ImportError:
     warning('Failed to import semiring_cal_A. Do not use FusedChunk implementation of GLA.')
 
 
-if "__main__" == __name__:
-    import time
-
+if __name__ == "__main__":
     import torch
-    from einops import rearrange
-
     batch = 1
     num_head = 1
     seq_len = 4
 
     d_head = 16
     dtype = torch.bfloat16
-    q = torch.randn(batch, num_head, seq_len, 16, d_head,
-                    dtype=dtype, requires_grad=True).cuda()
-    k = torch.randn(batch, num_head, seq_len, 16, d_head,
-                    dtype=dtype, requires_grad=True).cuda()
-    g = torch.randn(batch, num_head, seq_len, 16, d_head,
-                    dtype=dtype, requires_grad=True).cuda()
+    q = torch.randn(batch, num_head, seq_len, 16, d_head, dtype=dtype, requires_grad=True).cuda()
+    k = torch.randn(batch, num_head, seq_len, 16, d_head, dtype=dtype, requires_grad=True).cuda()
+    g = torch.randn(batch, num_head, seq_len, 16, d_head, dtype=dtype, requires_grad=True).cuda()
     o = semiring_cal_A.forward(q, k, g)
     do = torch.randn_like(o)
     dq, dk, dg = semiring_cal_A.backward(q, k, g, do)

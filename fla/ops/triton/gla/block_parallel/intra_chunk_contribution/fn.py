@@ -1,13 +1,6 @@
-import torch
-import torch
-import torch.nn.functional as F
-from einops import rearrange
-import torch
-import triton
-import triton.language as tl
-import numpy as np
-import math
+# -*- coding: utf-8 -*-
 
+import torch
 
 from .fn_only_gk import IntraCalA
 from .fn_only_gv import IntraCalO
@@ -22,11 +15,6 @@ def intra_chunk_onc(q, k, v, gk, gv):
     if gv is not None:
         assert gv.is_contiguous()
 
-    # q = q.float()
-    # k = k.float()
-    # v = v.float()
-
-    origin_chunk_size = k.shape[-2]
     assert k.shape[-2] % 16 == 0
 
     if gk is not None:
@@ -34,12 +22,7 @@ def intra_chunk_onc(q, k, v, gk, gv):
     else:
         A = q @ k.transpose(-1, -2)
 
-    mask = torch.triu(torch.ones(
-        A.shape[-2], A.shape[-2]), diagonal=1).bool().to(A.device)
+    mask = torch.triu(torch.ones(A.shape[-2], A.shape[-2]), diagonal=1).bool().to(A.device)
     A.masked_fill_(mask, 0)
 
-    if gv is not None:
-        O = IntraCalO.apply(A, v, gv)
-    else:
-        O = A.to(v) @ v
-    return O
+    return IntraCalO.apply(A, v, gv) if gv is not None else A.to(v) @ v

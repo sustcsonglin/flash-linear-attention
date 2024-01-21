@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
+
 # Copyright (c) 2023, Songlin Yang
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
-# chunkwise block parallel. Materialize chunkwise hidden states into HBMs. Therefore it is neccessary to have a large chunk size to reduce such materialization overhead.
+# chunkwise block parallel. Materialize chunkwise hidden states into HBMs.
+# Therefore it is neccessary to have a large chunk size to reduce such materialization overhead.
 
-import torch
-import triton
-import triton.language as tl
 import torch.nn.functional as F
-
 from einops import rearrange
-from fla.ops.triton.gla.block_parallel.inter_chunk_contribution.fn import inter_chunk_onc
-from fla.ops.triton.gla.block_parallel.intra_chunk_contribution.fn import intra_chunk_onc
+
+from fla.ops.triton.gla.block_parallel.inter_chunk_contribution.fn import \
+    inter_chunk_onc
+from fla.ops.triton.gla.block_parallel.intra_chunk_contribution.fn import \
+    intra_chunk_onc
 
 
 def pad_and_rearrange(x, chunk_size):

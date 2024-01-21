@@ -1,23 +1,27 @@
-import math
-import time
-from typing import Optional, Tuple, Union
+# -*- coding: utf-8 -*-
 
-import numpy as np
 import torch
-import torch.nn.functional as F
 import triton
 import triton.language as tl
-from einops import rearrange
-from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.triton.utils import contiguous
 
 
 @triton.jit
 def _fwd_compute_O(
-    A, V, GV, O,
-    stride_a1, stride_a2, stride_a3, stride_a4,
-    stride_v1, stride_v2, stride_v3, stride_v4,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_DMODEL_V: tl.constexpr,
+    A,
+    V,
+    GV,
+    O,
+    stride_a2,
+    stride_a3,
+    stride_a4,
+    stride_v2,
+    stride_v3,
+    stride_v4,
+    BLOCK_N: tl.constexpr,
+    BLOCK_DMODEL_V: tl.constexpr,
 ):
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
@@ -89,14 +93,29 @@ def _fwd_compute_O(
 
 
 @triton.jit
-def _bwd_kernel_dav(V, GV, A, O,
-                    DO, DA,
-                    DV, DGV,
-                    Z, H,
-                    stride_a1, stride_a2, stride_a3, stride_a4,
-                    stride_v1, stride_v2, stride_v3, stride_v4,
-                    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_DMODEL_V: tl.constexpr
-                    ):
+def _bwd_kernel_dav(
+    V,
+    GV,
+    A,
+    O,
+    DO,
+    DA,
+    DV,
+    DGV,
+    Z,
+    H,
+    stride_a1,
+    stride_a2,
+    stride_a3,
+    stride_a4,
+    stride_v1,
+    stride_v2,
+    stride_v3,
+    stride_v4,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_DMODEL_V: tl.constexpr
+):
 
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
@@ -146,15 +165,15 @@ def _bwd_kernel_dav(V, GV, A, O,
 
     tl.debug_barrier()
 
-    V_ptr = V + v_offset + (start_m) * stride_v3 + tl.arange(0,
-                                                             BLOCK_DMODEL_V)[:, None] + tl.arange(0, 16)[None, :] * stride_v4
+    V_ptr = V + v_offset + (start_m) * stride_v3 + \
+        tl.arange(0, BLOCK_DMODEL_V)[:, None] + tl.arange(0, 16)[None, :] * stride_v4
     GV_ptr = GV + v_offset + (start_m) * stride_v3 + tl.arange(0, BLOCK_DMODEL_V)[
         :, None] + tl.arange(0, 16)[None, :] * stride_v4
 
     for q_high in range(lo+16, hi, 16):
         do = tl.load(DO_ptr + q_high * stride_v4)
-        q_gv_normalizer = tl.load(GV + v_offset + (start_m) * stride_v3 + q_high * stride_v4 + tl.arange(0,
-                                                                                                         BLOCK_DMODEL_V)).to(tl.float32)
+        q_gv_normalizer = tl.load(GV + v_offset + (start_m) * stride_v3 + q_high *
+                                  stride_v4 + tl.arange(0, BLOCK_DMODEL_V)).to(tl.float32)
 
         for k_high in range(0, q_high, 16):
             v = tl.load(V_ptr + k_high * stride_v4)
@@ -169,13 +188,13 @@ def _bwd_kernel_dav(V, GV, A, O,
 
     tl.debug_barrier()
 
-    A_ptr = A + a_offset + (start_m) * stride_a3 + tl.arange(0,
-                                                             16)[:, None] + tl.arange(0, 16)[None, :] * stride_a4
+    A_ptr = A + a_offset + (start_m) * stride_a3 + \
+        tl.arange(0, 16)[:, None] + tl.arange(0, 16)[None, :] * stride_a4
 
-    V_ptr = V + v_offset + (start_m) * stride_v3 + tl.arange(0,
-                                                             BLOCK_DMODEL_V)[None, :] + tl.arange(0, 16)[:, None] * stride_v4
-    GV_ptr = GV + v_offset + (start_m) * stride_v3 + tl.arange(0, BLOCK_DMODEL_V)[
-        None, :] + tl.arange(0, 16)[:, None] * stride_v4
+    V_ptr = V + v_offset + (start_m) * stride_v3 + \
+        tl.arange(0, BLOCK_DMODEL_V)[None, :] + tl.arange(0, 16)[:, None] * stride_v4
+    GV_ptr = GV + v_offset + (start_m) * stride_v3 + \
+        tl.arange(0, BLOCK_DMODEL_V)[None, :] + tl.arange(0, 16)[:, None] * stride_v4
 
     for k_high in range(0, hi, 16):
         dv = tl.zeros([16, BLOCK_DMODEL_V], dtype=tl.float32)
@@ -187,8 +206,8 @@ def _bwd_kernel_dav(V, GV, A, O,
 
             kq = tl.load(A_ptr + q_high * stride_a4 + k_high).to(do.dtype)
 
-            q_gv_normalizer = tl.load(GV + v_offset + (start_m) * stride_v3 +
-                                      q_high * stride_v4 + tl.arange(0, BLOCK_DMODEL_V)).to(tl.float32)
+            q_gv_normalizer = tl.load(GV + v_offset +
+                                      start_m * stride_v3 + q_high * stride_v4 + tl.arange(0, BLOCK_DMODEL_V)).to(tl.float32)
             k_gv2 = tl.exp(q_gv_normalizer[None, :] - k_gv)
 
             # bf16

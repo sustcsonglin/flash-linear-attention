@@ -1,30 +1,34 @@
-from fla.ops.triton.utils import contiguous
-import torch
-import time
-import math
-from typing import Tuple, Union, Optional
-from torch.cuda.amp import custom_bwd, custom_fwd
+# -*- coding: utf-8 -*-
 
-
-import torch
-import torch.nn.functional as F
-from einops import rearrange
 import torch
 import triton
 import triton.language as tl
-import numpy as np
-import math
+from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.triton.utils import contiguous
 
 
 @triton.jit
 def _fwd_kernel_compute_A(
-    Q, K, GK,
+    Q,
+    K,
+    GK,
     A,
-    stride_q1, stride_q2, stride_q3, stride_q4,
-    stride_a1, stride_a2, stride_a3, stride_a4,
-    Z, H, N_CTX, D,
+    stride_q1,
+    stride_q2,
+    stride_q3,
+    stride_q4,
+    stride_a1,
+    stride_a2,
+    stride_a3,
+    stride_a4,
+    Z,
+    H,
+    N_CTX,
+    D,
     BLOCK_DMODEL_QK: tl.constexpr,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
 ):
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
@@ -89,15 +93,30 @@ def _fwd_kernel_compute_A(
 
 
 @triton.jit
-def _bwd_kernel_dqk(Q, K, GK, DA,
-                    DQ,
-                    DK, DGK,
-                    stride_q1, stride_q2, stride_q3, stride_q4,
-                    stride_a1, stride_a2, stride_a3, stride_a4,
-                    Z, H, N_CTX, D,
-                    BLOCK_DMODEL_QK: tl.constexpr,
-                    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr
-                    ):
+def _bwd_kernel_dqk(
+    Q,
+    K,
+    GK,
+    DA,
+    DQ,
+    DK,
+    DGK,
+    stride_q1,
+    stride_q2,
+    stride_q3,
+    stride_q4,
+    stride_a1,
+    stride_a2,
+    stride_a3,
+    stride_a4,
+    Z,
+    H,
+    N_CTX,
+    D,
+    BLOCK_DMODEL_QK: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr
+):
 
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
@@ -306,8 +325,6 @@ class IntraCalA(torch.autograd.Function):
         BLOCK_N = ctx.BLOCK_N
         # for now.
         BLOCK_M = BLOCK_N
-        # shape constraints
-        Lq, Lk = q.shape[-1], k.shape[-1]
 
         _bwd_kernel_dqk[ctx.grid](
             q, k, gk, dA,
@@ -316,7 +333,11 @@ class IntraCalA(torch.autograd.Function):
             q.stride(0), q.stride(1), q.stride(2), q.stride(3),
             dA.stride(0), dA.stride(1), dA.stride(2), dA.stride(3),
             q.shape[0], q.shape[1], q.shape[2], q.shape[3],
-            BLOCK_N=BLOCK_N, BLOCK_DMODEL_QK=ctx.BLOCK_DMODEL_QK, BLOCK_M=BLOCK_M, num_warps=8 if ctx.BLOCK_DMODEL_QK == 128 else 4, num_stages=5
+            BLOCK_N=BLOCK_N,
+            BLOCK_DMODEL_QK=ctx.BLOCK_DMODEL_QK,
+            BLOCK_M=BLOCK_M,
+            num_warps=8 if ctx.BLOCK_DMODEL_QK == 128 else 4,
+            num_stages=5
         )
 
         return dq.to(q.dtype), dk.to(k.dtype), dgk.to(gk.dtype)

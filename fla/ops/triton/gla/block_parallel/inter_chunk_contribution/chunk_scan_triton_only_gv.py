@@ -1,19 +1,21 @@
+# -*- coding: utf-8 -*-
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import triton
 import triton.language as tl
-from einops import rearrange
-from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.triton.utils import contiguous
 
 
 @triton.jit
 def _fwd_recurrence(
-    S,  p2,
+    S,
+    p2,
     O,
     NUM_BLOCK,
-    D_MODEL_K: tl.constexpr, D_MODEL_V: tl.constexpr,
+    D_MODEL_K: tl.constexpr,
+    D_MODEL_V: tl.constexpr,
     BLOCK_MODEL: tl.constexpr
 ):
     offset_bh = tl.program_id(0)
@@ -52,11 +54,15 @@ def _fwd_recurrence(
 # NUM_SPLIT_K/V. K/V dimension split into NUM_SPLIT_K/V parts with equal size BLOCK_MODEL
 @triton.jit
 def _bwd_recurrence(
-    S, p2,
-    DS, Dp2,
-
-    NUM_BLOCK, NUM_SPLIT_K, NUM_SPLIT_V,
-    D_MODEL_K: tl.constexpr, D_MODEL_V: tl.constexpr,
+    S,
+    p2,
+    DS,
+    Dp2,
+    NUM_BLOCK,
+    NUM_SPLIT_K,
+    NUM_SPLIT_V,
+    D_MODEL_K: tl.constexpr,
+    D_MODEL_V: tl.constexpr,
     BLOCK_MODEL: tl.constexpr
 
 ):
@@ -120,7 +126,6 @@ def _bwd_recurrence(
         p2 -= D_MODEL_V
         # Dp1 -= D_MODEL_K * NUM_SPLIT_V
         Dp2 -= D_MODEL_V * NUM_SPLIT_K
-
 
 
 class Chunk_memory_update_only_gv(torch.autograd.Function):

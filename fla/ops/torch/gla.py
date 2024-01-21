@@ -103,8 +103,7 @@ if __name__ == "__main__":
     assert ref_dv.allclose(tri_dv, 0, 1e-5), breakpoint()
     assert ref_dg.allclose(tri_dg, 0, 1e-4), breakpoint()
 
-    # tri = fused_chunk_gla(
-    #     q, k, v, g)
+    # tri = fused_chunk_gla(q, k, v, g)
     # tri.backward(do, retain_graph=True)
     # tri_dq, q.grad = q.grad.clone(), None
     # tri_dk, k.grad = k.grad.clone(), None

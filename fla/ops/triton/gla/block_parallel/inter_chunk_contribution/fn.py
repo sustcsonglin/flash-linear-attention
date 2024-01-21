@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 from .chunk_scan_triton_full import Chunk_memory_update_full
 from .chunk_scan_triton_no_decay import Chunk_memory_update_no_decay
 from .chunk_scan_triton_only_gk import Chunk_memory_update_only_gk
