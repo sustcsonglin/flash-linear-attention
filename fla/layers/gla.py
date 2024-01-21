@@ -44,8 +44,8 @@ class GatedLinearAttention(nn.Module):
     ) -> GatedLinearAttention:
         super().__init__()
         if use_gv is True:
-            assert mode == 'chunk', "Only `chunk` mode supports `use_gv`"
-        if mode == 'fused_chunk' or mode == 'fused_recurrent':
+            assert mode in ['chunk', 'fused_recurrent']
+        if mode == 'fused_chunk':
             assert use_gk is True
         if mode != 'chunk' and chunk_size != 16:
             warnings.warn(
@@ -111,7 +111,7 @@ class GatedLinearAttention(nn.Module):
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
 
-        if mode == 'chunk':
+        if mode == 'chunk' or mode == 'fused_recurrent':
             # for numumerical stable consideration. fused_chunk has better numerical stability
             if self.use_gk:
                 gk = self.gk_proj(x).to(torch.float32)
@@ -125,17 +125,15 @@ class GatedLinearAttention(nn.Module):
                 gv = rearrange(gv, 'b n (h d) -> b h n d', h=self.num_heads)
             else:
                 gv = None
-            o = chunk_gla(q, k, v, gk=gk, gv=gv, chunk_size=chunk_size)
+            if mode == 'fused_recurrent':
+                o = fused_recurrent_gla(q, k, v, gk=gk, gv=gv)
+            else:
+                o = chunk_gla(q, k, v, gk=gk, gv=gv, chunk_size=chunk_size)
         else:
             g = self.gk_proj(x).to(torch.float32)
             g = F.logsigmoid(g * self.gate_logit_multiplier) / self.gate_logit_normalizer
             g = rearrange(g, 'b n (h d) -> b h n d', h=self.num_heads)
-            if mode == 'fused_chunk':
-                o = fused_chunk_gla(q, k, v, g)
-            elif mode == 'fused_recurrent':
-                o = fused_recurrent_gla(q, k, v, g)
-            else:
-                raise NotImplementedError
+            o = fused_chunk_gla(q, k, v, g)
 
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
         o = self.out_proj(rearrange(o, 'b n h d -> b n (h d)')
@@ -149,7 +147,7 @@ if __name__ == '__main__':
     d_model = 1024
     x = torch.randn(batch, seq_len, d_model).to(
         torch.bfloat16).cuda().requires_grad_(True)
-    model = GatedLinearAttention().to(torch.bfloat16).cuda()
+    model = GatedLinearAttention(use_gk=True, use_gv=True, mode='chunk').to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)
     y.sum().backward()
