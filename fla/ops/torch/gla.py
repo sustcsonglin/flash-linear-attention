@@ -1,23 +1,29 @@
 # -*- coding: utf-8 -*-
 
-from audioop import reverse
-
 import torch
 import torch.nn.functional as F
-from fla.ops.triton.gla import fused_chunk_gla, fused_recurrent_gla
+
+from fla.ops.triton.gla import fused_recurrent_gla
 
 
 def ceildiv(a, b):
     return -(a // -b)
 
 
-def naive_loop(q, k, v, gk, initial_state=None, output_final_state=False, causal=True):
+def naive_recurrent_gla(
+    q,
+    k,
+    v,
+    gk,
+    initial_state=None,
+    output_final_state=False,
+    causal=True
+):
     orig_dtype = q.dtype
     q, k, v, gk = map(lambda x: x.float(), (q, k, v, gk))
     batch_size, n_heads, seq_len, d_head_k = q.shape
     _, _, _, d_head_v = v.shape
-    h = torch.zeros(batch_size, n_heads, d_head_k, d_head_v,
-                    dtype=torch.float32, device=q.device)
+    h = torch.zeros(batch_size, n_heads, d_head_k, d_head_v, dtype=torch.float32, device=q.device)
     o = torch.zeros_like(v)
     scale = d_head_k ** -0.5
 
@@ -41,8 +47,7 @@ def naive_loop(q, k, v, gk, initial_state=None, output_final_state=False, causal
             return o.to(orig_dtype)
     else:
         o_reverse = torch.zeros_like(v)
-        h = torch.zeros(batch_size, n_heads, d_head_k, d_head_v,
-                        dtype=torch.float32, device=q.device)
+        h = torch.zeros(batch_size, n_heads, d_head_k, d_head_v, dtype=torch.float32, device=q.device)
         for i in range(seq_len-1, -1, -1):
             q_i = q[:, :, i, :] * scale
             k_i = k[:, :, i]
@@ -72,7 +77,7 @@ if __name__ == "__main__":
     do2 = torch.rand_like(v).cuda()
     intial_state = torch.rand(B, H, D, D).cuda()
 
-    ref, ref_rev = naive_loop(q, k, v, g, causal=False)
+    ref, ref_rev = naive_recurrent_gla(q, k, v, g, causal=False)
 
     ref.backward(do, retain_graph=True)
     ref_rev.backward(do2, retain_graph=True)
