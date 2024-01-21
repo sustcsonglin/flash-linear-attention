@@ -4,7 +4,6 @@
 import torch
 import triton
 import triton.language as tl
-
 from fla.ops.triton.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
 
@@ -252,10 +251,10 @@ class ChunkRetentionFunction(torch.autograd.Function):
     def forward(ctx, q, k, v):
         BT = 64
         DK, DV = k.shape[-1], v.shape[-1]
-        BK, BV = min(128, triton.next_power_of_2(DK)), min(
-            128, triton.next_power_of_2(DV))
+        BK, BV = min(64, triton.next_power_of_2(DK)), min(
+            64, triton.next_power_of_2(DV))
         batch_size, n_heads, seq_len, _ = q.shape
-        num_stages = 3
+        num_stages = 1
         num_warps = 4
         scale = DK ** -0.5
 
@@ -297,8 +296,8 @@ class ChunkRetentionFunction(torch.autograd.Function):
 
         BT = 64
         DK, DV = k.shape[-1], v.shape[-1]
-        BK, BV = min(128, triton.next_power_of_2(DK)), min(
-            128, triton.next_power_of_2(DV))
+        BK, BV = min(64, triton.next_power_of_2(DK)), min(
+            64, triton.next_power_of_2(DV))
         batch_size, n_heads, seq_len, _ = q.shape
         num_stages = 3
         num_warps = 4
