@@ -1,4 +1,6 @@
-from .parallel import parallel_based
-from .fused_chunk_dim16 import fused_chunk_based_dim16
+# -*- coding: utf-8 -*-
 
-__all__ = ["parallel_based", "fused_chunk_based_dim16"]
+from .chunk_fuse import fused_chunk_based
+from .parallel import parallel_based
+
+__all__ = ["parallel_based", "fused_chunk_based"]

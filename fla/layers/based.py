@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from fla.ops.triton.based import fused_chunk_based_dim16, parallel_based
+from fla.ops.triton.based import fused_chunk_based, parallel_based
 
 
 def init_feature_map(feature_map: str = 'none', **kwargs: any):
@@ -141,7 +141,7 @@ class BasedLinearAttention(nn.Module):
             x, "b l (h d) -> b h l d", h=self.num_heads), [q, k, v])
         if mode == "fused_chunk":
             assert q.shape[-1] <= 16
-            o = fused_chunk_based_dim16(q, k, v, True, True)
+            o = fused_chunk_based(q, k, v, True, True)
         elif mode == 'parallel':
             assert q.shape[-1] <= 128
             o = parallel_based(q, k, v, True, True)

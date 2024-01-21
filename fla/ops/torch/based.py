@@ -3,7 +3,7 @@
 import torch
 from einops import rearrange
 
-from fla.ops.triton.based import fused_chunk_based_dim16, parallel_based
+from fla.ops.triton.based import fused_chunk_based, parallel_based
 
 
 def naive_parallel_based(q, k, v, use_scale=True, use_norm=True):
@@ -99,7 +99,7 @@ if __name__ == "__main__":
     # assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
     # assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
 
-    tri = fused_chunk_based_dim16(q, k, v, True, True)
+    tri = fused_chunk_based(q, k, v, True, True)
     tri.backward(do, retain_graph=True)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None

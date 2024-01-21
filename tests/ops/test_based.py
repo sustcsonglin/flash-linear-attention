@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from fla.ops.torch.based import torch_parallel_based
-from fla.ops.triton.based import fused_chunk_based_dim16, parallel_based
+from fla.ops.triton.based import fused_chunk_based, parallel_based
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
@@ -37,7 +37,7 @@ def test_based(dtype, D, T, B=4, H=4):
         assert ref_dk.allclose(tri_dk, 0, 1e-4)
         assert ref_dv.allclose(tri_dv, 0, 1e-4)
 
-    tri = fused_chunk_based_dim16(q, k, v, True, True)
+    tri = fused_chunk_based(q, k, v, True, True)
     tri.backward(do)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None

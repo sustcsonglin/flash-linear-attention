@@ -4,8 +4,9 @@
 import torch
 import triton
 import triton.language as tl
-from fla.ops.triton.utils import contiguous, require_version
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.triton.utils import contiguous, require_version
 
 # on-the-fly computation without materializing hidden statets into HBMs
 
@@ -50,8 +51,7 @@ def fused_chunk_retention_fwd_kernel(
     # d_b: overall decay for the entire chunk
     # d_o: cumulative decay from the start of the chunk
     # d_h: cumulative decay from the end of the chunk
-    d_b, d_o, d_h = tl.math.exp2(
-        BT * b_b), tl.math.exp2((o_i + 1) * b_b), tl.math.exp2((BT - o_i - 1) * b_b)
+    d_b, d_o, d_h = tl.math.exp2(BT * b_b), tl.math.exp2((o_i + 1) * b_b), tl.math.exp2((BT - o_i - 1) * b_b)
 
     # [BT, BT]
     m_s = o_i[:, None] >= o_i[None, :]
@@ -92,8 +92,7 @@ def fused_chunk_retention_fwd_kernel(
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
         # [BK, BV]
-        b_h = d_b * b_h + \
-            tl.dot(b_k, (b_v * d_h[:, None]).to(b_k.dtype), allow_tf32=False)
+        b_h = d_b * b_h + tl.dot(b_k, (b_v * d_h[:, None]).to(b_k.dtype), allow_tf32=False)
 
         p_q = tl.advance(p_q, (BT, 0))
         p_k = tl.advance(p_k, (0, BT))
@@ -103,8 +102,7 @@ def fused_chunk_retention_fwd_kernel(
     if STORE_FINAL_STATE:
         p_final = tl.make_block_ptr(
             final_state + i_bh * DK * DV, (DK, DV), (DV, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        tl.store(p_final, b_h.to(p_final.dtype.element_ty),
-                 boundary_check=(0, 1))
+        tl.store(p_final, b_h.to(p_final.dtype.element_ty), boundary_check=(0, 1))
 
 
 # Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
@@ -179,11 +177,9 @@ def fused_chunk_retention_bwd_kernel(
         b_ds = tl.dot(b_do, b_v, allow_tf32=False)
         b_ds = (b_ds * d_s).to(b_k.dtype)
         # [BT, DK]
-        b_dq = tl.dot(b_dd, b_h.to(b_k.dtype), allow_tf32=False) + \
-            tl.dot(b_ds, b_k, allow_tf32=False)
+        b_dq = tl.dot(b_dd, b_h.to(b_k.dtype), allow_tf32=False) + tl.dot(b_ds, b_k, allow_tf32=False)
         # [DV, DK]
-        b_h = d_b * b_h + \
-            tl.dot((b_v * d_k[None, :]).to(b_k.dtype), b_k, allow_tf32=False)
+        b_h = d_b * b_h + tl.dot((b_v * d_k[None, :]).to(b_k.dtype), b_k, allow_tf32=False)
 
         tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
 
@@ -241,7 +237,6 @@ class FusedChunkRetentionFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @custom_fwd
-    @require_version('triton>=2.2', 'FusedChunk impl can only be used in triton2.2')
     def forward(ctx, q, k, v, initial_state, output_final_state):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
@@ -316,11 +311,14 @@ class FusedChunkRetentionFunction(torch.autograd.Function):
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None, None
 
 
-def fused_chunk_retention(q: torch.Tensor,
-                          k: torch.Tensor,
-                          v: torch.Tensor,
-                          initial_state: torch.Tensor = None,
-                          output_final_state: bool = False):
+@require_version('triton>=2.2', 'FusedChunk impl can only be used in triton2.2')
+def fused_chunk_retention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = False
+):
     if initial_state is not None:
         initial_state = initial_state.detach()
     o, final_state = FusedChunkRetentionFunction.apply(

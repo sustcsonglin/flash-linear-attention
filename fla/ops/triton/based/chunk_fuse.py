@@ -3,9 +3,10 @@
 import torch
 import triton
 import triton.language as tl
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 from fla.ops.triton.utils import contiguous
-from torch.cuda.amp import custom_bwd, custom_fwd
+
 # on-the-fly computation without materializing hidden statets into HBMs
 
 
@@ -391,16 +392,16 @@ class FusedChunkBasedFunction(torch.autograd.Function):
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None
 
 
-triton_fused_chunk_based_dim16 = FusedChunkBasedFunction.apply
+triton_fused_chunk_based = FusedChunkBasedFunction.apply
 
 
-def fused_chunk_based_dim16(q, k, v, use_scale=True, use_normalize=True):
+def fused_chunk_based(q, k, v, use_scale=True, use_normalize=True):
     assert q.shape[-1] <= 16, 'only support feature dimension up to 16.'
     if use_scale:
         scale = q.shape[-1] ** -0.5
     else:
         scale = 1
-    o, z = triton_fused_chunk_based_dim16(q, k, v, scale)
+    o, z = triton_fused_chunk_based(q, k, v, scale)
     if use_normalize:
         o = o / (z[..., None] + 1e-6)
     else:

@@ -4,7 +4,7 @@ import torch
 import triton
 
 from fla.ops.torch.based import torch_parallel_based
-from fla.ops.triton.based import (fused_chunk_based_dim16, parallel_based,
+from fla.ops.triton.based import (fused_chunk_based, parallel_based,
                                   parallel_chunk_based)
 
 try:
@@ -69,7 +69,7 @@ def benchmark(seq_len, provider):
             lambda: torch_parallel_based(q, k, v), quantiles=quantiles)
     elif provider == 'fused_chunk':
         results = triton.testing.do_bench(
-            lambda: fused_chunk_based_dim16(q, k, v), quantiles=quantiles)
+            lambda: fused_chunk_based(q, k, v), quantiles=quantiles)
     elif provider == 'parallel':
         results = triton.testing.do_bench(
             lambda: parallel_based(q, k, v), quantiles=quantiles)
@@ -82,7 +82,7 @@ def benchmark(seq_len, provider):
         results = triton.testing.do_bench(lambda: torch_parallel_based(
             q, k, v).backward(do), quantiles=quantiles)
     elif provider == 'fused_chunk_bwd':
-        results = triton.testing.do_bench(lambda: fused_chunk_based_dim16(
+        results = triton.testing.do_bench(lambda: fused_chunk_based(
             q, k, v).backward(do), quantiles=quantiles)
     elif provider == 'parallel_bwd':
         results = triton.testing.do_bench(lambda: parallel_based(
