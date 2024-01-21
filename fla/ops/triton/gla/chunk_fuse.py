@@ -9,9 +9,10 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 from einops import rearrange
+from torch.cuda.amp import custom_bwd, custom_fwd
+
 from fla.ops.cuda.gla.semiring.cal_A.fn import semiring_cal_A
 from fla.ops.triton.utils import contiguous, require_version
-from torch.cuda.amp import custom_bwd, custom_fwd
 
 inv_ln2 = 1.44269504
 
@@ -236,7 +237,6 @@ class FusedChunkGLAFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @custom_fwd
-    @require_version('triton>=2.2', 'Numerical stability consideration!')
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state):
         ctx.g_dtype = g.dtype
         batch_size, n_heads, seq_len, d_head_qk = q.shape
@@ -370,7 +370,16 @@ def ceildiv(a, b):
     return -(a // -b)
 
 
-def fused_chunk_gla(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, scale: int = -1, initial_state: torch.Tensor = None, output_final_state: bool = False):
+@require_version('triton>=2.2', 'Numerical stability consideration!')
+def fused_chunk_gla(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    scale: int = -1,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = False
+):
     if scale == -1:
         scale = q.shape[-1] ** -0.5
     if initial_state is not None:
