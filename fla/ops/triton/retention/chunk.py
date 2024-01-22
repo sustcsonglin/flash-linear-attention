@@ -186,6 +186,12 @@ def chunk_retention_bwd_kernel_dqkv(
     i_h = i_bh % H
     b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
 
+    o_i = tl.arange(0, BT)
+    d_q, d_k = tl.math.exp2(o_i * b_b), tl.math.exp2((BT - o_i) * b_b)
+    m_s = o_i[:, None] >= o_i[None, :]
+    d_s = tl.where(m_s, tl.math.exp2(
+        (o_i[:, None] - o_i[None, :]) * b_b), 0) * scale
+
     for i_k in range(0, tl.cdiv(DK, BK)):
         p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK),
                                 (s_qk_t, s_qk_d), (i_c * BT, i_k * BK), (BT, BK), (1, 0))
@@ -193,6 +199,9 @@ def chunk_retention_bwd_kernel_dqkv(
                                 (s_qk_d, s_qk_t), (i_k * BK, i_c * BT), (BK, BT), (0, 1))
         b_dk = tl.zeros([BT, BK], dtype=tl.float32)
         b_dq = tl.zeros([BT, BK], dtype=tl.float32)
+        b_q = tl.load(p_q, boundary_check=(0, 1))
+        b_k = tl.load(p_k, boundary_check=(0, 1))
+        b_s = tl.dot(b_k, b_q, allow_tf32=False) * tl.trans(d_s)
 
         for i_v in range(0, tl.cdiv(DV, BV)):
             p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV),
@@ -207,14 +216,10 @@ def chunk_retention_bwd_kernel_dqkv(
             p_dv = tl.make_block_ptr(dv + i_bh * s_vo_h, (T, DV),
                                      (s_vo_t, s_vo_d), (i_c * BT, i_v * BV), (BT, BV), (1, 0))
 
-            o_i = tl.arange(0, BT)
-            d_q, d_k = tl.math.exp2(o_i * b_b), tl.math.exp2((BT - o_i) * b_b)
             # [BD, BT]
-            b_q = tl.load(p_q, boundary_check=(0, 1))
             # [BT, BD]
             b_do = tl.load(p_do, boundary_check=(0, 1))
-            b_k, b_v = tl.load(p_k, boundary_check=(0, 1)), tl.load(
-                p_v, boundary_check=(0, 1))
+            b_v = tl.load(p_v, boundary_check=(0, 1))
             # [BD, BD]
             b_h = tl.load(p_h, boundary_check=(0, 1))
             b_dh = tl.load(p_dh, boundary_check=(0, 1))
@@ -222,16 +227,12 @@ def chunk_retention_bwd_kernel_dqkv(
             # [BT, BT]
             b_ds = tl.dot(b_do, tl.trans(b_v), allow_tf32=False)
             # [BT, BT]
-            m_s = o_i[:, None] >= o_i[None, :]
-            d_s = tl.where(m_s, tl.math.exp2(
-                (o_i[:, None] - o_i[None, :]) * b_b), 0) * scale
             b_ds = (b_ds * d_s).to(b_k.dtype)
             # [BT, BD]
             b_dq += tl.dot((b_do * (d_q * scale)[:, None]).to(b_k.dtype),
                            b_h, allow_tf32=False) + tl.dot(b_ds, b_k, allow_tf32=False)
 
             # [BT, BT]
-            b_s = tl.dot(b_k, b_q, allow_tf32=False) * tl.trans(d_s)
             b_ds = tl.trans(b_ds)
             # [BT, BD]
             b_dk += tl.dot(b_v, tl.trans(b_dh), allow_tf32=False) * \
