@@ -32,7 +32,7 @@ class MultiScaleRetention(nn.Module):
         num_heads: str = 4,
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
-        mode: str = 'fused_chunk',
+        mode: str = 'chunk',
         *args, **kwargs
     ) -> MultiScaleRetention:
         super().__init__()
