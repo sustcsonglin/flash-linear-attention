@@ -10,6 +10,12 @@ from fla.ops.triton.utils import contiguous
 
 
 @triton.jit
+def safe_exy(x, y):
+    # trick for numerical stability: e^x * y = sign(y) * e^(x + log(|y|)
+    return tl.where(y > 0, 1., -1.) * tl.exp(x + tl.log(tl.abs(y)))
+
+
+@triton.jit
 def chunk_abc_fwd_kernel_s(
     q,
     k,
@@ -62,7 +68,7 @@ def chunk_abc_fwd_kernel_s(
         # [BT, BM]
         b_inter = tl.dot(b_q, b_hk.to(b_q.dtype), allow_tf32=False) * b_rk[None, :]
         b_intra = tl.dot(tl.where(m_s, tl.dot(b_q, b_k, allow_tf32=False), 0).to(b_q.dtype), b_ck, allow_tf32=False)
-        b_s = (b_inter + b_intra) * b_pk
+        b_s = safe_exy(b_pk, b_inter + b_intra)
         # [BK, BM]
         b_hk = b_hk * b_rk[None, :] + tl.dot(b_k, b_ck, allow_tf32=False)
 
@@ -126,7 +132,7 @@ def chunk_abc_fwd_kernel_o(
         # [BT, BM]
         b_pv = tl.load(p_pv, boundary_check=(0, 1))
 
-        b_p = b_p * b_pv
+        b_p = safe_exy(b_pv, b_p.to(tl.float32))
         # [BT, BV]
         b_inter = tl.dot((b_p * b_rv[None, :]).to(b_v.dtype), b_hv.to(b_v.dtype), allow_tf32=False)
         b_intra = tl.where(m_s, tl.dot(b_p.to(b_v.dtype), b_cv, allow_tf32=False), 0)
@@ -197,7 +203,7 @@ def chunk_abc_bwd_kernel_dp(
         # [BT, BM]
         b_inter = tl.dot(b_do, b_hv.to(b_do.dtype), allow_tf32=False) * b_rv[None, :]
         b_intra = tl.dot(tl.where(m_s, tl.dot(b_do, b_v, allow_tf32=False), 0).to(b_v.dtype), b_cv, allow_tf32=False)
-        b_dp = (b_inter + b_intra) * b_pv
+        b_dp = safe_exy(b_pv, b_inter + b_intra)
         # [BV, BM]
         b_hv = b_hv * b_rv[None, :] + tl.dot(b_v, b_cv, allow_tf32=False)
 
@@ -463,7 +469,7 @@ def chunk_abc_fwd_kernel_cum(
             b_r = tl.exp(b_mp - b_m)
         b_c = tl.exp(b_s - b_m[None, :])
         b_z = tl.cumsum(b_c, 0) + (b_zp * b_r)[None, :]
-        b_p = tl.exp(-tl.log(b_z))
+        b_p = -tl.log(b_z)
         b_mp = b_m
         b_zp = tl.max(b_z, 0)
 
@@ -631,7 +637,7 @@ class FusedChunkABCFunction(torch.autograd.Function):
             num_stages=num_stages
         )
         dp = dp.sum(0)
-        ds = p * (dp - (o * do).sum(-1, True)) * pk
+        ds = torch.exp(p.log() + pk) * (dp - (o * do).sum(-1, True))
         dss = ds * scale
         dq, dk, dv = q.new_empty(NM, *q.shape), k.new_empty(NM, *k.shape), v.new_empty(NM, *v.shape)
         dsk, dsv = s.new_empty(NK, *s.shape), s.new_empty(NV, *s.shape)
@@ -657,7 +663,7 @@ class FusedChunkABCFunction(torch.autograd.Function):
         )
         dk, dsk = dk.sum(0), dsk.sum(0)
 
-        p = p * pv
+        p = torch.exp(p.log() + pv)
         grid = (NV, NM, batch_size * n_heads)
         chunk_abc_bwd_kernel_dv[grid](
             do, v, rv, cv, p, dv, dsv,
