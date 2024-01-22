@@ -14,6 +14,8 @@ def chunk_retention_fwd_kernel_h(
     k,
     v,
     h,
+    initial_state,  # initial state of the chunk [B, H, D_head_K, D_head_V]
+    final_state,  # final state of the chunk [B, H, D_head_K, D_head_V]
     s_qk_h,
     s_qk_t,
     s_qk_d,
@@ -29,7 +31,9 @@ def chunk_retention_fwd_kernel_h(
     DV,
     BT: tl.constexpr,
     BK: tl.constexpr,
-    BV: tl.constexpr
+    BV: tl.constexpr,
+    USE_INITIAL_STATE: tl.constexpr,
+    STORE_FINAL_STATE: tl.constexpr
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
@@ -40,9 +44,14 @@ def chunk_retention_fwd_kernel_h(
     p_h = tl.make_block_ptr(h + i_bh * s_hh, (TD, DV), (s_ht, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
 
     o_i = tl.arange(0, BT)
-    d_b, d_i = tl.math.exp2(BT * b_b), tl.math.exp2((BT - o_i) * b_b)
+    d_b, d_i = tl.math.exp2(BT * b_b), tl.math.exp2((BT - o_i - 1) * b_b)
     # [BK, BV]
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
+
+    if USE_INITIAL_STATE:
+        p_h0 = tl.make_block_ptr(initial_state + i_bh * DK * DV, (DK, DV), (DV, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        b_h = tl.load(p_h0, boundary_check=(0, 1)).to(tl.float32)
+
     for _ in range(0, T, BT):
         tl.store(p_h, b_h.to(p_h.dtype.element_ty), boundary_check=(0, 1))
         # [BK, BT]
@@ -55,6 +64,10 @@ def chunk_retention_fwd_kernel_h(
         p_k = tl.advance(p_k, (0, BT))
         p_v = tl.advance(p_v, (BT, 0))
         p_h = tl.advance(p_h, (DK, 0))
+
+    if STORE_FINAL_STATE:
+        p_ht = tl.make_block_ptr(final_state + i_bh * DK * DV, (DK, DV), (DV, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -87,7 +100,7 @@ def chunk_retention_fwd_kernel_o(
     b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
 
     o_i = tl.arange(0, BT)
-    d_i = tl.math.exp2(o_i * b_b)
+    d_i = tl.math.exp2((o_i + 1) * b_b)
     m_s = o_i[:, None] >= o_i[None, :]
     d_s = tl.where(m_s, tl.math.exp2((o_i[:, None] - o_i[None, :]) * b_b), 0)
 
@@ -148,7 +161,7 @@ def chunk_retention_bwd_kernel_dh(
     b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
 
     o_i = tl.arange(0, BT)
-    d_b, d_i = tl.math.exp2(BT * b_b), tl.math.exp2(o_i * b_b)
+    d_b, d_i = tl.math.exp2(BT * b_b), tl.math.exp2((o_i + 1) * b_b)
     # [BK, BV]
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
     for i in range(NT - 1, -1, -1):
@@ -200,7 +213,7 @@ def chunk_retention_bwd_kernel_dqkv(
     b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
 
     o_i = tl.arange(0, BT)
-    d_q, d_k = tl.math.exp2(o_i * b_b), tl.math.exp2((BT - o_i) * b_b)
+    d_q, d_k = tl.math.exp2((o_i + 1) * b_b), tl.math.exp2((BT - o_i - 1) * b_b)
     d_q = (d_q * scale).to(d_q.dtype)
     m_s = o_i[:, None] >= o_i[None, :]
     d_s = tl.where(m_s, tl.math.exp2((o_i[:, None] - o_i[None, :]) * b_b), 0) * scale
@@ -263,26 +276,33 @@ class ChunkRetentionFunction(torch.autograd.Function):
     @staticmethod
     @custom_fwd
     @contiguous
-    def forward(ctx, q, k, v):
+    def forward(ctx, q, k, v, initial_state, output_final_state):
         BT = 64
         DK, DV = k.shape[-1], v.shape[-1]
         BK, BV = min(64, triton.next_power_of_2(DK)), min(64, triton.next_power_of_2(DV))
-        batch_size, n_heads, seq_len, _ = q.shape
+        batch_size, n_heads, seq_len, d_head_qk = q.shape
+        d_head_v = v.shape[-1]
         num_stages = 1
         num_warps = 4 if BK == 64 else 2
         scale = DK ** -0.5
 
         NK, NV = triton.cdiv(DK, BK), triton.cdiv(DV, BV)
         h = q.new_empty(batch_size, n_heads, triton.cdiv(seq_len, BT) * DK, DV)
-        grid = (NK, NV, batch_size * n_heads)
 
+        final_state = None
+        if output_final_state:
+            final_state = q.new_empty(batch_size, n_heads, d_head_qk, d_head_v, dtype=torch.float32, requires_grad=False)
+
+        grid = (NK, NV, batch_size * n_heads)
         chunk_retention_fwd_kernel_h[grid](
-            k, v, h,
+            k, v, h, initial_state, final_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             h.stride(1), h.stride(2),
             n_heads, seq_len, h.shape[2],
-            DK=DK, DV=DV, BK=BK, BV=BV, BT=BT,
+            DK=DK, DV=DV, BT=BT, BK=BK, BV=BV,
+            USE_INITIAL_STATE=initial_state is not None,
+            STORE_FINAL_STATE=output_final_state,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -300,12 +320,12 @@ class ChunkRetentionFunction(torch.autograd.Function):
         )
 
         ctx.save_for_backward(q, k, v, h)
-        return o.to(q.dtype)
+        return o.to(q.dtype), final_state
 
     @staticmethod
     @custom_bwd
     @contiguous
-    def backward(ctx, do):
+    def backward(ctx, do, d_ht=None):
         q, k, v, h = ctx.saved_tensors
 
         BT = 64
@@ -350,7 +370,20 @@ class ChunkRetentionFunction(torch.autograd.Function):
             num_warps=num_warps,
             num_stages=num_stages
         )
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype)
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None, None
 
 
-chunk_retention = ChunkRetentionFunction.apply
+def chunk_retention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = False
+):
+    if initial_state is not None:
+        initial_state = initial_state.detach()
+    o, final_state = ChunkRetentionFunction.apply(q, k, v, initial_state, output_final_state)
+    if output_final_state:
+        return o, final_state
+    else:
+        return o
