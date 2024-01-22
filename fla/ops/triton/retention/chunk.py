@@ -167,6 +167,7 @@ def chunk_retention_bwd_kernel_dh(
     for i in range(NT - 1, -1, -1):
         p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
         p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        # (i+1)*DK prevents potential illegal access for blocks with DK (say 100) not divisible by BK
         p_dh = tl.make_block_ptr(dh + i_bh * s_hh, ((i+1)*DK, DV), (s_ht, 1), (i * DK + i_k * BK, i_v * BV), (BK, BV), (1, 0))
 
         tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
