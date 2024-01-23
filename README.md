@@ -7,10 +7,10 @@ Join [discord](https://discord.gg/vDaJTmKNcS) if you are interested in this proj
 # Models
 Order by my expected implementation time. 
 
-|  Date   |                                                    Title                                                     |                                               Paper                                                |                                                                                                                                                     Code                                                                                                                                                     |                         Causal (Autoregressive)                          |       Bidirectional                          |
-| :-----: | :----------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------: | :------------------------------------------------------: |
-| 2023-07 |     [**RetNet**] Retentive network: a successor to transformer for large language models(@MRSA@THU)      |                            [[arxiv]](https://arxiv.org/abs/2307.08621)                             |         [[official]](https://github.com/microsoft/torchscale/tree/main) ![](https://img.shields.io/github/stars/microsoft/torchscale.svg?style=social)[[RetNet]](https://github.com/Jamie-Stirling/RetNet/tree/main) ![](https://img.shields.io/github/stars/Jamie-Stirling/RetNet.svg?style=social)         | Parallel✅   FusedRecurrent✅ FusedChunk✅  ParallelChunk ✅ |  |
-| 2023-12 |         [**GLA**] Gated Linear Attention Transformers with Hardware-Efficient Training (@MIT@IBM)          |                            [[arxiv]](https://arxiv.org/abs/2312.06635)                             |                                                                           [[official]](https://github.com/berlino/gated_linear_attention) ![](https://img.shields.io/github/stars/berlino/gated_linear_attention.svg?style=social)                                                                           |        FusedRecurrent✅ ParallelChunk✅ FusedChunk✅        |   FusedRecurrent✅
+|  Date   |                                                    Title                                                     |                                               Paper                                                |                                                                                                                                                     Code                                                                                                                                                     |                 Causal (Autoregressive)                  |  Bidirectional  |
+| :-----: | :----------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------: | :-------------: |
+| 2023-07 |     [**RetNet**] Retentive network: a successor to transformer for large language models(@MRSA@THU)      |                            [[arxiv]](https://arxiv.org/abs/2307.08621)                             |         [[official]](https://github.com/microsoft/torchscale/tree/main) ![](https://img.shields.io/github/stars/microsoft/torchscale.svg?style=social)[[RetNet]](https://github.com/Jamie-Stirling/RetNet/tree/main) ![](https://img.shields.io/github/stars/Jamie-Stirling/RetNet.svg?style=social)         | Parallel✅   FusedRecurrent✅ FusedChunk✅  ParallelChunk ✅ |                 |
+| 2023-12 |         [**GLA**] Gated Linear Attention Transformers with Hardware-Efficient Training (@MIT@IBM)          |                            [[arxiv]](https://arxiv.org/abs/2312.06635)                             |                                                                           [[official]](https://github.com/berlino/gated_linear_attention) ![](https://img.shields.io/github/stars/berlino/gated_linear_attention.svg?style=social)                                                                           |        FusedRecurrent✅ ParallelChunk✅ FusedChunk✅        | FusedRecurrent✅ |
 | 2023-12 |              [**Based**] An Educational and Effective Sequence Mixer (@Stanford Hazyresearch)              |             [[blog]](https://hazyresearch.stanford.edu/blog/2023-12-11-zoology2-based)             |                                                                                     [[official]](https://github.com/HazyResearch/zoology) ![](https://img.shields.io/github/stars/HazyResearch/zoology.svg?style=social)                                                                                     |                  Parallel✅ FusedChunk✅                   |
 | 2023-09 |  The Hedgehog & the Porcupine: Expressive Linear Attentions with Softmax Mimicry(@HazyResearch) | [openreview](https://openreview.net/forum?id=4g02l2N2Nx) | | TODO |
 | 2023-07 | [**TransnormerLLM**] A Faster and Better Large Language Model with Improved TransNormer (@Shanghai AI Lab) | [openreview](https://openreview.net/forum?id=OROKjdAfjs) [arxiv](https://arxiv.org/abs/2307.14995) | [[official]](https://github.com/OpenNLPLab/TransnormerLLM) ![](https://img.shields.io/github/stars/OpenNLPLab/TransnormerLLM.svg?style=social)    [[Lightning2]](https://github.com/OpenNLPLab/lightning-attention) ![](https://img.shields.io/github/stars/OpenNLPLab/lightning-attention.svg?style=social) |                           TODO                           |
@@ -29,10 +29,6 @@ The following requirements should be satisfied
 ```
 pip install triton
 ```
-- [Triton](https://github.com/openai/triton) latest nightly release
-```
-pip install -U --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/Triton-Nightly/pypi/simple/ triton-nightly
-```
 - [einops](https://einops.rocks/)
 
 As `fla` is actively developed now, no released packages are provided at this time.
@@ -47,10 +43,13 @@ ln -s 3rdparty/flash-linear-attention/fla fla
 ```
 
 ### ⚠️ Caveats on numerical stability!!
-If you are not using the Triton v2.2 or its nightly release version (**CUDA12** required), please avoid using the FusedChunk implementation (see [issue](https://github.com/openai/triton/issues/2852)). 
-A quick way to test is to run ``python test_fused_chunk.py``. 
-If you see no difference, you can feel free to use FusedChunk impl.
 
+If you're not working with Triton v2.2 or its nightly release, it's important to be aware of potential issues with the `FusedChunk` implementation, detailed in this [issue](https://github.com/openai/triton/issues/2852). 
+You can run the test `python tests/test_fused_chunk.py` to check if your version is affected by similar compiler problems. 
+While we offer some fixes for Triton<=2.1, be aware that these may result in reduced performance.
+
+For both Triton 2.2 and earlier versions (up to 2.1), you can reliably use the `Chunk` version (with hidden states materialized into HBMs).
+After careful optimization, this version generally delivers high performance in most scenarios.
 
 # Usage
 We provide "token mixing" linear attention layers in `fla.layers` for you to use. You can replace the standard multihead attention layer in your transformer with the other linear attention layers. Example usage is as follows: 

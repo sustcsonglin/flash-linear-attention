@@ -7,9 +7,10 @@ from __future__ import annotations
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+
 from fla.modules.rmsnorm import RMSNorm
 from fla.modules.rotary import RotaryEmbedding
-from fla.ops.triton.retention import (fused_chunk_retention,
+from fla.ops.triton.retention import (chunk_retention, fused_chunk_retention,
                                       fused_recurrent_retention,
                                       parallel_retention)
 
@@ -33,18 +34,21 @@ class MultiScaleRetention(nn.Module):
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
         mode: str = 'chunk',
-        *args, **kwargs
+        *args,
+        **kwargs
     ) -> MultiScaleRetention:
         super().__init__()
 
         self.d_model = d_model
         self.mode = mode
-        self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
+        self.value_dim = int(d_model * expand_v)
         self.num_heads = num_heads
-        assert mode in ['fused_chunk', 'chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
+
+        assert mode in ['chunk', 'fused_chunk', 'parallel', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
+
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = get_activation_fn(activation=str(gate_fn))
@@ -56,8 +60,8 @@ class MultiScaleRetention(nn.Module):
 
         self.group_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
         self.rotary = RotaryEmbedding(dim=self.head_qk_dim, interleaved=False)
-        self.reset_parameters()
 
+        self.reset_parameters()
 
     def reset_parameters(self):
         nn.init.xavier_uniform_(self.q_proj.weight, gain=2 ** -2.5)
@@ -73,7 +77,9 @@ class MultiScaleRetention(nn.Module):
         q, k = self.rotary(q1, k1)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
-        if mode == 'fused_chunk':
+        if mode == 'chunk':
+            o = chunk_retention(q, k, v)
+        elif mode == 'fused_chunk':
             o = fused_chunk_retention(q, k, v)
         elif mode == 'parallel':
             o = parallel_retention(q, k, v)
