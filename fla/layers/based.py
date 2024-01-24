@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from fla.ops.triton.based import fused_chunk_based, parallel_based
+from fla.ops.based import fused_chunk_based, parallel_based
 
 
 def init_feature_map(feature_map: str = 'none', **kwargs: any):

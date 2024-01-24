@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fla.ops.triton.gla import chunk_gla, fused_chunk_gla
+from fla.ops.gla import chunk_gla, fused_chunk_gla
 
 
 @pytest.mark.parametrize("dtype", [torch.float])

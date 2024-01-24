@@ -3,9 +3,8 @@
 import torch
 import triton
 
-from fla.ops.torch.based import torch_parallel_based
-from fla.ops.triton.based import (fused_chunk_based, parallel_based,
-                                  parallel_chunk_based)
+from fla.ops.based import (fused_chunk_based, naive_chunk_based,
+                           naive_parallel_based, parallel_based)
 
 try:
     from flash_attn import flash_attn_func
@@ -66,7 +65,7 @@ def benchmark(seq_len, provider):
         if seq_len > 1024:
             return results
         results = triton.testing.do_bench(
-            lambda: torch_parallel_based(q, k, v), quantiles=quantiles)
+            lambda: naive_parallel_based(q, k, v), quantiles=quantiles)
     elif provider == 'fused_chunk':
         results = triton.testing.do_bench(
             lambda: fused_chunk_based(q, k, v), quantiles=quantiles)
@@ -75,11 +74,11 @@ def benchmark(seq_len, provider):
             lambda: parallel_based(q, k, v), quantiles=quantiles)
     elif provider == 'parallel_chunk':
         results = triton.testing.do_bench(
-            lambda: parallel_chunk_based(q, k, v), quantiles=quantiles)
+            lambda: naive_chunk_based(q, k, v), quantiles=quantiles)
     elif provider == 'torch_bwd':
         if seq_len > 1024:
             return results
-        results = triton.testing.do_bench(lambda: torch_parallel_based(
+        results = triton.testing.do_bench(lambda: naive_parallel_based(
             q, k, v).backward(do), quantiles=quantiles)
     elif provider == 'fused_chunk_bwd':
         results = triton.testing.do_bench(lambda: fused_chunk_based(
@@ -94,7 +93,7 @@ def benchmark(seq_len, provider):
         results = triton.testing.do_bench(lambda: flash_attn_func(
             q, k, v, causal=True).backward(do), quantiles=quantiles)
     elif provider == 'parallel_chunk_bwd':
-        results = triton.testing.do_bench(lambda: parallel_chunk_based(
+        results = triton.testing.do_bench(lambda: naive_chunk_based(
             q, k, v).backward(do), quantiles=quantiles)
     return results
 

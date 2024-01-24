@@ -10,8 +10,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+
 from fla.modules.rmsnorm import RMSNorm
-from fla.ops.triton.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
+from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
 
 def get_activation_fn(activation):

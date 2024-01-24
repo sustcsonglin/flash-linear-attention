@@ -3,9 +3,9 @@
 import torch
 import triton
 
-from fla.ops.triton.based import parallel_based
-from fla.ops.triton.gla import fused_chunk_gla
-from fla.ops.triton.retention import fused_chunk_retention, parallel_retention
+from fla.ops.based import parallel_based
+from fla.ops.gla import fused_chunk_gla
+from fla.ops.retention import fused_chunk_retention, parallel_retention
 
 try:
     from flash_attn import flash_attn_func

@@ -2,12 +2,12 @@
 
 # Copyright (c) 2023, Tri Dao.
 
-import math
 from typing import Optional, Tuple, Union
 
 import torch
 from einops import rearrange, repeat
-from fla.ops.triton.rotary import apply_rotary
+
+from fla.ops.rotary import apply_rotary
 
 
 def rotate_half(x, interleaved=False):

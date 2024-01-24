@@ -2,10 +2,11 @@
 
 import torch
 import triton
-from fla.ops.torch import naive_retention
-from fla.ops.triton.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
-from fla.ops.triton.retention import chunk_retention, parallel_retention
 from torch.nn import functional as F
+
+from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
+from fla.ops.retention import (chunk_retention, naive_retention,
+                               parallel_retention)
 
 
 @triton.testing.perf_report(

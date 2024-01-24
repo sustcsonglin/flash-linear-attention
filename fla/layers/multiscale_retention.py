@@ -10,9 +10,8 @@ from einops import rearrange
 
 from fla.modules.rmsnorm import RMSNorm
 from fla.modules.rotary import RotaryEmbedding
-from fla.ops.triton.retention import (chunk_retention, fused_chunk_retention,
-                                      fused_recurrent_retention,
-                                      parallel_retention)
+from fla.ops.retention import (chunk_retention, fused_chunk_retention,
+                               fused_recurrent_retention, parallel_retention)
 
 
 def get_activation_fn(activation):

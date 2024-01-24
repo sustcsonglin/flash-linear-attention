@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from fla.ops.torch.based import torch_parallel_based
-from fla.ops.triton.based import fused_chunk_based, parallel_based
+from fla.ops.based import (fused_chunk_based, naive_parallel_based,
+                           parallel_based)
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
@@ -18,7 +18,7 @@ def test_based(dtype, D, T, B=4, H=4):
          device='cuda') / 10).requires_grad_()
     v = (torch.randn((B, H, T, D), dtype=dtype, device='cuda')).requires_grad_()
     do = torch.randn_like(v) / 10
-    ref = torch_parallel_based(q, k, v, True, True)
+    ref = naive_parallel_based(q, k, v, True, True)
     ref.backward(do)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
