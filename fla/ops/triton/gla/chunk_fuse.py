@@ -356,8 +356,10 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         dv.add_(dv2.to(dv))
         dg = dg.float()
         dg.add_(dg2)
-        dg_cumsum = dg.cumsum(-2)
-        dg = dg - dg_cumsum + dg_cumsum[:, :, -1, None]
+        dg = dg.transpose(-2, -1)
+        dg_cumsum = dg.cumsum(-1)
+        dg = dg - dg_cumsum + dg_cumsum[..., -1, None]
+        dg = dg.transpose(-2, -1)
         return dq.to(q), dk.to(k), dv.to(v), dg.to(ctx.g_dtype), None, None, None
 
 
