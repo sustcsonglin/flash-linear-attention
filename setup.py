@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from packaging.version import Version, parse
 from setuptools import find_packages, setup
-from torch.utils.cpp_extension import CUDA_HOME, BuildExtension, CUDAExtension
+from torch.utils.cpp_extension import CUDA_HOME
 
 with open('README.md') as f:
     long_description = f.read()
@@ -23,7 +23,7 @@ PACKAGE_NAME = 'fla'
 # FORCE_BUILD: force a fresh build locally, instead of attempting to find prebuilt wheels
 FORCE_BUILD = os.getenv('FLA_FORCE_BUILD', "FALSE") == 'TRUE'
 # SKIP_CUDA_BUILD: allow CI to use a simple `python setup.py sdist` run to copy over raw files, without any cuda compilation
-SKIP_CUDA_BUILD = os.getenv('FLA_SKIP_CUDA_BUILD', "FALSE") == 'TRUE'
+SKIP_CUDA_BUILD = os.getenv('FLA_SKIP_CUDA_BUILD', "TRUE") == 'TRUE'
 # For CI, we want the option to build with C++11 ABI since the nvcr images use C++11 ABI
 FORCE_CXX11_ABI = os.getenv('FLA_FORCE_CXX11_ABI', "FALSE") == 'TRUE'
 
@@ -83,33 +83,24 @@ if not SKIP_CUDA_BUILD:
             cc_flag.append("-gencode")
             cc_flag.append("arch=compute_90,code=sm_90")
 
-    ext_modules = [
-        CUDAExtension(
-            name='semiring_cal_A',
-            sources=[
-                'fla/ops/cuda/gla/semiring/cal_A/inner_chunk16_dim16x.cpp',
-                'fla/ops/cuda/gla/semiring/cal_A/inner_chunk16_dim16x_kernel.cu',
-            ],
-            extra_compile_args={
-                "cxx": ["-O3", "-std=c++17"] + generator_flag,
-                "nvcc": append_nvcc_threads(
-                    [
-                        "-O3",
-                        "-std=c++17",
-                        "-U__CUDA_NO_HALF_OPERATORS__",
-                        "-U__CUDA_NO_HALF_CONVERSIONS__",
-                        "-U__CUDA_NO_HALF2_OPERATORS__",
-                        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-                        "--expt-relaxed-constexpr",
-                        "--expt-extended-lambda",
-                        "--use_fast_math",
-                    ]
-                    + generator_flag
-                    + cc_flag
-                ),
-            },
+    extra_compile_args = {
+        "cxx": ["-O3", "-std=c++17"] + generator_flag,
+        "nvcc": append_nvcc_threads(
+            [
+                "-O3",
+                "-std=c++17",
+                "-U__CUDA_NO_HALF_OPERATORS__",
+                "-U__CUDA_NO_HALF_CONVERSIONS__",
+                "-U__CUDA_NO_HALF2_OPERATORS__",
+                "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+                "--expt-relaxed-constexpr",
+                "--expt-extended-lambda",
+                "--use_fast_math",
+            ]
+            + generator_flag
+            + cc_flag
         ),
-    ]
+    }
 
 
 def get_package_version():
@@ -136,8 +127,6 @@ setup(
         'Topic :: Scientific/Engineering :: Artificial Intelligence'
     ],
     python_requires='>=3.7',
-    ext_modules=ext_modules,
-    cmdclass={'build_ext': BuildExtension},
     install_requires=[
         'triton',
         'transformers',
