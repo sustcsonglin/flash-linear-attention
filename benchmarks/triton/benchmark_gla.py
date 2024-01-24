@@ -2,11 +2,10 @@
 
 import torch
 import triton
-from torch.nn import functional as F
-
 from fla.ops.torch import naive_retention
 from fla.ops.triton.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
-from fla.ops.triton.retention import fused_chunk_retention, parallel_retention
+from fla.ops.triton.retention import chunk_retention, parallel_retention
+from torch.nn import functional as F
 
 
 @triton.testing.perf_report(
@@ -57,7 +56,7 @@ def benchmark(seq_len, provider):
     elif provider == 'fused_chunk_gla':
         results = triton.testing.do_bench(lambda: fused_chunk_gla(q, k, v, g), quantiles=quantiles)
     elif provider == 'chunk_retention':
-        results = triton.testing.do_bench(lambda: fused_chunk_retention(q, k, v), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: chunk_retention(q, k, v), quantiles=quantiles)
     elif provider == 'chunk_gla':
         results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g, None), quantiles=quantiles)
     elif provider == 'parallel':
@@ -66,7 +65,7 @@ def benchmark(seq_len, provider):
         if seq_len > 2048:
             return results
     elif provider == 'chunk_retention_bwd':
-        results = triton.testing.do_bench(lambda: fused_chunk_retention(q, k, v).backward(do), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: chunk_retention(q, k, v).backward(do), quantiles=quantiles)
     elif provider == 'recurrent_gla_bwd':
         results = triton.testing.do_bench(lambda: fused_recurrent_gla(q, k, v, g).backward(do), quantiles=quantiles)
     elif provider == 'fused_chunk_gla_bwd':

@@ -3,9 +3,6 @@
 # Copyright (c) 2023, Songlin Yang
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
 # on-the-fly computation without materializing hidden statets into HBMs
-
-import warnings
-
 import torch
 import torch.nn.functional as F
 import triton
@@ -13,11 +10,6 @@ import triton.language as tl
 from einops import rearrange
 from fla.ops.triton.utils import contiguous, require_version
 from torch.cuda.amp import custom_bwd, custom_fwd
-
-try:
-    import semiring_cal_A
-except ImportError:
-    warnings.warn('Failed to import semiring_cal_A. Do not use FusedChunk implementation of GLA.')
 
 inv_ln2 = 1.44269504
 
@@ -237,6 +229,108 @@ def fused_chunk_gla_bwd_kernel(
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.jit
+def fwd_inner_chunk(
+    q, k, g, A,
+    s_qk_h,  # stride size: L * D_head_K
+    s_qk_t,  # stride size: D_head_K
+    s_qk_d,  # stride size: 1
+    B,  # batch_size
+    H,  # n_heads
+    T,  # seq_len
+    scale,  # D_head_K ** -0.5
+    # clamp_min,  # minimum log value of the gate for numerical stability. default: -5
+    BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
+    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
+    DK: tl.constexpr,  # D_head_K
+):
+
+    i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+
+    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK),
+                            (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+
+    b_k = tl.load(p_k, boundary_check=(0, 1))
+
+    p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK),
+                            (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+
+    b_g = tl.load(p_g, boundary_check=(0, 1)) * inv_ln2
+
+    mask = (i_k * BK + tl.arange(0, BK)) < DK
+    o_i = tl.arange(0, BT)
+
+    p_q = q + i_bh * s_qk_h + i_k * BK + i_t * BT * DK + tl.arange(0, BK)
+    p_gq = g + i_bh * s_qk_h + i_k * BK + i_t * BT * DK + tl.arange(0, BK)
+    p_A = A + (i_bh + (i_k * B * H)) * (tl.cdiv(T, BT) *
+                                        BT * BT) + i_t * BT * BT + tl.arange(0, BT)
+
+    for i in range(BT):
+        _q = tl.load(p_q, mask=mask, other=0) * scale
+        gq = tl.load(p_gq, mask=mask, other=0) * inv_ln2
+        s = _q[None, :] * b_k * tl.math.exp2(gq[None, :] - b_g)
+        score = tl.sum(s, axis=1)
+        score = tl.where(o_i <= i, score, 0)
+        tl.store(p_A, score.to(p_A.dtype.element_ty))
+        p_q += DK
+        p_gq += DK
+        p_A += BT
+
+
+@triton.jit
+def bwd_inner_chunk(
+    q, k, g,
+    dA, dq, dk,
+    s_qk_h,  # stride size: L * D_head_K
+    s_qk_t,  # stride size: D_head_K
+    s_qk_d,  # stride size: 1
+    B,  # batch_size
+    H,  # n_heads
+    T,  # seq_len
+    scale,  # D_head_K ** -0.5
+    # clamp_min,  # minimum log value of the gate for numerical stability. default: -5
+    BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
+    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
+    DK: tl.constexpr,  # D_head_K
+):
+    i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK),
+                            (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    b_k = tl.load(p_k, boundary_check=(0, 1))
+    p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, DK),
+                            (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    b_g = tl.load(p_g, boundary_check=(0, 1)) * inv_ln2
+
+    mask = (i_k * BK + tl.arange(0, BK)) < DK
+    o_i = tl.arange(0, BT)
+
+    p_q = q + i_bh * s_qk_h + i_k * BK + i_t * BT * DK + tl.arange(0, BK)
+    p_dq = dq + (i_bh) * s_qk_h + i_k * BK + i_t * BT * DK + tl.arange(0, BK)
+    p_gq = g + i_bh * s_qk_h + i_k * BK + i_t * BT * DK + tl.arange(0, BK)
+    p_dA = dA + i_bh * (tl.cdiv(T, BT) * BT * BT) + \
+        i_t * BT * BT + tl.arange(0, BT)
+
+    b_dk = tl.zeros([BT, BK], dtype=tl.float32)
+
+    for i in range(BT):
+        _q = tl.load(p_q, mask=mask, other=0)
+        gq = tl.load(p_gq, mask=mask, other=0) * inv_ln2
+        score = tl.math.exp2(gq[None, :] - b_g)
+        _dA = tl.load(p_dA)
+        _dA = tl.where(o_i <= i, _dA, 0)
+        b_dk += (_dA[:, None] * score * _q[None, :])
+        b_dq = tl.sum(_dA[:, None] * score * b_k, axis=0)
+        tl.store(p_dq, b_dq, mask=mask)
+        p_q += DK
+        p_dq += DK
+        p_gq += DK
+        p_dA += BT
+
+    p_dk = tl.make_block_ptr(dk + i_bh * s_qk_h, (T, DK),
+                             (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    tl.store(p_dk, b_dk.to(dk.dtype.element_ty), boundary_check=(0, 1))
+
+
 class FusedChunkGLAFunction(torch.autograd.Function):
 
     @staticmethod
@@ -284,16 +378,23 @@ class FusedChunkGLAFunction(torch.autograd.Function):
 
         o = o.sum(0)
 
-        # ### intra-chunk
+        # intra-chunk
         chunk_size = 16
         num_chunk = seq_len // chunk_size
-        q2 = rearrange(q, 'b h (n c) d -> b h n c d', n=num_chunk)
-        k2 = rearrange(k, 'b h (n c) d -> b h n c d', n=num_chunk)
         v2 = rearrange(v, 'b h (n c) d -> b h n c d', n=num_chunk)
-        g2 = rearrange(g, 'b h (n c) d -> b h n c d', n=num_chunk)
-        A = semiring_cal_A.forward(q2, k2, g2) * scale
+        BK = min(d_head_qk, 64)
+        NK = triton.cdiv(d_head_qk, BK)
+        A = q.new_empty(NK, batch_size, n_heads,
+                        triton.cdiv(seq_len, BT), BT, BT)
+        grid = (NK, triton.cdiv(seq_len, BT), batch_size * n_heads)
+        fwd_inner_chunk[grid](q, k, g, A,
+                              q.stride(1), q.stride(2), q.stride(3),
+                              batch_size, n_heads, seq_len, scale,  BT=BT, BK=BK, DK=d_head_qk, num_stages=3,
+                              num_warps=4)
+        A = A.sum(0)
         o2 = A @ v2
         o2 = rearrange(o2, 'b h n c d -> b h (n c) d')
+        # combine inner and inter
         o.add_(o2)
         ctx.save_for_backward(q, k, v, g, A, initial_state)
         return o.to(v), final_state
@@ -334,28 +435,34 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         dk = dk.sum(0)
         dv = dv.sum(0)
 
-        dg = dq * q
-        dg.add_(- dk * k)
-
-        # # # #### intra chunk
+        # intra chunk
         num_chunk = seq_len // BT
-        q2 = rearrange(q, 'b h (n c) d -> b h n c d', n=num_chunk)
-        k2 = rearrange(k, 'b h (n c) d -> b h n c d', n=num_chunk)
         v2 = rearrange(v, 'b h (n c) d -> b h n c d', n=num_chunk)
-        g2 = rearrange(g, 'b h (n c) d -> b h n c d', n=num_chunk)
         do2 = rearrange(do, 'b h (n c) d -> b h n c d', n=num_chunk)
         dA2 = (do2 @ v2.transpose(-2, -1)) * scale
         dv2 = A.transpose(-1, -2) @ do2
-        dq2, dk2, dg2 = semiring_cal_A.backward(q2, k2, g2, dA2)
-        dq2 = rearrange(dq2, '... h n c d -> ... h (n c) d')
-        dk2 = rearrange(dk2, '... h n c d -> ... h (n c) d')
-        dv2 = rearrange(dv2, '... h n c d -> ... h (n c) d')
-        dg2 = rearrange(dg2, '... h n c d -> ... h (n c) d')
+        dv2 = rearrange(dv2, 'b h n c d -> b h (n c) d', n=num_chunk)
+
+        BK = min(d_head_qk, 16)
+        NK = triton.cdiv(d_head_qk, BK)
+        dk2 = torch.empty_like(k)
+        dq2 = torch.empty_like(q)
+
+        grid = (NK, triton.cdiv(seq_len, BT), batch_size * n_heads)
+        bwd_inner_chunk[grid](q, k, g,
+                              dA2, dq2, dk2,
+                              q.stride(1), q.stride(2), q.stride(3),
+                              batch_size, n_heads, seq_len, scale,
+                              BT=BT, DK=d_head_qk, BK=BK,
+                              num_warps=1,
+                              num_stages=3)
+
         dq.add_(dq2.to(dq))
         dk.add_(dk2.to(dk))
         dv.add_(dv2.to(dv))
+        dg = dq * q
+        dg.add_(- dk * k)
         dg = dg.float()
-        dg.add_(dg2)
         dg = dg.transpose(-2, -1)
         dg_cumsum = dg.cumsum(-1)
         dg = dg - dg_cumsum + dg_cumsum[..., -1, None]
