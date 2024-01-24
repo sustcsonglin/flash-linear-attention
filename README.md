@@ -26,9 +26,6 @@ Order by my expected implementation time.
 The following requirements should be satisfied 
 - [PyTorch](https://pytorch.org/) >= 2.0
 - [Triton](https://github.com/openai/triton) >=2.2
-```
-pip install triton
-```
 - [einops](https://einops.rocks/)
 
 As `fla` is actively developed now, no released packages are provided at this time.
