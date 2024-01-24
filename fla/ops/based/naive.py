@@ -3,7 +3,8 @@
 import torch
 from einops import rearrange
 
-from fla.ops.based import fused_chunk_based, parallel_based
+from fla.ops.based.chunk_fuse import fused_chunk_based
+from fla.ops.based.parallel import parallel_based
 
 
 def naive_parallel_based(q, k, v, use_scale=True, use_norm=True):
