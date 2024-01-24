@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 
-from fla.ops import fused_chunk_based, fused_chunk_gla, fused_chunk_retention
+from fla.ops import chunk_gla, chunk_retention, fused_chunk_based
 
-__all__ = ['fused_chunk_based', 'fused_chunk_gla', 'fused_chunk_retention']
+__all__ = [
+    'chunk_gla',
+    'chunk_retention',
+    'fused_chunk_based'
+]
 
 __version__ = '0.1'
