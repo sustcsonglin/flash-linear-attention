@@ -3,9 +3,8 @@
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
-
 from fla.ops.utils import contiguous
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 
 @triton.jit
@@ -166,7 +165,8 @@ def _bwd_kernel_dav(
     tl.debug_barrier()
 
     V_ptr = V + v_offset + (start_m) * stride_v3 + \
-        tl.arange(0, BLOCK_DMODEL_V)[:, None] + tl.arange(0, 16)[None, :] * stride_v4
+        tl.arange(0, BLOCK_DMODEL_V)[:, None] + \
+        tl.arange(0, 16)[None, :] * stride_v4
     GV_ptr = GV + v_offset + (start_m) * stride_v3 + tl.arange(0, BLOCK_DMODEL_V)[
         :, None] + tl.arange(0, 16)[None, :] * stride_v4
 
@@ -192,9 +192,11 @@ def _bwd_kernel_dav(
         tl.arange(0, 16)[:, None] + tl.arange(0, 16)[None, :] * stride_a4
 
     V_ptr = V + v_offset + (start_m) * stride_v3 + \
-        tl.arange(0, BLOCK_DMODEL_V)[None, :] + tl.arange(0, 16)[:, None] * stride_v4
+        tl.arange(0, BLOCK_DMODEL_V)[None, :] + \
+        tl.arange(0, 16)[:, None] * stride_v4
     GV_ptr = GV + v_offset + (start_m) * stride_v3 + \
-        tl.arange(0, BLOCK_DMODEL_V)[None, :] + tl.arange(0, 16)[:, None] * stride_v4
+        tl.arange(0, BLOCK_DMODEL_V)[None, :] + \
+        tl.arange(0, 16)[:, None] * stride_v4
 
     for k_high in range(0, hi, 16):
         dv = tl.zeros([16, BLOCK_DMODEL_V], dtype=tl.float32)
@@ -287,11 +289,11 @@ class IntraCalO(torch.autograd.Function):
         o = torch.empty_like(v)
 
         _fwd_compute_O[grid](A, v, gv, o,
-                             A.stride(0), A.stride(
+                             A.stride(
                                  1), A.stride(2), A.stride(3),
-                             v.stride(0), v.stride(
+                             v.stride(
                                  1), v.stride(2), v.stride(3),
-                             BLOCK_N=BLOCK_N, BLOCK_M=BLOCK_M,
+                             BLOCK_N=BLOCK_N,
                              BLOCK_DMODEL_V=BLOCK_V, num_warps=8 if BLOCK_V == 128 else 4, num_stages=5
                              )
 
