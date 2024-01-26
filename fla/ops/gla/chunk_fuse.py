@@ -400,6 +400,7 @@ def bwd_inner_chunk(
         _q = tl.load(p_q, mask=mask, other=0)
         gq = tl.load(p_gq, mask=mask, other=0) * inv_ln2
         score = tl.math.exp2(gq[None, :] - b_g)
+        score = tl.where(o_i[:, None] <= i, score, 0)
         _dA = tl.load(p_dA)
         _dA = tl.where(o_i <= i, _dA, 0)
         b_dk += (_dA[:, None] * score * _q[None, :])
