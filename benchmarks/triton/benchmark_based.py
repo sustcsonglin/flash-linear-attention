@@ -3,8 +3,8 @@
 import torch
 import triton
 
-from fla.ops.based import (fused_chunk_based, naive_chunk_based,
-                           naive_parallel_based, parallel_based)
+from fla.ops.based import fused_chunk_based, parallel_based
+from fla.ops.based.naive import naive_chunk_based, naive_parallel_based
 
 try:
     from flash_attn import flash_attn_func
