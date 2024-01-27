@@ -56,11 +56,16 @@ def chunk_abc_fwd_kernel_cum(
     M: tl.constexpr,
     BT: tl.constexpr,
     BM: tl.constexpr,
-    NT: tl.constexpr
+    NT: tl.constexpr,
+    NM: tl.constexpr
 ):
     i_m, i_bh = tl.program_id(0), tl.program_id(1)
 
     b_mp = tl.full([1,], float('-inf'), dtype=tl.float32)
+    for i_m in range(NM):
+        p_s = tl.make_block_ptr(s + i_bh * s_sk_h, (T, M), (s_sk_t, s_sk_d), (0, i_m * BM), (BT, BM), (1, 0))
+        b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
+        b_mp = tl.maximum(tl.min(tl.min(b_s, 0), 0), b_mp)
     b_sp = tl.zeros([BM,], dtype=tl.float32)
     for i_t in range(NT):
         p_s = tl.make_block_ptr(s + i_bh * s_sk_h, (T, M), (s_sk_t, s_sk_d), (i_t * BT, i_m * BM), (BT, BM), (1, 0))
@@ -72,12 +77,11 @@ def chunk_abc_fwd_kernel_cum(
         # [BT, BM]
         b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
 
+        # mp <= m
         # workaround for compiler bugs
-        if i_t == 0:
-            b_r = tl.zeros([1,], dtype=tl.float32)
-        else:
+        if i_t > 0:
             b_m = tl.maximum(b_mp, b_m)
-            b_r = (b_mp - b_m).to(tl.float32)
+        b_r = b_mp - b_m
         b_c = tl.exp(b_s - b_m)
         b_s = tl.cumsum(b_c, 0) + (b_sp * tl.exp(b_r))[None, :]
         b_z = tl.exp(b_r - tl.log(b_s))
@@ -496,7 +500,7 @@ class ChunkABCFunction(torch.autograd.Function):
         chunk_abc_fwd_kernel_cum[grid](
             sk, rk, ck, zk,
             sk.stride(1), sk.stride(2), sk.stride(3),
-            T=T, M=M, BT=BT, BM=BM, NT=NT,
+            T=T, M=M, BT=BT, BM=BM, NT=NT, NM=NM,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -530,7 +534,7 @@ class ChunkABCFunction(torch.autograd.Function):
         chunk_abc_fwd_kernel_cum[grid](
             sv, rv, cv, zv,
             sv.stride(1), sv.stride(2), sv.stride(3),
-            T=T, M=M, BT=BT, BM=BM, NT=NT,
+            T=T, M=M, BT=BT, BM=BM, NT=NT, NM=NM,
             num_warps=num_warps,
             num_stages=num_stages
         )
