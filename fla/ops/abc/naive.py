@@ -3,7 +3,7 @@
 import torch
 
 
-def naive_attention(q, k, v, sk, sv):
+def naive_abc(q, k, v, sk, sv):
     # no numerical stability guarantees, only for tests
     *_, d_head = q.shape
     dtype, scale = q.dtype, d_head ** -0.5
