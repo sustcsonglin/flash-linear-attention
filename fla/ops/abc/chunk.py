@@ -452,8 +452,8 @@ class ChunkABCFunction(torch.autograd.Function):
         BM = min(64, triton.next_power_of_2(M))
         NT, NM = triton.cdiv(T, BT), triton.cdiv(M, BM)
         scale = K ** -0.5
+        num_warps = 4 if BK == 64 else 2
         num_stages = 1
-        num_warps = 2 if BK == 64 else 1
 
         def fwd_inner(q, k, v, r, z, T, K, V, BT, BK, BV, NT, scale=None, normq=False):
             NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
@@ -565,13 +565,12 @@ class ChunkABCFunction(torch.autograd.Function):
         BM = min(64, triton.next_power_of_2(M))
         NT, NM = triton.cdiv(T, BT), triton.cdiv(M, BM)
         scale = K ** -0.5
-        num_warps = 2 if BK == 64 else 1
+        num_warps = 4 if BK == 64 else 2
         num_stages = 1
 
         def bwd_inner(q, k, v, h, r, z, do, T, K, V, BT, BK, BV, NT, scale=None, normq=False):
             NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
             dh = torch.empty_like(h)
-            num_warps = 2 if BK == 64 else 1
             grid = (NK, NV, B * H)
             chunk_abc_bwd_kernel_dh[grid](
                 q, z, r, do, dh,
@@ -589,7 +588,6 @@ class ChunkABCFunction(torch.autograd.Function):
             dq = torch.empty_like(q)
             dk = torch.empty_like(k)
             dv = v.new_empty(NK, *v.shape)
-            num_warps = 4 if BK == 64 else 2
             grid = (NK, NT, B * H)
             chunk_abc_bwd_kernel_dqkv[grid](
                 q, k, v, r, h, z, do, dh, dq, dk, dv,
