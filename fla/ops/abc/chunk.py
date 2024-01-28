@@ -21,7 +21,7 @@ def safe_exy(x, y):
 @triton.jit
 def chunk_abc_fwd_kernel_m(
     s,
-    r,
+    m,
     s_sk_h,
     s_sk_t,
     s_sk_d,
@@ -34,13 +34,14 @@ def chunk_abc_fwd_kernel_m(
 ):
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
 
-    p_r = tl.make_block_ptr(r + i_bh * NT, (NT,), (s_sk_d,), (i_t,), (1,), (0,))
+    p_m = tl.make_block_ptr(m + i_bh * NT, (NT,), (s_sk_d,), (i_t,), (1,), (0,))
     b_m = tl.full([1,], float('-inf'), dtype=tl.float32)
     for i_m in range(NM):
         p_s = tl.make_block_ptr(s + i_bh * s_sk_h, (T, M), (s_sk_t, s_sk_d), (i_t * BT, i_m * BM), (BT, BM), (1, 0))
+        # [BT, BM]
         b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
         b_m = tl.maximum(tl.max(tl.max(b_s, 0), 0), b_m)
-    tl.store(p_r, b_m.to(p_r.dtype.element_ty), boundary_check=(0,))
+    tl.store(p_m, b_m.to(p_m.dtype.element_ty), boundary_check=(0,))
 
 
 @triton.jit
@@ -61,11 +62,11 @@ def chunk_abc_fwd_kernel_cum(
 ):
     i_m, i_bh = tl.program_id(0), tl.program_id(1)
 
-    b_mp = tl.full([1,], float('-inf'), dtype=tl.float32)
+    b_mp = tl.full([1,], float('inf'), dtype=tl.float32)
     for i_m in range(NM):
         p_s = tl.make_block_ptr(s + i_bh * s_sk_h, (T, M), (s_sk_t, s_sk_d), (0, i_m * BM), (BT, BM), (1, 0))
         b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
-        b_mp = tl.maximum(tl.min(tl.min(b_s, 0), 0), b_mp)
+        b_mp = tl.minimum(tl.min(tl.min(b_s, 0), 0), b_mp)
     b_sp = tl.zeros([BM,], dtype=tl.float32)
     for i_t in range(NT):
         p_s = tl.make_block_ptr(s + i_bh * s_sk_h, (T, M), (s_sk_t, s_sk_d), (i_t * BT, i_m * BM), (BT, BM), (1, 0))
@@ -337,8 +338,10 @@ def chunk_abc_bwd_kernel_dqkv(
     b_q = tl.load(p_q, boundary_check=(0, 1))
     if NORMQ:
         p_z = tl.make_block_ptr(z + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+        # [BK, BT]
         b_z = tl.load(p_z, boundary_check=(0, 1))
-        b_q = b_z * b_q
+        # [BK, BT]
+        b_q = (b_z * b_q).to(b_q.dtype)
     # [BT, BK]
     b_k = tl.load(p_k, boundary_check=(0, 1))
     # [BT, BT]
@@ -360,8 +363,10 @@ def chunk_abc_bwd_kernel_dqkv(
             b_do = (b_do * scale).to(b_do.dtype)
         if not NORMQ:
             p_z = tl.make_block_ptr(z + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+            # [BT, BV]
             b_z = tl.load(p_z, boundary_check=(0, 1))
-            b_do = b_z * b_do
+            # [BT, BV]
+            b_do = (b_z * b_do).to(b_do.dtype)
         # [BT, BT]
         b_ds = tl.where(m_s, tl.dot(b_do, tl.trans(b_v), allow_tf32=False), 0).to(b_v.dtype)
         # [BT, BK]
@@ -456,10 +461,32 @@ class ChunkABCFunction(torch.autograd.Function):
         BM = min(64, triton.next_power_of_2(M))
         NT, NM = triton.cdiv(T, BT), triton.cdiv(M, BM)
         scale = K ** -0.5
-        num_warps = 4 if BK == 64 else 2
-        num_stages = 1
 
-        def fwd_inner(q, k, v, r, z, T, K, V, BT, BK, BV, NT, scale=None, normq=False):
+        def fwd_pre(s, B, H, T, M, BT, BM, NT, NM):
+            num_warps = 4 if BM == 64 else 2
+            num_stages = 1
+            r, c, z = s.new_empty(B, H, NT), torch.empty_like(s), torch.empty_like(s)
+            grid = (NT, B * H)
+            chunk_abc_fwd_kernel_m[grid](
+                s, r,
+                s.stride(1), s.stride(2), s.stride(3),
+                T=T, M=M, BT=BT, BM=BM, NT=NT, NM=NM,
+                num_warps=num_warps,
+                num_stages=num_stages
+            )
+            grid = (NM, B * H)
+            chunk_abc_fwd_kernel_cum[grid](
+                s, r, c, z,
+                s.stride(1), s.stride(2), s.stride(3),
+                T=T, M=M, BT=BT, BM=BM, NT=NT, NM=NM,
+                num_warps=num_warps,
+                num_stages=num_stages
+            )
+            return r, c, z
+
+        def fwd_inner(q, k, v, r, z, B, H, T, K, V, BT, BK, BV, NT, scale=None, normq=False):
+            num_warps = 4 if BK == 64 else 2
+            num_stages = 1
             NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
             h = q.new_empty(B, H, NT * K, V)
             grid = (NK, NV, B * H)
@@ -487,29 +514,15 @@ class ChunkABCFunction(torch.autograd.Function):
             )
             return o, h
 
-        rk, ck, zk = sk.new_empty(B, H, NT), torch.empty_like(sk), torch.empty_like(sk)
-        grid = (NT, B * H)
-        chunk_abc_fwd_kernel_m[grid](
-            sk, rk,
-            sk.stride(1), sk.stride(2), sk.stride(3),
-            T=T, M=M, BT=BT, BM=BM, NT=NT, NM=NM,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        grid = (NM, B * H)
-        chunk_abc_fwd_kernel_cum[grid](
-            sk, rk, ck, zk,
-            sk.stride(1), sk.stride(2), sk.stride(3),
-            T=T, M=M, BT=BT, BM=BM, NT=NT, NM=NM,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
+        rk, ck, zk = fwd_pre(sk, B, H, T, M, BT, BM, NT, NM)
         s, hk = fwd_inner(
             q=q,
             k=k,
             v=ck,
             r=rk,
             z=zk,
+            B=B,
+            H=H,
             T=T,
             K=K,
             V=M,
@@ -521,29 +534,15 @@ class ChunkABCFunction(torch.autograd.Function):
             normq=False
         )
         p = s.softmax(-1, dtype=torch.float).to(q.dtype)
-        rv, cv, zv = sv.new_empty(B, H, NT), torch.empty_like(sv), torch.empty_like(sv)
-        grid = (NT, B * H)
-        chunk_abc_fwd_kernel_m[grid](
-            sv, rv,
-            sv.stride(1), sv.stride(2), sv.stride(3),
-            T=T, M=M, BT=BT, BM=BM, NT=NT, NM=NM,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        grid = (NM, B * H)
-        chunk_abc_fwd_kernel_cum[grid](
-            sv, rv, cv, zv,
-            sv.stride(1), sv.stride(2), sv.stride(3),
-            T=T, M=M, BT=BT, BM=BM, NT=NT, NM=NM,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
+        rv, cv, zv = fwd_pre(sv, B, H, T, M, BT, BM, NT, NM)
         o, hv = fwd_inner(
             q=p,
             k=cv,
             v=v,
             r=rv,
             z=zv,
+            B=B,
+            H=H,
             T=T,
             K=M,
             V=V,
@@ -572,7 +571,7 @@ class ChunkABCFunction(torch.autograd.Function):
         num_warps = 4 if BK == 64 else 2
         num_stages = 1
 
-        def bwd_inner(q, k, v, h, r, z, do, T, K, V, BT, BK, BV, NT, scale=None, normq=False):
+        def bwd_inner(q, k, v, h, r, z, do, B, H, T, K, V, BT, BK, BV, NT, scale=None, normq=False):
             NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
             dh = torch.empty_like(h)
             grid = (NK, NV, B * H)
@@ -616,6 +615,8 @@ class ChunkABCFunction(torch.autograd.Function):
             r=rv,
             z=zv,
             do=do,
+            B=B,
+            H=H,
             T=T,
             K=M,
             V=V,
@@ -636,6 +637,8 @@ class ChunkABCFunction(torch.autograd.Function):
             r=rk,
             z=zk,
             do=ds,
+            B=B,
+            H=H,
             T=T,
             K=K,
             V=M,
