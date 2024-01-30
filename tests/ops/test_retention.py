@@ -4,7 +4,8 @@ import pytest
 import torch
 
 from fla.ops.retention import (chunk_retention, fused_chunk_retention,
-                               naive_retention, parallel_retention)
+                               parallel_retention)
+from fla.ops.retention.naive import naive_retention
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])

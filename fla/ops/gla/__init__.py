@@ -2,12 +2,10 @@
 
 from .chunk import chunk_gla
 from .chunk_fuse import fused_chunk_gla
-from .naive import naive_recurrent_gla
 from .recurrent_fuse import fused_recurrent_gla
 
 __all__ = [
     'chunk_gla',
-    'fused_chunk_gla'
-    'fused_recurrent_gla',
-    'naive_recurrent_gla'
+    'fused_chunk_gla',
+    'fused_recurrent_gla'
 ]
