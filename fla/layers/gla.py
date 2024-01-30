@@ -33,10 +33,10 @@ class GatedLinearAttention(nn.Module):
         num_heads: int = 1,
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
-        gate_logit_normalizer: int = 32,
+        gate_logit_normalizer: int = 16,
         gate_logit_multiplier: int = 1,
-        gate_low_rank_dim: int = 32,
-        mode: str = 'fused_chunk',
+        gate_low_rank_dim: int = 16,
+        mode: str = 'chunk',
         chunk_size: int = 64,
         use_gk: bool = True,  # gate associated with key, i.e., $\alpha$ in the paper
         use_gv: bool = False,  # gate associated with value, i.e., $\beta$ in the paper
@@ -125,6 +125,7 @@ class GatedLinearAttention(nn.Module):
                 gv = rearrange(gv, 'b n (h d) -> b h n d', h=self.num_heads)
             else:
                 gv = None
+            o = fused_recurrent_gla(q, k, v, gk, gv)
         else:
             g = self.gk_proj(x).to(torch.float32)
             g = F.logsigmoid(g * self.gate_logit_multiplier) / self.gate_logit_normalizer
