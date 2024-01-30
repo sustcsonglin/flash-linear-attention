@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-
 from fla.modules.rmsnorm import RMSNorm
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
@@ -45,7 +44,7 @@ class GatedLinearAttention(nn.Module):
     ) -> GatedLinearAttention:
         super().__init__()
         if use_gv is True:
-            assert mode in ['chunk', 'fused_recurrent']
+            assert mode in ['fused_recurrent']
         if mode == 'fused_chunk':
             assert use_gk is True
         if mode != 'chunk' and chunk_size != 16:
@@ -112,34 +111,34 @@ class GatedLinearAttention(nn.Module):
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
 
-        if mode == 'chunk' or mode == 'fused_recurrent':
+        if mode == 'fused_recurrent':
             # for numumerical stable consideration. fused_chunk has better numerical stability
             if self.use_gk:
                 gk = self.gk_proj(x).to(torch.float32)
-                gk = (F.logsigmoid(gk) / self.gate_logit_normalizer).clamp_min_(-3)
+                gk = (F.logsigmoid(gk) / self.gate_logit_normalizer)
                 gk = rearrange(gk, 'b n (h d) -> b h n d', h=self.num_heads)
             else:
                 gk = None
             if self.use_gv:
                 gv = self.gv_proj(x).to(torch.float32)
-                gv = (F.logsigmoid(gv) / self.gate_logit_normalizer).clamp_min_(-3)
+                gv = (F.logsigmoid(gv) / self.gate_logit_normalizer)
                 gv = rearrange(gv, 'b n (h d) -> b h n d', h=self.num_heads)
             else:
                 gv = None
-            if mode == 'fused_recurrent':
-                o = fused_recurrent_gla(q, k, v, gk=gk, gv=gv)
-            else:
-                o = chunk_gla(q, k, v, gk=gk, gv=gv, chunk_size=chunk_size)
         else:
             g = self.gk_proj(x).to(torch.float32)
             g = F.logsigmoid(g * self.gate_logit_multiplier) / self.gate_logit_normalizer
             g = rearrange(g, 'b n (h d) -> b h n d', h=self.num_heads)
-            o = fused_chunk_gla(q, k, v, g)
+            if mode == 'fused_chunk':
+                o = fused_chunk_gla(q, k, v, g)
+            else:
+                o = chunk_gla(q, k, v, g)
 
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
         o = self.out_proj(rearrange(o, 'b n h d -> b n (h d)')
                           * self.gate_fn(self.g_proj(x)))
         return o
+
 
 
 if __name__ == '__main__':
