@@ -235,12 +235,12 @@ def bwd_decay_global_cumsum(
         b_dq2 = tl.load(p_dq_inter, boundary_check=(0,))
         b_dq2 *= tl.math.exp(b_g)
         b_dq = b_dq1 + b_dq2
-        tl.store(p_dq_inter, b_dq, boundary_check=(0,))
+        tl.store(p_dq_inter, b_dq.to(p_dq_inter.dtype.element_ty), boundary_check=(0,))
         b_dk1 = tl.load(p_dk_inner, boundary_check=(0,))
         b_dk2 = tl.load(p_dk_inter, boundary_check=(0,))
         b_dk2 *= tl.math.exp(last_g - b_g)
         b_dk = b_dk1 + b_dk2
-        tl.store(p_dk_inter, b_dk, boundary_check=(0,))
+        tl.store(p_dk_inter, b_dk.to(p_dk_inter.dtype.element_ty), boundary_check=(0,))
         b_q = tl.load(p_q, boundary_check=(0,))
         b_k = tl.load(p_k, boundary_check=(0,))
         b_dg = b_dq * b_q - b_dk * b_k
