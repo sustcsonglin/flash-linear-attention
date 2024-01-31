@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from fla.ops.gla import chunk_gla, fused_recurrent_gla
 
 
-@pytest.mark.parametrize("dtype", [torch.float])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float])
 @pytest.mark.parametrize("D", [32, 64, 128])
 @pytest.mark.parametrize("T", [300, 512])
 def test_gla(dtype, D, T, B=4, H=4):
