@@ -4,12 +4,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fla.ops.gla import chunk_gla, fused_chunk_gla
+from fla.ops.gla import chunk_gla, fused_recurrent_gla
 
 
 @pytest.mark.parametrize("dtype", [torch.float])
 @pytest.mark.parametrize("D", [32, 64, 128])
-@pytest.mark.parametrize("T", [512])
+@pytest.mark.parametrize("T", [300, 512])
 def test_gla(dtype, D, T, B=4, H=4):
     atol = 1e-2 if dtype == torch.float else 1e-1
     # [batch_size, n_heads, seq_len, d_head]
@@ -19,7 +19,7 @@ def test_gla(dtype, D, T, B=4, H=4):
     g = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
     g = F.logsigmoid(g).clamp_min(-3).requires_grad_(True)
     do = torch.randn_like(v)
-    ref = chunk_gla(q, k, v, g)
+    ref = fused_recurrent_gla(q, k, v, g)
     ref.backward(do)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
@@ -27,7 +27,7 @@ def test_gla(dtype, D, T, B=4, H=4):
     ref_dg, g.grad = g.grad.clone(), None
 
     # triton implementation
-    tri = fused_chunk_gla(q, k, v, g)
+    tri = chunk_gla(q, k, v, g)
     tri.backward(do)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
