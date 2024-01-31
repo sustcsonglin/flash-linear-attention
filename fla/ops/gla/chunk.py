@@ -157,7 +157,7 @@ def fused_chunk_gla_bwd_kernel(
         # [BT, DV]
         b_do = tl.load(p_do, boundary_check=(0, 1))
         # [DK, DV]
-        b_dh = d_b * b_dh + tl.dot(b_q, b_do, allow_tf32=False)
+        b_dh = d_b[:, None] * b_dh + tl.dot(b_q, b_do, allow_tf32=False)
         p_dh -= DK * DV
     
 
@@ -398,8 +398,7 @@ class ChunkGLAFunction(torch.autograd.Function):
         fwd_inner_chunk[grid](q, k, g, A,
                               q.stride(1), q.stride(2), q.stride(3),
                               A.stride(1), A.stride(2), A.stride(3),
-                              batch_size, n_heads, seq_len, scale,  BT=BT, BK=BK, BTT=BTT, DK=d_head_qk, num_stages=3,
-                              num_warps=1)        
+                              batch_size, n_heads, seq_len, scale,  BT=BT, BK=BK, BTT=BTT, DK=d_head_qk, num_stages=3, num_warps=1)        
 
         o2 = A @ v2    
         o2 = rearrange(o2, 'b h n c d -> b h (n c) d')
@@ -421,7 +420,7 @@ class ChunkGLAFunction(torch.autograd.Function):
         # inter-chunk
         BK, BV = min(d_head_qk, 64), min(d_head_v, 64)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
-        num_stages = 1
+        num_stages = 3
         num_warps = 4
 
         grid = (NV, NK, batch_size * n_heads)
