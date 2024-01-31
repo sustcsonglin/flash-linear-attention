@@ -47,11 +47,6 @@ class GatedLinearAttention(nn.Module):
             assert mode in ['fused_recurrent']
         if mode == 'fused_chunk':
             assert use_gk is True
-        if mode != 'chunk' and chunk_size != 16:
-            warnings.warn(
-                f" `chunk_size` is only used for `chunk` mode."
-                f" The `{mode}` mode will suppress the passed value of {chunk_size} and always use 16."
-            )
         self.use_gk = use_gk
         self.use_gv = use_gv
         self.d_model = d_model
@@ -59,8 +54,7 @@ class GatedLinearAttention(nn.Module):
         self.chunk_size = chunk_size
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
-        assert mode in ['chunk', 'fused_recurrent',
-                        'fused_chunk'], f"Not suppoerted mode `{mode}`."
+        assert mode in ['chunk', 'fused_recurrent', 'fused_chunk'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
         self.num_heads = num_heads
@@ -79,8 +73,7 @@ class GatedLinearAttention(nn.Module):
             self.gk_proj = None
         if self.use_gv:
             self.gv_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
-                                         nn.Linear(gate_low_rank_dim, self.value_dim,
-                                                   bias=True))
+                                         nn.Linear(gate_low_rank_dim, self.value_dim, bias=True))
         else:
             self.gv_proj = None
         self.out_proj = nn.Linear(self.value_dim, d_model, bias=False)
@@ -136,8 +129,7 @@ class GatedLinearAttention(nn.Module):
                 o = chunk_gla(q, k, v, g)
 
         o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
-        o = self.out_proj(rearrange(o, 'b n h d -> b n (h d)')
-                          * self.gate_fn(self.g_proj(x)))
+        o = self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.gate_fn(self.g_proj(x)))
         return o
 
 
@@ -146,8 +138,7 @@ if __name__ == '__main__':
     batch = 4
     seq_len = 1023
     d_model = 1024
-    x = torch.randn(batch, seq_len, d_model).to(
-        torch.bfloat16).cuda().requires_grad_(True)
+    x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
     model = GatedLinearAttention(use_gk=True, use_gv=True, mode='chunk').to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)
