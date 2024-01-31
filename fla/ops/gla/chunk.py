@@ -17,6 +17,15 @@ from fla.ops.utils import contiguous
 inv_ln2 = 1.44269504
 
 
+@triton.jit
+def safe_exy(x, y):
+    # e^x * y = sign(y) * e^(x + log(|y|)
+    # this utility is designed for the safe multiplication of two variables e^x and y,
+    # where x is in log space and y in normal space respectively.
+    # it is important to ensure that e^x * y will not result in an overflow
+    return tl.where(y > 0, 1., -1.) * tl.exp(x + tl.log(tl.abs(y.to(tl.float32))))
+
+
 def rearrange_chunk(x, chunk_size):
     return rearrange(x, 'b h (n c) d -> b h n c d', c=chunk_size)
 
@@ -250,7 +259,10 @@ def bwd_decay_global_cumsum(
 
 @triton.jit
 def fwd_inner_chunk(
-    q, k, g, A,
+    q_g,
+    k_g,
+    g,
+    A,
     s_qk_h,  # stride size: L * K
     s_qk_t,  # stride size: K
     s_qk_d,  # stride size: 1
@@ -260,22 +272,36 @@ def fwd_inner_chunk(
     B,  # batch_size
     H,  # n_heads
     T,  # seq_len
-    scale,  # K ** -0.5
     # clamp_min,  # minimum log value of the gate for numerical stability. default: -5
     BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
-    BTT: tl.constexpr,
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
     K: tl.constexpr,  # K
 ):
-    i_c, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    for i in range(i_c * BTT, (i_c + 1) * BTT):
-        q_i = tl.load(q + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + i * K)
-        gq_i = tl.load(g + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + i * K)
-        for j in range(0, i+1):
-            k_j = tl.load(k + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + j * K)
-            gk_j = tl.load(g + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + j * K)
-            A_ij = tl.sum(q_i * k_j * tl.math.exp(gq_i - gk_j)) * scale
-            tl.store(A + i_bh * s_A_h + i_t * s_A_c + i * BT + j, A_ij)
+    i_t, i_bh = tl.program_id(0), tl.program_id(1)
+
+    o_i = tl.arange(0, BT)
+    m_s = o_i[:, None] >= o_i[None, :]
+
+    b_A = tl.zeros([BT, BT], dtype=tl.float32)
+    for i_k in range(tl.cdiv(K, BK)):
+        p_qg = tl.make_block_ptr(q_g + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_kg = tl.make_block_ptr(k_g + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, ((i_t+1)*BT*K,), (s_qk_d,), ((i_t+1)*BT*K-K + i_k * BK,), (BK,), (0,))
+
+        # [BK,]
+        b_g = tl.load(p_g, boundary_check=(0,))
+        b_m = tl.min(b_g, 0)
+        # [BT, BK]
+        b_qg = tl.load(p_qg, boundary_check=(0, 1))
+        # [BK, BT]
+        b_kg = tl.load(p_kg, boundary_check=(0, 1))
+        b_kg = (b_kg * tl.exp(b_m - b_g)[:, None]).to(b_kg.dtype)
+
+        b_sg = tl.dot(b_qg, b_kg, allow_tf32=False)
+        b_A += safe_exy(-b_m, b_sg)
+    b_A = tl.where(m_s, b_A, 0.)
+    p_A = tl.make_block_ptr(A + i_bh * s_A_h + i_t * s_A_c, (BT, BT), (BT, 1), (0, 0), (BT, BT), (1, 0))
+    tl.store(p_A, b_A.to(p_A.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -378,15 +404,15 @@ class ChunkGLAFunction(torch.autograd.Function):
         BK = min(K, 64)
         NK = triton.cdiv(K, BK)
         A = q.new_zeros(B, H, NT, BT, BT)
-        BTT = 1
-        grid = (BC // BTT, NT, B * H)
+        grid = (NT, B * H)
         fwd_inner_chunk[grid](
-            q, k, g, A,
+            q_g, k_g, g, A,
             q.stride(1), q.stride(2), q.stride(3),
             A.stride(1), A.stride(2), A.stride(3),
-            B, H, T, scale,
-            BT=BT, BK=BK, BTT=BTT, K=K,
-            num_stages=3, num_warps=1
+            B, H, T,
+            BT=BT, BK=BK, K=K,
+            num_warps=1,
+            num_stages=3
         )
 
         o2 = A @ v2
