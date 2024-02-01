@@ -392,24 +392,19 @@ def chunk_gla_bwd_kernel_dqk2(
         # [BT, BT]
         b_dA += tl.dot(b_do, b_v, allow_tf32=False)
     b_dA = tl.where(m_s, b_dA * scale, 0.).to(b_q.dtype)
-    # [BT,]
-    b_m_gq0 = tl.max(b_g, 1)
-    b_m_gk0 = tl.min(b_g, 1)
     # [BK,]
-    b_m_gq1 = tl.max(b_g, 0)
-    b_m_gk1 = tl.min(b_g, 0)
+    b_m_gq = tl.max(b_g, 0)
+    b_m_gk = tl.min(b_g, 0)
     # [BT, BK]
-    b_gq0 = tl.exp(b_g - b_m_gq0[:, None]).to(b_q.dtype)
-    b_gk1 = tl.exp(b_m_gk1[None, :] - b_g).to(b_k.dtype)
+    b_gk = b_m_gk[None, :] - b_g
     # [BK, BT]
-    b_gq1 = tl.exp(tl.trans(b_g) - b_m_gq1[:, None]).to(b_q.dtype)
-    b_gk0 = tl.exp(b_m_gk0[None, :] - tl.trans(b_g)).to(b_k.dtype)
+    b_gq = tl.trans(b_g) - b_m_gq[:, None]
     # [BT, BK]
-    b_dq = tl.dot(b_dA, (b_k * b_gk1).to(b_q.dtype), allow_tf32=False) * b_gq0
-    b_dq = safe_exy(b_m_gq0[:, None] - b_m_gk1[None, :], b_dq)
+    b_dq = tl.dot(b_dA, safe_exy(b_gk, b_k).to(b_q.dtype), allow_tf32=False)
+    b_dq = safe_exy(-b_gk, b_dq)
     # [BK, BT]
-    b_dk = tl.dot((b_q * b_gq1).to(b_q.dtype), b_dA, allow_tf32=False) * b_gk0
-    b_dk = safe_exy(b_m_gq1[:, None] - b_m_gk0[None, :], b_dk)
+    b_dk = tl.dot(safe_exy(b_gq, b_q).to(b_q.dtype), b_dA, allow_tf32=False)
+    b_dk = safe_exy(-b_gq, b_dk)
 
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
