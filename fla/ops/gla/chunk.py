@@ -56,15 +56,15 @@ def chunk_gla_fwd_kernel_h(
     s_hh,
     s_ht,
 
-    B,  # batch size
-    H,  # n_heads
-    T,  # seq_len
     scale,  # K ** -0.5
+    B: tl.constexpr,  # batch size
+    H: tl.constexpr,  # n_heads
+    T: tl.constexpr,  # seq_len
+    K: tl.constexpr,  # K
+    V: tl.constexpr,  # V
     BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
-    K: tl.constexpr,  # K
-    V: tl.constexpr,  # V
     USE_INITIAL_STATE: tl.constexpr,
     STORE_FINAL_STATE: tl.constexpr,
 ):
@@ -105,7 +105,7 @@ def chunk_gla_fwd_kernel_h(
 
 # Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
 @triton.jit
-def chunk_gla_bwd_kernel(
+def chunk_gla_bwd_kernel_dh(
     q,
     g,
     do,  # gradient of output [B, H, L, V]
@@ -355,35 +355,53 @@ def bwd_inner_chunk(
     s_A_t,
     B,  # batch_size
     H,  # n_heads
-    T,  # seq_len
-    scale,  # K ** -0.5
-    # clamp_min,  # minimum log value of the gate for numerical stability. default: -5
+    T: tl.constexpr,
+    K: tl.constexpr,
     BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
-    BTT: tl.constexpr,
-    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
-    K: tl.constexpr,  # K
+    BK: tl.constexpr  # BLOCK SIZE along the K dimension
 ):
+    i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
-    i_c, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    for i in range(i_c * BTT, (i_c + 1) * BTT):
-        gq_i = tl.load(g + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + i * K)
-        dq_i = tl.zeros([K], dtype=tl.float32)
-        for j in range(0, i+1):
-            dA_ij = tl.load(dA + i_bh * s_A_h + i_t * s_A_c + i * BT + j)
-            k_j = tl.load(k + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + j * K)
-            gk_j = tl.load(g + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + j * K)
-            dq_i += dA_ij * k_j * tl.math.exp(gq_i - gk_j)
-        tl.store(dq + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + i * K, dq_i)
+    o_i = tl.arange(0, BT)
+    m_s = o_i[:, None] >= o_i[None, :]
 
-    for j in range(i_c * BTT, (i_c + 1) * BTT):
-        gk_j = tl.load(g + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + j * K)
-        dk_j = tl.zeros([K], dtype=tl.float32)
-        for i in range(j, BT):
-            dA_ij = tl.load(dA + i_bh * s_A_h + i_t * s_A_c + i * BT + j)
-            q_i = tl.load(q + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + i * K)
-            gq_i = tl.load(g + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + i * K)
-            dk_j += dA_ij * q_i * tl.math.exp(gq_i - gk_j)
-        tl.store(dk + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + j * K, dk_j)
+    p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+    p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_g = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dA = tl.make_block_ptr(dA + i_bh * s_A_h + i_t * s_A_c, (BT, BT), (BT, 1), (0, 0), (BT, BT), (1, 0))
+    p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dk = tl.make_block_ptr(dk + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+
+    # [BK, BT]
+    b_q = tl.load(p_q, boundary_check=(0, 1))
+    # [BT, BK]
+    b_g = tl.load(p_g, boundary_check=(0, 1))
+    b_k = tl.load(p_k, boundary_check=(0, 1))
+    # [BT, BT]
+    b_dA = tl.load(p_dA, boundary_check=(0, 1))
+    b_dA = tl.where(m_s, b_dA, 0.).to(b_dA.dtype)
+
+    # [BT,]
+    b_m_gq0 = tl.max(b_g, 1)
+    b_m_gk0 = tl.min(b_g, 1)
+    # [BK,]
+    b_m_gq1 = tl.max(b_g, 0)
+    b_m_gk1 = tl.min(b_g, 0)
+    # [BT, BK]
+    b_gq0 = tl.exp(b_g - b_m_gq0[:, None]).to(b_q.dtype)
+    b_gk1 = tl.exp(b_m_gk1[None, :] - b_g).to(b_k.dtype)
+    # [BK, BT]
+    b_gq1 = tl.exp(tl.trans(b_g) - b_m_gq1[:, None]).to(b_q.dtype)
+    b_gk0 = tl.exp(b_m_gk0[None, :] - tl.trans(b_g)).to(b_k.dtype)
+    # [BT, BK]
+    b_dq = tl.dot(b_dA, (b_k * b_gk1).to(b_q.dtype), allow_tf32=False) * b_gq0
+    b_dq = safe_exy(b_m_gq0[:, None] - b_m_gk1[None, :], b_dq)
+    # [BK, BT]
+    b_dk = tl.dot((b_q * b_gq1).to(b_q.dtype), b_dA, allow_tf32=False) * b_gk0
+    b_dk = safe_exy(b_m_gq1[:, None] - b_m_gk0[None, :], b_dk)
+
+    tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
+    tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
 
 
 class ChunkGLAFunction(torch.autograd.Function):
@@ -395,10 +413,8 @@ class ChunkGLAFunction(torch.autograd.Function):
         ctx.g_dtype = g.dtype
         g = g.to(torch.float32)
         B, H, T, K, V = *q.shape, v.shape[-1]
-        ctx.scale = scale
 
-        # inter-chunk
-        BT = 64  # chunk_size
+        BT = 64
         BK, BV = min(K, 64), min(V, 64)
         num_stages = 1
         num_warps = 4
@@ -426,8 +442,8 @@ class ChunkGLAFunction(torch.autograd.Function):
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             h.stride(1), h.stride(2),
-            B, H, T, scale,
-            BT=BT, K=K, V=V, BK=BK, BV=BV,
+            scale,
+            B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
             USE_INITIAL_STATE=initial_state is not None,
             STORE_FINAL_STATE=output_final_state,
             num_warps=num_warps,
@@ -449,6 +465,8 @@ class ChunkGLAFunction(torch.autograd.Function):
             num_stages=num_stages
         )
         ctx.save_for_backward(q, q_g, k, k_g, v, g, A, initial_state, h)
+        ctx.BT = BT
+        ctx.scale = scale
         return o, final_state
 
     @staticmethod
@@ -456,22 +474,20 @@ class ChunkGLAFunction(torch.autograd.Function):
     @custom_bwd
     def backward(ctx, do, d_final_state=None):
         q, q_g, k, k_g, v, g, A, initial_state, h = ctx.saved_tensors
-        B, H, T, K = q.shape
-        V = v.shape[-1]
+        B, H, T, K, V = *q.shape, v.shape[-1]
+        BT = ctx.BT
         scale = ctx.scale
-        BT = 64
         dq = rearrange_back(rearrange_chunk(do, BT) @ rearrange_chunk(h, K).transpose(-1, -2)) * scale
 
         # inter-chunk
         BK, BV = min(K, 64), min(V, 64)
         NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
-        num_stages = 3
+        num_stages = 1
         num_warps = 4
 
-        grid = (NV, NK, B * H)
         dh = torch.empty_like(h)
-
-        chunk_gla_bwd_kernel[grid](
+        grid = (NV, NK, B * H)
+        chunk_gla_bwd_kernel_dh[grid](
             q_g, g, do, dh,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
@@ -482,7 +498,6 @@ class ChunkGLAFunction(torch.autograd.Function):
             num_warps=num_warps,
             num_stages=num_stages,
         )
-
         dh = rearrange_chunk(dh, K)
         dk = rearrange_back(torch.einsum('b h n k v, b h n c v -> b h n c k', dh, rearrange_chunk(v, BT)))
         dv = rearrange_back(torch.einsum('b h n k v, b h n c k -> b h n c v', dh, rearrange_chunk(k_g, BT)))
@@ -495,22 +510,17 @@ class ChunkGLAFunction(torch.autograd.Function):
         dv2 = A.transpose(-1, -2) @ do2
         dv2 = rearrange(dv2, 'b h n c d -> b h (n c) d', n=num_chunk)
 
-        BK = min(K, 64)
-        NK = triton.cdiv(K, BK)
-        dk2 = torch.empty_like(k)
         dq2 = torch.empty_like(q)
+        dk2 = torch.empty_like(k)
 
-        BTT = 1
-        grid = (BT // BTT, NT, B * H)
+        grid = (NK, NT, B * H)
         bwd_inner_chunk[grid](
-            q, k, g, dA2,
-            dq2, dk2,
+            q, k, g, dA2, dq2, dk2,
             q.stride(1), q.stride(2), q.stride(3),
             A.stride(1), A.stride(2), A.stride(3),
-            B, H, T, scale,
-            BT=BT, BK=BK, BTT=BTT, K=K,
-            num_warps=1,
-            num_stages=3,
+            B=B, H=H, T=T, K=K, BT=BT, BK=BK,
+            num_warps=num_warps,
+            num_stages=num_stages,
         )
 
         BK = min(K, 32)
