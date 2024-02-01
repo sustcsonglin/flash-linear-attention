@@ -59,7 +59,7 @@ def benchmark(seq_len, provider):
     elif provider == 'chunk_retention':
         results = triton.testing.do_bench(lambda: chunk_retention(q, k, v), quantiles=quantiles)
     elif provider == 'chunk_gla':
-        results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g, None), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g), quantiles=quantiles)
     elif provider == 'parallel':
         results = triton.testing.do_bench(lambda: parallel_retention(q, k, v), quantiles=quantiles)
     elif provider == 'torch_bwd':
@@ -72,7 +72,7 @@ def benchmark(seq_len, provider):
     elif provider == 'fused_chunk_gla_bwd':
         results = triton.testing.do_bench(lambda: fused_chunk_gla(q, k, v, g).backward(do), quantiles=quantiles)
     elif provider == 'chunk_gla_bwd':
-        results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g, None).backward(do), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g).backward(do), quantiles=quantiles)
     elif provider == 'parallel_bwd':
         results = triton.testing.do_bench(lambda: parallel_retention(q, k, v).backward(do), quantiles=quantiles)
     return results

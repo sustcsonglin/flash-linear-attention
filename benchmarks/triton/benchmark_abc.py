@@ -56,11 +56,11 @@ def benchmark(seq_len, provider):
     if provider == 'abc':
         results = triton.testing.do_bench(lambda: chunk_abc(q, k, v, sk, sv), quantiles=quantiles)
     elif provider == 'gla':
-        results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g, None), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g), quantiles=quantiles)
     elif provider == 'abc_bwd':
         results = triton.testing.do_bench(lambda: chunk_abc(q, k, v, sk, sv).backward(do), quantiles=quantiles)
     elif provider == 'gla_bwd':
-        results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g, None).backward(do), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g).backward(do), quantiles=quantiles)
     elif provider == 'retention_bwd':
         results = triton.testing.do_bench(lambda: chunk_retention(q, k, v).backward(do), quantiles=quantiles)
     elif provider == 'flash_bwd':
