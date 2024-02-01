@@ -11,6 +11,7 @@ from fla.ops.gla import chunk_gla, fused_recurrent_gla
 @pytest.mark.parametrize("D", [32, 64, 128])
 @pytest.mark.parametrize("T", [300, 512])
 def test_gla(dtype, D, T, B=4, H=4):
+    torch.manual_seed(42)
     atol = 1e-2 if dtype == torch.float else 1e-1
     # [batch_size, n_heads, seq_len, d_head]
     q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
@@ -34,7 +35,7 @@ def test_gla(dtype, D, T, B=4, H=4):
     tri_dv, v.grad = v.grad.clone(), None
     tri_dg, g.grad = g.grad.clone(), None
 
-    assert ref.allclose(tri, 0, atol), f"o diff: {torch.abs(ref - tri).max()}"
+    assert ref.allclose(tri, 0, atol), f" o diff: {torch.abs(ref - tri).max()}"
     assert ref_dq.allclose(tri_dq, 0, atol), f"dq diff: {torch.abs(ref_dq - tri_dq).max()}"
     assert ref_dk.allclose(tri_dk, 0, atol), f"dk diff: {torch.abs(ref_dk - tri_dk).max()}"
     assert ref_dv.allclose(tri_dv, 0, atol), f"dv diff: {torch.abs(ref_dv - tri_dv).max()}"
