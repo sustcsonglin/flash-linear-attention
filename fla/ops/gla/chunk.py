@@ -35,7 +35,7 @@ def rearrange_back(x):
 
 
 @triton.jit
-def chunk_gla_fwd_kernel(
+def chunk_gla_fwd_kernel_h(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
     k,  # key [B, H, L, K]
     v,  # value [B, H, L, V]
@@ -45,9 +45,9 @@ def chunk_gla_fwd_kernel(
     initial_state,  # initial state of the chunk [B, H, K, V]
     final_state,  # final state of the chunk [B, H, K, V]
 
-    s_qk_h,  # stride size: L * K
-    s_qk_t,  # stride size: K
-    s_qk_d,  # stride size: 1
+    s_k_h,  # stride size: L * K
+    s_k_t,  # stride size: K
+    s_k_d,  # stride size: 1
 
     s_vo_h,  # stride size: L * V
     s_vo_t,  # stride size: V
@@ -78,9 +78,9 @@ def chunk_gla_fwd_kernel(
         b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
 
     for i in range(tl.cdiv(T, BT)):
-        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
+        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
         p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (i * BT * K,), (s_qk_d,), (i * BT * K - K + i_k * BK,), (BK,), (0,))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h, (i * BT * K,), (s_k_d,), (i * BT * K - K + i_k * BK,), (BK,), (0,))
         # [BK, BT]
         b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BT, BV]
@@ -111,9 +111,9 @@ def chunk_gla_bwd_kernel(
     do,  # gradient of output [B, H, L, V]
     dh,
 
-    s_qk_h,  # stride size: L * K
-    s_qk_t,  # stride size: K
-    s_qk_d,  # stride size: 1
+    s_k_h,  # stride size: L * K
+    s_k_t,  # stride size: K
+    s_k_d,  # stride size: 1
 
     s_vo_h,  # stride size: L * V
     s_vo_t,  # stride size: V
@@ -125,7 +125,7 @@ def chunk_gla_bwd_kernel(
     B,  # batch_size
     H,  # n_heads
     T,  # seq_len
-    TDK,
+    TK,
     scale,  # K ** -0.5
     # clamp_min,  # minimum log value of the gate for numerical stability. default: -5
     BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
@@ -139,8 +139,8 @@ def chunk_gla_bwd_kernel(
     # [BK, BV]
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
     for i in range((tl.cdiv(T, BT) - 1), -1, -1):
-        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
-        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (i * BT * K,), (s_qk_d,), (i * BT * K - K + i_k * BK,), (BK,), (0,))
+        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h, (i * BT * K,), (s_k_d,), (i * BT * K - K + i_k * BK,), (BK,), (0,))
         p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
         p_dh = tl.make_block_ptr(dh + i_bh * s_hh, ((i+1)*K, V), (s_ht, 1), (i*K+i_k*BK, i_v * BV), (BK, BV), (1, 0))
 
@@ -162,9 +162,9 @@ def fwd_decay_cumsum(
     g,
     qg,
     kg,
-    s_qk_h,
-    s_qk_t,
-    s_qk_d,
+    s_k_h,
+    s_k_t,
+    s_k_d,
     B,
     H,
     T,
@@ -177,9 +177,9 @@ def fwd_decay_cumsum(
 
     cum_decay = tl.zeros([BK], dtype=tl.float32)
     for i in range(i_t * BT, i_t * BT + BT):
-        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, ((i + 1) * K,), (s_qk_d,), (i * K + i_k * BK,), (BK,), (0,))
-        p_qg = tl.make_block_ptr(qg + i_bh * s_qk_h, ((i + 1) * K,), (s_qk_d,), (i * K + i_k * BK,), (BK,), (0,))
-        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, ((i + 1) * K,), (s_qk_d,), (i * K + i_k * BK,), (BK,), (0,))
+        p_q = tl.make_block_ptr(q + i_bh * s_k_h, ((i + 1) * K,), (s_k_d,), (i * K + i_k * BK,), (BK,), (0,))
+        p_qg = tl.make_block_ptr(qg + i_bh * s_k_h, ((i + 1) * K,), (s_k_d,), (i * K + i_k * BK,), (BK,), (0,))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h, ((i + 1) * K,), (s_k_d,), (i * K + i_k * BK,), (BK,), (0,))
 
         b_q = tl.load(p_q, boundary_check=(0,))
         b_g = tl.load(p_g, boundary_check=(0,))
@@ -192,9 +192,9 @@ def fwd_decay_cumsum(
     tl.debug_barrier()
 
     for i in range(i_t * BT, i_t * BT + BT):
-        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, ((i + 1) * K,), (s_qk_d,), (i * K + i_k * BK,), (BK,), (0,))
-        p_kg = tl.make_block_ptr(kg + i_bh * s_qk_h, ((i + 1) * K,), (s_qk_d,), (i * K + i_k * BK,), (BK,), (0,))
-        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, ((i + 1) * K,), (s_qk_d,), (i * K + i_k * BK,), (BK,), (0,))
+        p_k = tl.make_block_ptr(k + i_bh * s_k_h, ((i + 1) * K,), (s_k_d,), (i * K + i_k * BK,), (BK,), (0,))
+        p_kg = tl.make_block_ptr(kg + i_bh * s_k_h, ((i + 1) * K,), (s_k_d,), (i * K + i_k * BK,), (BK,), (0,))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h, ((i + 1) * K,), (s_k_d,), (i * K + i_k * BK,), (BK,), (0,))
 
         b_k = tl.load(p_k, boundary_check=(0,))
         b_g = tl.load(p_g, boundary_check=(0,))
@@ -212,9 +212,9 @@ def bwd_decay_global_cumsum(
     k,
     g,
     dg,
-    s_qk_h,
-    s_qk_t,
-    s_qk_d,
+    s_k_h,
+    s_k_t,
+    s_k_d,
     B,
     H,
     T,
@@ -228,14 +228,14 @@ def bwd_decay_global_cumsum(
     last_g = tl.zeros([BK], dtype=tl.float32)
     cum_grad_dg = tl.zeros([BK], dtype=tl.float32)
     for i in range(BT - 1, -1, -1):
-        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, ((i_t*BT+i+1)*K,), (s_qk_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
-        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, ((i_t*BT+i+1)*K,), (s_qk_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
-        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, ((i_t*BT+i+1)*K,), (s_qk_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
-        p_dg = tl.make_block_ptr(dg + i_bh * s_qk_h, ((i_t*BT+i+1)*K,), (s_qk_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
-        p_dq_inner = tl.make_block_ptr(dq_inner+i_bh*s_qk_h, ((i_t*BT+i+1)*K,), (s_qk_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
-        p_dk_inner = tl.make_block_ptr(dk_inner+i_bh*s_qk_h, ((i_t*BT+i+1)*K,), (s_qk_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
-        p_dq_inter = tl.make_block_ptr(dq_inter+i_bh*s_qk_h, ((i_t*BT+i+1)*K,), (s_qk_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
-        p_dk_inter = tl.make_block_ptr(dk_inter+i_bh*s_qk_h, ((i_t*BT+i+1)*K,), (s_qk_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
+        p_q = tl.make_block_ptr(q + i_bh * s_k_h, ((i_t*BT+i+1)*K,), (s_k_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
+        p_k = tl.make_block_ptr(k + i_bh * s_k_h, ((i_t*BT+i+1)*K,), (s_k_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h, ((i_t*BT+i+1)*K,), (s_k_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
+        p_dg = tl.make_block_ptr(dg + i_bh * s_k_h, ((i_t*BT+i+1)*K,), (s_k_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
+        p_dq_inner = tl.make_block_ptr(dq_inner+i_bh*s_k_h, ((i_t*BT+i+1)*K,), (s_k_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
+        p_dk_inner = tl.make_block_ptr(dk_inner+i_bh*s_k_h, ((i_t*BT+i+1)*K,), (s_k_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
+        p_dq_inter = tl.make_block_ptr(dq_inter+i_bh*s_k_h, ((i_t*BT+i+1)*K,), (s_k_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
+        p_dk_inter = tl.make_block_ptr(dk_inter+i_bh*s_k_h, ((i_t*BT+i+1)*K,), (s_k_d,), ((i_t*BT+i)*K+i_k*BK,), (BK,), (0,))
 
         b_g = tl.load(p_g, boundary_check=(0,))
         if i == (BT - 1):
@@ -258,42 +258,64 @@ def bwd_decay_global_cumsum(
 
 
 @triton.jit
-def fwd_inner_chunk(
+def chunk_gla_fwd_kernel_o(
     q,
+    q_g,
     k,
+    v,
     g,
+    h,
+    o,
     A,
-    s_qk_h,  # stride size: L * K
-    s_qk_t,  # stride size: K
-    s_qk_d,  # stride size: 1
+    s_k_h,  # stride size: L * K
+    s_k_t,  # stride size: K
+    s_k_d,  # stride size: 1
+    s_v_h,
+    s_v_t,
+    s_v_d,
+    s_h_h,
+    s_h_t,
+    s_h_d,
     s_A_h,
     s_A_c,
     s_A_t,
+    scale,
     B,  # batch_size
     H,  # n_heads
     T,  # seq_len
-    scale,
     # clamp_min,  # minimum log value of the gate for numerical stability. default: -5
+    K: tl.constexpr,  # K
+    V: tl.constexpr,  # V
     BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
-    K: tl.constexpr,  # K
+    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
 ):
-    i_t, i_bh = tl.program_id(0), tl.program_id(1)
+    i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
     o_i = tl.arange(0, BT)
     m_s = o_i[:, None] >= o_i[None, :]
 
+    b_o = tl.zeros([BT, BV], dtype=tl.float32)
     b_A = tl.zeros([BT, BT], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
-        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_q_g = tl.make_block_ptr(q_g + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+        p_h = tl.make_block_ptr(h + i_bh * s_h_h, ((i_t+1)*K, V), (s_h_t, s_h_d), (i_t*K+i_k*BK, i_v * BV), (BK, BV), (1, 0))
 
         # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
+        b_q_g = tl.load(p_q_g, boundary_check=(0, 1))
         b_g = tl.load(p_g, boundary_check=(0, 1))
         # [BK, BT]
         b_k = tl.load(p_k, boundary_check=(0, 1))
+        # [BK, BV]
+        b_h = tl.load(p_h, boundary_check=(0, 1))
+
+        # [BT, BV]
+        b_o += tl.dot(b_q_g, b_h, allow_tf32=False)
+
         # [BT,]
         b_m_gq = tl.max(b_g, 1)
         b_m_gk = tl.min(b_g, 1)
@@ -304,18 +326,30 @@ def fwd_inner_chunk(
         # [BT,]
         b_sg = tl.dot(b_qg, b_kg, allow_tf32=False)
         b_A += safe_exy(b_m_gq[:, None] - b_m_gk[None, :], b_sg)
-    b_A = tl.where(m_s, b_A, 0.) * scale
+
+    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     p_A = tl.make_block_ptr(A + i_bh * s_A_h + i_t * s_A_c, (BT, BT), (BT, 1), (0, 0), (BT, BT), (1, 0))
+
+    b_A = tl.where(m_s, b_A, 0.) * scale
+    # [BT, BV]
+    b_v = tl.load(p_v, boundary_check=(0, 1))
+    b_o += tl.dot(b_A.to(b_v.dtype), b_v, allow_tf32=False)
+    tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_A, b_A.to(p_A.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
 def bwd_inner_chunk(
-    q, k, g, dA,
-    dq, dk,
-    s_qk_h,  # stride size: L * K
-    s_qk_t,  # stride size: K
-    s_qk_d,  # stride size: 1
+    q,
+    k,
+    g,
+    dA,
+    dq,
+    dk,
+    s_k_h,  # stride size: L * K
+    s_k_t,  # stride size: K
+    s_k_d,  # stride size: 1
     s_A_h,
     s_A_c,
     s_A_t,
@@ -332,24 +366,24 @@ def bwd_inner_chunk(
 
     i_c, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     for i in range(i_c * BTT, (i_c + 1) * BTT):
-        gq_i = tl.load(g + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + i * K)
+        gq_i = tl.load(g + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + i * K)
         dq_i = tl.zeros([K], dtype=tl.float32)
         for j in range(0, i+1):
             dA_ij = tl.load(dA + i_bh * s_A_h + i_t * s_A_c + i * BT + j)
-            k_j = tl.load(k + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + j * K)
-            gk_j = tl.load(g + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + j * K)
+            k_j = tl.load(k + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + j * K)
+            gk_j = tl.load(g + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + j * K)
             dq_i += dA_ij * k_j * tl.math.exp(gq_i - gk_j)
-        tl.store(dq + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + i * K, dq_i)
+        tl.store(dq + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + i * K, dq_i)
 
     for j in range(i_c * BTT, (i_c + 1) * BTT):
-        gk_j = tl.load(g + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + j * K)
+        gk_j = tl.load(g + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + j * K)
         dk_j = tl.zeros([K], dtype=tl.float32)
         for i in range(j, BT):
             dA_ij = tl.load(dA + i_bh * s_A_h + i_t * s_A_c + i * BT + j)
-            q_i = tl.load(q + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + i * K)
-            gq_i = tl.load(g + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + i * K)
+            q_i = tl.load(q + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + i * K)
+            gq_i = tl.load(g + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + i * K)
             dk_j += dA_ij * q_i * tl.math.exp(gq_i - gk_j)
-        tl.store(dk + i_bh * s_qk_h + i_t * BT * K + tl.arange(0, K) + j * K, dk_j)
+        tl.store(dk + i_bh * s_k_h + i_t * BT * K + tl.arange(0, K) + j * K, dk_j)
 
 
 class ChunkGLAFunction(torch.autograd.Function):
@@ -366,7 +400,7 @@ class ChunkGLAFunction(torch.autograd.Function):
         # inter-chunk
         BT = 64  # chunk_size
         BK, BV = min(K, 64), min(V, 64)
-        num_stages = 3
+        num_stages = 1
         num_warps = 4
 
         NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
@@ -387,7 +421,7 @@ class ChunkGLAFunction(torch.autograd.Function):
 
         grid = (NV, NK, B * H)
         h = q.new_empty(B, H, NT * K, V)
-        chunk_gla_fwd_kernel[grid](
+        chunk_gla_fwd_kernel_h[grid](
             k_g, v, g, h, initial_state, final_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
@@ -400,31 +434,22 @@ class ChunkGLAFunction(torch.autograd.Function):
             num_stages=num_stages
         )
 
-        o = rearrange(q_g, 'b h (n c) d -> b h n c d', c=BT) @ rearrange(h, 'b h (n c) d -> b h n c d', c=K)
-        o = rearrange(o, 'b h n c d -> b h (n c) d')
-
-        BC = 64
-        NC = T // BC
-        v2 = rearrange(v, 'b h (n c) d -> b h n c d', n=NC)
-        BK = min(K, 64)
-        NK = triton.cdiv(K, BK)
+        o = torch.empty_like(v)
         A = q.new_zeros(B, H, NT, BT, BT)
-        grid = (NT, B * H)
-        fwd_inner_chunk[grid](
-            q, k, g, A,
-            q.stride(1), q.stride(2), q.stride(3),
+        grid = (NV, NT, B * H)
+        chunk_gla_fwd_kernel_o[grid](
+            q, q_g, k, v, g, h, o, A,
+            k.stride(1), k.stride(2), k.stride(3),
+            v.stride(1), v.stride(2), v.stride(3),
+            h.stride(1), h.stride(2), h.stride(3),
             A.stride(1), A.stride(2), A.stride(3),
-            B, H, T, scale,
-            BT=BT, BK=BK, K=K,
-            num_warps=1,
-            num_stages=3
+            scale,
+            B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+            num_warps=num_warps,
+            num_stages=num_stages
         )
-
-        o2 = A @ v2
-        o2 = rearrange(o2, 'b h n c d -> b h (n c) d')
-        o2 += o
         ctx.save_for_backward(q, q_g, k, k_g, v, g, A, initial_state, h)
-        return o2.to(v), final_state
+        return o, final_state
 
     @staticmethod
     @contiguous
