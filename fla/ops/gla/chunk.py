@@ -340,25 +340,29 @@ def chunk_gla_fwd_kernel_o(
 
 
 @triton.jit
-def bwd_inner_chunk(
+def chunk_gla_bwd_kernel_dqk2(
     q,
     k,
+    v,
     g,
-    dA,
+    do,
     dq,
     dk,
     s_k_h,  # stride size: L * K
     s_k_t,  # stride size: K
     s_k_d,  # stride size: 1
-    s_A_h,
-    s_A_c,
-    s_A_t,
+    s_v_h,
+    s_v_t,
+    s_v_d,
+    scale,
     B,  # batch_size
     H,  # n_heads
     T: tl.constexpr,
     K: tl.constexpr,
+    V: tl.constexpr,
     BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
-    BK: tl.constexpr  # BLOCK SIZE along the K dimension
+    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
+    BV: tl.constexpr  # BLOCK SIZE along the V dimension
 ):
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
@@ -368,7 +372,6 @@ def bwd_inner_chunk(
     p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
     p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_g = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_dA = tl.make_block_ptr(dA + i_bh * s_A_h + i_t * s_A_c, (BT, BT), (BT, 1), (0, 0), (BT, BT), (1, 0))
     p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_dk = tl.make_block_ptr(dk + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
 
@@ -377,10 +380,18 @@ def bwd_inner_chunk(
     # [BT, BK]
     b_g = tl.load(p_g, boundary_check=(0, 1))
     b_k = tl.load(p_k, boundary_check=(0, 1))
-    # [BT, BT]
-    b_dA = tl.load(p_dA, boundary_check=(0, 1))
-    b_dA = tl.where(m_s, b_dA, 0.).to(b_dA.dtype)
 
+    b_dA = tl.zeros([BT, BT], dtype=tl.float32)
+    for i_v in range(tl.cdiv(V, BV)):
+        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bh * s_v_h, (V, T), (s_v_d, s_v_t), (i_v * BV, i_t * BT), (BV, BT), (0, 1))
+        # [BT, BV]
+        b_do = tl.load(p_do, boundary_check=(0, 1))
+        # [BV, BT]
+        b_v = tl.load(p_v, boundary_check=(0, 1))
+        # [BT, BT]
+        b_dA += tl.dot(b_do, b_v, allow_tf32=False)
+    b_dA = tl.where(m_s, b_dA * scale, 0.).to(b_q.dtype)
     # [BT,]
     b_m_gq0 = tl.max(b_g, 1)
     b_m_gk0 = tl.min(b_g, 1)
@@ -504,9 +515,7 @@ class ChunkGLAFunction(torch.autograd.Function):
 
         # intra chunk
         num_chunk = T // BT
-        v2 = rearrange(v, 'b h (n c) d -> b h n c d', n=num_chunk)
         do2 = rearrange(do, 'b h (n c) d -> b h n c d', n=num_chunk)
-        dA2 = (do2 @ v2.transpose(-2, -1)) * scale
         dv2 = A.transpose(-1, -2) @ do2
         dv2 = rearrange(dv2, 'b h n c d -> b h (n c) d', n=num_chunk)
 
@@ -514,17 +523,16 @@ class ChunkGLAFunction(torch.autograd.Function):
         dk2 = torch.empty_like(k)
 
         grid = (NK, NT, B * H)
-        bwd_inner_chunk[grid](
-            q, k, g, dA2, dq2, dk2,
+        chunk_gla_bwd_kernel_dqk2[grid](
+            q, k, v, g, do, dq2, dk2,
             q.stride(1), q.stride(2), q.stride(3),
-            A.stride(1), A.stride(2), A.stride(3),
-            B=B, H=H, T=T, K=K, BT=BT, BK=BK,
+            v.stride(1), v.stride(2), v.stride(3),
+            scale,
+            B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages,
         )
 
-        BK = min(K, 32)
-        NK = triton.cdiv(K, BK)
         dg = torch.empty_like(g, dtype=torch.float32)
         grid = (NK, NT, B * H)
         bwd_decay_global_cumsum[grid](
