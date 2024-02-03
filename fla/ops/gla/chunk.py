@@ -80,7 +80,8 @@ def chunk_gla_fwd_kernel_h(
     for i in range(tl.cdiv(T, BT)):
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
         p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bh * s_k_h, (i * BT * K,), (s_k_d,), (i * BT * K - K + i_k * BK,), (BK,), (0,))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h + (i + 1) * BT * K - K, (K,), (s_k_d,), (i_k * BK,), (BK,), (0,))
+
         # [BK, BT]
         b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BT, BV]
@@ -140,7 +141,7 @@ def chunk_gla_bwd_kernel_dh(
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
     for i in range((tl.cdiv(T, BT) - 1), -1, -1):
         p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
-        p_g = tl.make_block_ptr(g + i_bh * s_k_h, (i * BT * K,), (s_k_d,), (i * BT * K - K + i_k * BK,), (BK,), (0,))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h + (i + 1) * BT * K - K, (K,), (s_k_d,), (i_k * BK,), (BK,), (0,))
         p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
         p_dh = tl.make_block_ptr(dh + i_bh * s_hh, ((i+1)*K, V), (s_ht, 1), (i*K+i_k*BK, i_v * BV), (BK, BV), (1, 0))
 
@@ -583,11 +584,12 @@ def chunk_gla(
     if initial_state is not None:
         initial_state = initial_state.detach()
     seq_len = v.shape[-2]
-    V = v.shape[-1]
+    d_head_v = v.shape[-1]
     q, k, v, g = map(lambda x: pad(x), [q, k, v, g])
     o, final_state = ChunkGLAFunction.apply(
         q, k, v, g, scale, initial_state, output_final_state)
-    o = o[..., :seq_len, :V]
+    o = o[..., :seq_len, :d_head_v]
     if output_final_state:
         return o, final_state
     return o
+
