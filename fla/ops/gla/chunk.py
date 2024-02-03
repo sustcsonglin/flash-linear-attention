@@ -586,10 +586,119 @@ def chunk_gla(
     seq_len = v.shape[-2]
     d_head_v = v.shape[-1]
     q, k, v, g = map(lambda x: pad(x), [q, k, v, g])
-    o, final_state = ChunkGLAFunction.apply(
-        q, k, v, g, scale, initial_state, output_final_state)
+    o, final_state = ChunkGLAFunction.apply(q, k, v, g, scale, initial_state, output_final_state)
     o = o[..., :seq_len, :d_head_v]
     if output_final_state:
         return o, final_state
     return o
 
+
+if __name__ == "__main__":
+    torch.manual_seed(42)
+    from fla.ops.gla import fused_recurrent_gla
+    from fla.ops.gla.chunk2 import chunk_gla2
+    from fla.ops.retention.chunk import chunk_retention
+    dtype = torch.bfloat16
+    B = 128
+    H = 4
+    L = 2048
+    D = 128
+
+    dtype = torch.bfloat16
+    q = (torch.rand(B, H, L, D).cuda().to(dtype)).requires_grad_(True)
+    k = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(True)
+    v = torch.randn(B, H, L,  2 * D).cuda().to(dtype).requires_grad_(True)
+    gk0 = (F.logsigmoid(torch.rand(B, H, L, D)) / 16).cuda().to(torch.float32)
+
+    rand = torch.rand_like(gk0) < 0.1
+    gk0.masked_fill_(rand, -3)
+
+    do = torch.rand_like(v).cuda()
+
+    gk = gk0.clone().requires_grad_(True)
+    ref = fused_recurrent_gla(q, k, v, gk)
+    ref.backward(do)
+    ref_dq, q.grad = q.grad.clone(), None
+    ref_dk, k.grad = k.grad.clone(), None
+    ref_dv, v.grad = v.grad.clone(), None
+    ref_dg, gk.grad = gk.grad.clone(), None
+
+    gk = gk0.clone().requires_grad_(True)
+    tri1 = chunk_gla(q, k, v, gk)
+    tri1.backward(do)
+    tri1_dq, q.grad = q.grad.clone(), None
+    tri1_dk, k.grad = k.grad.clone(), None
+    tri1_dv, v.grad = v.grad.clone(), None
+    tri1_dg, gk.grad = gk.grad.clone(), None
+
+    gk = gk0.clone().requires_grad_(True)
+    tri2 = chunk_gla2(q, k, v, gk)
+    tri2.backward(do)
+    tri2_dq, q.grad = q.grad.clone(), None
+    tri2_dk, k.grad = k.grad.clone(), None
+    tri2_dv, v.grad = v.grad.clone(), None
+    tri2_dg, gk.grad = gk.grad.clone(), None
+
+    print('diff\tchunk\tchunk2')
+    print(f" o\t{torch.abs(ref - tri1).max():3.2f}\t{torch.abs(ref - tri2).max():3.2f}")
+    print(f"dq\t{torch.abs(ref_dq - tri1_dq).max():3.2f}\t{torch.abs(ref_dq - tri2_dq).max():3.2f}")
+    print(f"dk\t{torch.abs(ref_dk - tri1_dk).max():3.2f}\t{torch.abs(ref_dk - tri2_dk).max():3.2f}")
+    print(f"dv\t{torch.abs(ref_dv - tri1_dv).max():3.2f}\t{torch.abs(ref_dv - tri2_dv).max():3.2f}")
+    print(f"dg\t{torch.abs(ref_dg - tri1_dg).max():3.2f}\t{torch.abs(ref_dg - tri2_dg).max():3.2f}")
+
+
+    @triton.testing.perf_report(
+        triton.testing.Benchmark(
+            # argument names to use as an x-axis for the plot
+            x_names=['seq_len'],
+            # different possible values for `x_name`
+            x_vals=[128 * 2 ** i for i in range(0, 8)],
+            # argument name whose value corresponds to a different line in the plot
+            line_arg='provider',
+            # possible values for `line_arg``
+            line_vals=['chunk_retention', 'chunk_gla',  'chunk_gla2', 'recurrent_gla',
+                    'chunk_retention_bwd', 'chunk_gla_bwd',  'chunk_gla2_bwd', 'recurrent_gla_bwd'],
+            # label name for the lines
+            line_names=['chunk_retention', 'chunk_gla',  'chunk_gla2', 'recurrent_gla',
+                    'chunk_retention_bwd', 'chunk_gla_bwd',  'chunk_gla2_bwd', 'recurrent_gla_bwd'],
+            # line styles
+            styles=[('green', '-'), ('blue', '--'), ('red', '-.'), ('cyan', ':'),
+                    ('yellow', 'dotted'), ('cyan', '--'), ('cyan', '-'), ('black', ':')],
+            ylabel="Execution Time (ms)",  # label name for the y-axis
+            # name for the plot. Used also as a file name for saving the plot.
+            plot_name="Performance",
+            args={},
+        )
+    )
+    def benchmark(seq_len, provider):
+        device = 'cuda'
+        dtype = torch.bfloat16
+        batch_size, n_heads, d_head = 16, 8, 128
+
+        q = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=True, dtype=dtype)
+        k = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=True, dtype=dtype)
+        g = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, d_head, device=device, dtype=dtype)).clamp_min(-5).requires_grad_(True)
+        v = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=True, dtype=dtype)
+
+        do = torch.ones_like(q, dtype=dtype)
+
+        quantiles = [0.5, 0.2, 0.8]
+        results = 0, 0, 0
+        if provider == 'chunk_retention':
+            results = triton.testing.do_bench(lambda: chunk_retention(q, k, v), quantiles=quantiles)
+        elif provider == 'chunk_gla':
+            results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g), quantiles=quantiles)
+        elif provider == 'chunk_gla2':
+            results = triton.testing.do_bench(lambda: chunk_gla2(q, k, v, g), quantiles=quantiles)
+        elif provider == 'recurrent_gla':
+            results = triton.testing.do_bench(lambda: fused_recurrent_gla(q, k, v, g), quantiles=quantiles)
+        if provider == 'chunk_retention_bwd':
+            results = triton.testing.do_bench(lambda: chunk_retention(q, k, v).backward(do), quantiles=quantiles)
+        elif provider == 'chunk_gla_bwd':
+            results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g).backward(do), quantiles=quantiles)
+        elif provider == 'chunk_gla2_bwd':
+            results = triton.testing.do_bench(lambda: chunk_gla2(q, k, v, g).backward(do), quantiles=quantiles)
+        elif provider == 'recurrent_gla_bwd':
+            results = triton.testing.do_bench(lambda: fused_recurrent_gla(q, k, v, g).backward(do), quantiles=quantiles)
+        return results
+    benchmark.run(print_data=True)
