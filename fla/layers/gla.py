@@ -12,7 +12,13 @@ import torch.nn.functional as F
 from einops import rearrange
 from fla.modules.rmsnorm import RMSNorm
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
+from torch.utils.checkpoint import checkpoint
 
+
+def checkpoint(func):
+    def wrapper(*args, **kwargs):
+        return ckp(func, *args, **kwargs)
+    return wrapper
 
 def get_activation_fn(activation):
     if activation == 'swish':
@@ -23,35 +29,25 @@ def get_activation_fn(activation):
         raise NotImplementedError
 
 
+
 class GatedLinearAttention(nn.Module):
 
     def __init__(
         self,
         d_model: int = 1024,
-        expand_v: int = 2,
-        expand_k: int = 1,
-        num_heads: int = 1,
+        expand_v: float = 2.0,
+        expand_k: float = 1.0,
+        num_heads: int = 4,
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
         gate_logit_normalizer: int = 16,
-        gate_logit_multiplier: int = 1,
         gate_low_rank_dim: int = 16,
         mode: str = 'chunk',
-        chunk_size: int = 64,
-        use_gk: bool = True,  # gate associated with key, i.e., $\alpha$ in the paper
-        use_gv: bool = False,  # gate associated with value, i.e., $\beta$ in the paper
         *args, **kwargs
     ) -> GatedLinearAttention:
         super().__init__()
-        if use_gv is True:
-            assert mode in ['fused_recurrent']
-        if mode == 'fused_chunk':
-            assert use_gk is True
-        self.use_gk = use_gk
-        self.use_gv = use_gv
         self.d_model = d_model
         self.mode = mode
-        self.chunk_size = chunk_size
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
         assert mode in ['chunk', 'fused_recurrent', 'fused_chunk'], f"Not suppoerted mode `{mode}`."
@@ -66,20 +62,11 @@ class GatedLinearAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
         self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
 
-        if self.use_gk:
-            self.gk_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
-                                         nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
-        else:
-            self.gk_proj = None
-        if self.use_gv:
-            self.gv_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
-                                         nn.Linear(gate_low_rank_dim, self.value_dim, bias=True))
-        else:
-            self.gv_proj = None
+        self.gk_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
+                                     nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
         self.out_proj = nn.Linear(self.value_dim, d_model, bias=False)
         self.group_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
         self.gate_logit_normalizer = gate_logit_normalizer
-        self.gate_logit_multiplier = gate_logit_multiplier
 
         self.reset_parameters()
 
@@ -89,50 +76,31 @@ class GatedLinearAttention(nn.Module):
         nn.init.xavier_uniform_(self.v_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -2.5)
-        if self.gk_proj is not None:
-            nn.init.xavier_uniform_(self.gk_proj[0].weight, gain=2 ** -2.5)
-            nn.init.xavier_uniform_(self.gk_proj[1].weight, gain=2 ** -2.5)
-        if self.gv_proj is not None:
-            nn.init.xavier_uniform_(self.gv_proj[0].weight, gain=2 ** -2.5)
-            nn.init.xavier_uniform_(self.gv_proj[1].weight, gain=2 ** -2.5)
+        nn.init.xavier_uniform_(self.gk_proj[0].weight, gain=2 ** -2.5)
+        nn.init.xavier_uniform_(self.gk_proj[1].weight, gain=2 ** -2.5)
 
     def forward(self, x):
         mode = self.mode
-        chunk_size = self.chunk_size
 
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
+        gk = rearrange(self.gk_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
+        gk = (F.logsigmoid(gk) / self.gate_logit_normalizer)
 
         if mode == 'fused_recurrent':
-            # for numumerical stable consideration. fused_chunk has better numerical stability
-            if self.use_gk:
-                gk = self.gk_proj(x).to(torch.float32)
-                gk = (F.logsigmoid(gk) / self.gate_logit_normalizer)
-                gk = rearrange(gk, 'b n (h d) -> b h n d', h=self.num_heads)
-            else:
-                gk = None
-            if self.use_gv:
-                gv = self.gv_proj(x).to(torch.float32)
-                gv = (F.logsigmoid(gv) / self.gate_logit_normalizer)
-                gv = rearrange(gv, 'b n (h d) -> b h n d', h=self.num_heads)
-            else:
-                gv = None
-            o = fused_recurrent_gla(q, k, v, gk, gv)
+            o = fused_recurrent_gla(q, k, v, gk, None)
+        elif mode == 'fused_chunk':
+            o = fused_chunk_gla(q, k, v, gk)
+        elif mode == 'chunk':
+            o = chunk_gla(q, k, v, gk)
         else:
-            g = self.gk_proj(x).to(torch.float32)
-            g = F.logsigmoid(g * self.gate_logit_multiplier) / self.gate_logit_normalizer
-            g = rearrange(g, 'b n (h d) -> b h n d', h=self.num_heads)
-            if mode == 'fused_chunk':
-                o = fused_chunk_gla(q, k, v, g)
-            else:
-                o = chunk_gla(q, k, v, g)
-
-        o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
-        o = self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.gate_fn(self.g_proj(x)))
+            raise NotImplementedError(f"Not supported mode `{mode}`.")
+        o = self.group_norm(o)
+        o = rearrange(o, 'b h l d -> b l (h d)')
+        g = self.g_proj(x)
+        o = self.out_proj(o * self.gate_fn(g))
         return o
-
-
 
 if __name__ == '__main__':
     batch = 4
