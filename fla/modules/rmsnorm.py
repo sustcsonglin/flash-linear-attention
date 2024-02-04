@@ -10,13 +10,16 @@
 # The models we train have hidden dim up to 8k anyway (e.g. Llama 70B), so this is fine.
 
 import math
+from functools import partial
 
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import custom_fwd, custom_bwd
-
 import triton
 import triton.language as tl
+from einops import rearrange
+from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.modules.activations import gelu_bwd, gelu_fwd
 
 
 def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
@@ -484,11 +487,11 @@ def layer_norm_fn(
     return LayerNormFn.apply(x, weight, bias, residual, eps, prenorm, residual_in_fp32, is_rms_norm)
 
 
-def rms_norm_fn(x, weight, bias, residual=None, prenorm=False, residual_in_fp32=False, eps=1e-6):
-    return LayerNormFn.apply(x, weight, bias, residual, eps, prenorm, residual_in_fp32, True)
+rms_norm_fn = partial(layer_norm_fn, is_rms_norm=True)
 
 
 class RMSNorm(torch.nn.Module):
+
     def __init__(self, hidden_size, eps=1e-5):
         # factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -559,12 +562,10 @@ class LayerNormLinearFn(torch.autograd.Function):
         y = y.reshape(x_shape_og)
         dtype = torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else y.dtype
         linear_weight = linear_weight.to(dtype)
-        linear_bias = linear_bias.to(
-            dtype) if linear_bias is not None else None
+        linear_bias = linear_bias.to(dtype) if linear_bias is not None else None
         out = F.linear(y.to(linear_weight.dtype), linear_weight, linear_bias)
         # We don't store y, will be recomputed in the backward pass to save memory
-        ctx.save_for_backward(residual_out, norm_weight,
-                              norm_bias, linear_weight, mean, rstd)
+        ctx.save_for_backward(residual_out, norm_weight, norm_bias, linear_weight, mean, rstd)
         ctx.x_shape_og = x_shape_og
         ctx.eps = eps
         ctx.is_rms_norm = is_rms_norm
@@ -645,3 +646,178 @@ def layer_norm_linear_fn(
         residual_in_fp32,
         is_rms_norm,
     )
+
+
+class LayerNormGLUFn(torch.autograd.Function):
+    @staticmethod
+    @custom_fwd
+    def forward(
+        ctx,
+        x,
+        g,
+        weight,
+        bias,
+        residual=None,
+        eps=1e-6,
+        prenorm=False,
+        residual_in_fp32=False,
+        is_rms_norm=False,
+        gate_fn='swish'
+    ):
+        x_shape_og = x.shape
+        # reshape input data into 2D tensor
+        x = x.reshape(-1, x.shape[-1])
+        if x.stride(-1) != 1:
+            x = x.contiguous()
+        if residual is not None:
+            assert residual.shape == x_shape_og
+            residual = residual.reshape(-1, residual.shape[-1])
+            if residual.stride(-1) != 1:
+                residual = residual.contiguous()
+        weight = weight.contiguous()
+        if bias is not None:
+            bias = bias.contiguous()
+        residual_dtype = (
+            residual.dtype
+            if residual is not None
+            else (torch.float32 if residual_in_fp32 else None)
+        )
+        y, mean, rstd, residual_out = _layer_norm_fwd(
+            x,
+            weight,
+            bias,
+            eps,
+            residual,
+            out_dtype=None if not torch.is_autocast_enabled() else torch.get_autocast_gpu_dtype(),
+            residual_dtype=residual_dtype,
+            is_rms_norm=is_rms_norm,
+        )
+        y = rearrange(y, '(b h l) d -> b l (h d)', b=x_shape_og[0], h=x_shape_og[1])
+        # We don't store y, will be recomputed in the backward pass to save memory
+        if gate_fn == 'swish':
+            out = F.silu(g) * y
+        elif gate_fn == 'gelu':
+            out = gelu_fwd(g) * y
+        else:
+            raise NotImplementedError
+        ctx.save_for_backward(residual_out, g, weight, bias, mean, rstd)
+        ctx.x_shape_og = x_shape_og
+        ctx.eps = eps
+        ctx.is_rms_norm = is_rms_norm
+        ctx.has_residual = residual is not None
+        ctx.prenorm = prenorm
+        ctx.x_dtype = x.dtype
+        ctx.gate_fn = gate_fn
+        return out if not prenorm else (out, residual_out.reshape(x_shape_og))
+
+    @staticmethod
+    @custom_bwd
+    def backward(ctx, dout, *args):
+        x, g, weight, bias, mean, rstd = ctx.saved_tensors
+
+        if ctx.gate_fn == 'swish':
+            g_s = torch.sigmoid(g)
+            dy = dout * g_s * g
+        elif ctx.gate_fn == 'gelu':
+            dy = dout * gelu_fwd(g)
+        dout = rearrange(dout, 'b l (h d) -> (b h l) d', b=ctx.x_shape_og[0], h=ctx.x_shape_og[1])
+        dy = rearrange(dy, 'b l (h d) -> (b h l) d', b=ctx.x_shape_og[0], h=ctx.x_shape_og[1])
+        assert dy.shape == x.shape
+        if ctx.prenorm:
+            dresidual = args[0]
+            dresidual = dresidual.reshape(-1, dresidual.shape[-1])
+            if dresidual.stride(-1) != 1:
+                dresidual = dresidual.contiguous()
+            assert dresidual.shape == x.shape
+        else:
+            dresidual = None
+        dx, dw, db, dr, y = _layer_norm_bwd(
+            dy,
+            x,
+            weight,
+            bias,
+            ctx.eps,
+            mean,
+            rstd,
+            dresidual,
+            ctx.has_residual,
+            ctx.is_rms_norm,
+            x_dtype=ctx.x_dtype,
+            recompute_output=True,
+        )
+        dg_out = rearrange(dout * y, '(b h l) d -> b l (h d)', b=ctx.x_shape_og[0], h=ctx.x_shape_og[1])
+        if ctx.gate_fn == 'swish':
+            dg = g_s * (1. + g * (1. - g_s)) * dg_out
+        elif ctx.gate_fn == 'gelu':
+            dg = gelu_bwd(dg_out, g)
+        return (
+            dx.reshape(ctx.x_shape_og),
+            dg,
+            dw,
+            db,
+            dr.reshape(ctx.x_shape_og) if ctx.has_residual else None,
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+
+
+def layer_norm_glu_fn(
+    x,
+    g,
+    weight,
+    bias,
+    residual=None,
+    eps=1e-6,
+    prenorm=False,
+    residual_in_fp32=False,
+    is_rms_norm=False,
+    gate_fn='swish'
+):
+    return LayerNormGLUFn.apply(
+        x,
+        g,
+        weight,
+        bias,
+        residual,
+        eps,
+        prenorm,
+        residual_in_fp32,
+        is_rms_norm,
+        gate_fn
+    )
+
+
+rms_norm_glu_fn = partial(layer_norm_glu_fn, is_rms_norm=True)
+
+
+class FusedRMSNormGLU(torch.nn.Module):
+
+    def __init__(self, hidden_size, gate_fn='swish', eps=1e-5):
+        super().__init__()
+
+        self.hidden_size = hidden_size
+        self.gate_fn = gate_fn
+        self.eps = eps
+
+        self.weight = torch.nn.Parameter(torch.empty(hidden_size))
+        self.register_parameter("bias", None)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        torch.nn.init.ones_(self.weight)
+
+    def forward(self, x, g, residual=None, prenorm=False, residual_in_fp32=False):
+        return rms_norm_glu_fn(
+            x,
+            g,
+            self.weight,
+            self.bias,
+            residual=residual,
+            eps=self.eps,
+            prenorm=prenorm,
+            residual_in_fp32=residual_in_fp32,
+            gate_fn=self.gate_fn
+        )
