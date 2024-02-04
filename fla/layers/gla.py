@@ -42,7 +42,7 @@ class GatedLinearAttention(nn.Module):
         layernorm_eps: float = 1e-5,
         gate_logit_normalizer: int = 16,
         gate_low_rank_dim: int = 16,
-        mode: str = 'chunk',
+        mode: str = 'fused_chunk',
         *args, **kwargs
     ) -> GatedLinearAttention:
         super().__init__()
