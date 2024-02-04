@@ -4,21 +4,14 @@
 
 from __future__ import annotations
 
-import warnings
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from fla.modules.rmsnorm import RMSNorm
+
+from fla.modules.rmsnorm import FusedRMSNormGLU, RMSNorm
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
-from torch.utils.checkpoint import checkpoint
 
-
-def checkpoint(func):
-    def wrapper(*args, **kwargs):
-        return ckp(func, *args, **kwargs)
-    return wrapper
 
 def get_activation_fn(activation):
     if activation == 'swish':
@@ -27,7 +20,6 @@ def get_activation_fn(activation):
         return F.gelu
     else:
         raise NotImplementedError
-
 
 
 class GatedLinearAttention(nn.Module):
@@ -43,11 +35,13 @@ class GatedLinearAttention(nn.Module):
         gate_logit_normalizer: int = 16,
         gate_low_rank_dim: int = 16,
         mode: str = 'fused_chunk',
+        fuse_norm: bool = True,
         *args, **kwargs
     ) -> GatedLinearAttention:
         super().__init__()
         self.d_model = d_model
         self.mode = mode
+        self.fuse_norm = fuse_norm
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
         assert mode in ['chunk', 'fused_recurrent', 'fused_chunk'], f"Not suppoerted mode `{mode}`."
@@ -57,6 +51,7 @@ class GatedLinearAttention(nn.Module):
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = get_activation_fn(activation=str(gate_fn))
+
         self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
@@ -64,8 +59,12 @@ class GatedLinearAttention(nn.Module):
 
         self.gk_proj = nn.Sequential(nn.Linear(d_model,  gate_low_rank_dim, bias=False),
                                      nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
-        self.out_proj = nn.Linear(self.value_dim, d_model, bias=False)
-        self.group_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
+        self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
+
+        if fuse_norm:
+            self.g_norm = FusedRMSNormGLU(self.head_v_dim, str(gate_fn), eps=layernorm_eps)
+        else:
+            self.g_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
         self.gate_logit_normalizer = gate_logit_normalizer
 
         self.reset_parameters()
@@ -75,7 +74,7 @@ class GatedLinearAttention(nn.Module):
         nn.init.xavier_uniform_(self.k_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.v_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -2.5)
+        nn.init.xavier_uniform_(self.o_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.gk_proj[0].weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.gk_proj[1].weight, gain=2 ** -2.5)
 
@@ -96,11 +95,16 @@ class GatedLinearAttention(nn.Module):
             o = chunk_gla(q, k, v, gk)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
-        o = self.group_norm(o)
-        o = rearrange(o, 'b h l d -> b l (h d)')
-        g = self.g_proj(x)
-        o = self.out_proj(o * self.gate_fn(g))
+        if self.fuse_norm:
+            o = self.g_norm(o, self.g_proj(x))
+        else:
+            o = self.g_norm(o)
+            o = rearrange(o, 'b h l d -> b l (h d)')
+            g = self.g_proj(x)
+            o = o * self.gate_fn(g)
+        o = self.o_proj(o)
         return o
+
 
 if __name__ == '__main__':
     batch = 4
@@ -112,3 +116,25 @@ if __name__ == '__main__':
     print(y.shape)
     y.sum().backward()
     print(x.grad.shape)
+
+    for act in ['swish', 'gelu']:
+        org = GatedLinearAttention(gate_fn=act, fuse_norm=False).to(torch.bfloat16).cuda()
+        fused = GatedLinearAttention(gate_fn=act, fuse_norm=True).to(torch.bfloat16).cuda()
+        fused.q_proj.weight.data.copy_(org.q_proj.weight.data)
+        fused.k_proj.weight.data.copy_(org.k_proj.weight.data)
+        fused.v_proj.weight.data.copy_(org.v_proj.weight.data)
+        fused.g_proj.weight.data.copy_(org.g_proj.weight.data)
+        fused.o_proj.weight.data.copy_(org.o_proj.weight.data)
+        fused.gk_proj[0].weight.data.copy_(org.gk_proj[0].weight.data)
+        fused.gk_proj[1].weight.data.copy_(org.gk_proj[1].weight.data)
+        fused.gk_proj[1].bias.data.copy_(org.gk_proj[1].bias.data)
+
+        x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda()
+        org_x = x.clone().requires_grad_(True)
+        fused_x = x.clone().requires_grad_(True)
+        org_o = org(org_x)
+        fused_o = fused(fused_x)
+        org_o.sum().backward()
+        fused_o.sum().backward()
+        assert org_o.allclose(fused_o, 0, 1e-2), breakpoint()
+        assert org_x.grad.allclose(fused_x.grad, 0, 1e-2), breakpoint()
