@@ -13,10 +13,9 @@ import math
 
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import custom_fwd, custom_bwd
-
 import triton
 import triton.language as tl
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 
 def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
@@ -68,6 +67,7 @@ def rms_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast
 @triton.jit
 def _layer_norm_fwd_1pass_kernel(
     X,  # pointer to the input
+    O, # pointer to the gate
     Y,  # pointer to the output
     W,  # pointer to the weights
     B,  # pointer to the biases
@@ -91,6 +91,7 @@ def _layer_norm_fwd_1pass_kernel(
     row = tl.program_id(0)
     X += row * stride_x_row
     Y += row * stride_y_row
+    O += row * stride_x_row
     if HAS_RESIDUAL:
         RESIDUAL += row * stride_res_row
     if STORE_RESIDUAL_OUT:
@@ -121,12 +122,17 @@ def _layer_norm_fwd_1pass_kernel(
         b = tl.load(B + cols, mask=mask).to(tl.float32)
     x_hat = (x - mean) * rstd if not IS_RMS_NORM else x * rstd
     y = x_hat * w + b if HAS_BIAS else x_hat * w
+
+    # Swish output gate
+    o = tl.load(O + cols, mask=cols < N, other=0.0).to(tl.float32)
+    y = y * o * tl.sigmoid(o)
+    
     # Write output
     tl.store(Y + cols, y, mask=mask)
 
 
 def _layer_norm_fwd(
-    x, weight, bias, eps, residual=None, out_dtype=None, residual_dtype=None, is_rms_norm=False
+    x, o, weight, bias, eps, residual=None, out_dtype=None, residual_dtype=None, is_rms_norm=False
 ):
     if residual is not None:
         residual_dtype = residual.dtype
@@ -161,6 +167,7 @@ def _layer_norm_fwd(
     with torch.cuda.device(x.device.index):
         _layer_norm_fwd_1pass_kernel[(M,)](
             x,
+            o,
             y,
             weight,
             bias,
@@ -202,11 +209,13 @@ def _layer_norm_fwd(
 @triton.jit
 def _layer_norm_bwd_kernel(
     X,  # pointer to the input
+    O,  # pointer to the gate
     W,  # pointer to the weights
     B,  # pointer to the biases
     Y,  # pointer to the output to be recomputed
     DY,  # pointer to the output gradient
     DX,  # pointer to the input gradient
+    DO,  # pointer to the gate gradient
     DW,  # pointer to the partial sum of weights gradient
     DB,  # pointer to the partial sum of biases gradient
     DRESIDUAL,
@@ -236,12 +245,14 @@ def _layer_norm_bwd_kernel(
     cols = tl.arange(0, BLOCK_N)
     mask = cols < N
     X += row_start * stride_x_row
+    O += row_start * stride_x_row
     if HAS_DRESIDUAL:
         DRESIDUAL += row_start * stride_dres_row
     if STORE_DRESIDUAL:
         DRESIDUAL_IN += row_start * stride_dres_in_row
     DY += row_start * stride_dy_row
     DX += row_start * stride_dx_row
+    DO += row_start * stride_dx_row
     if RECOMPUTE_OUTPUT:
         Y += row_start * stride_y_row
     w = tl.load(W + cols, mask=mask).to(tl.float32)
@@ -254,7 +265,9 @@ def _layer_norm_bwd_kernel(
     for row in range(row_start, row_end):
         # Load data to SRAM
         x = tl.load(X + cols, mask=mask, other=0).to(tl.float32)
+        o = tl.load(O + cols, mask=mask, other=0).to(tl.float32)
         dy = tl.load(DY + cols, mask=mask, other=0).to(tl.float32)
+        
         if not IS_RMS_NORM:
             mean = tl.load(Mean + row)
         rstd = tl.load(Rstd + row)
@@ -264,6 +277,11 @@ def _layer_norm_bwd_kernel(
         if RECOMPUTE_OUTPUT:
             y = xhat * w + b if HAS_BIAS else xhat * w
             tl.store(Y + cols, y, mask=mask)
+            
+        y = xhat * w + b if HAS_BIAS else xhat * w
+        sigmoid_o = tl.sigmoid(o)
+        do = dy * y * (sigmoid_o + o * sigmoid_o * (1 - sigmoid_o))
+        dy = dy * o * sigmoid_o
         wdy = w * dy
         dw += dy * xhat
         if HAS_BIAS:
@@ -282,8 +300,10 @@ def _layer_norm_bwd_kernel(
         if STORE_DRESIDUAL:
             tl.store(DRESIDUAL_IN + cols, dx, mask=mask)
         tl.store(DX + cols, dx, mask=mask)
+        tl.store(DO + cols, do, mask=mask)
 
         X += stride_x_row
+        O += stride_x_row
         if HAS_DRESIDUAL:
             DRESIDUAL += stride_dres_row
         if STORE_DRESIDUAL:
@@ -292,6 +312,8 @@ def _layer_norm_bwd_kernel(
             Y += stride_y_row
         DY += stride_dy_row
         DX += stride_dx_row
+        DO += stride_dx_row
+        
     tl.store(DW + row_block_id * N + cols, dw, mask=mask)
     if HAS_BIAS:
         tl.store(DB + row_block_id * N + cols, db, mask=mask)
@@ -300,6 +322,7 @@ def _layer_norm_bwd_kernel(
 def _layer_norm_bwd(
     dy,
     x,
+    o, 
     weight,
     bias,
     eps,
@@ -329,6 +352,11 @@ def _layer_norm_bwd(
         if x_dtype is None
         else torch.empty(M, N, dtype=x_dtype, device=x.device)
     )
+    do = (
+        torch.empty_like(o)
+        if x_dtype is None
+        else torch.empty(M, N, dtype=x_dtype, device=x.device)
+    )
     dresidual_in = torch.empty_like(
         x) if has_residual and dx.dtype != x.dtype else None
     y = torch.empty(M, N, dtype=dy.dtype,
@@ -352,11 +380,13 @@ def _layer_norm_bwd(
     with torch.cuda.device(x.device.index):
         _layer_norm_bwd_kernel[grid](
             x,
+            o,
             weight,
             bias,
             y,
             dy,
             dx,
+            do,
             _dw,
             _db,
             dresidual,
@@ -384,7 +414,7 @@ def _layer_norm_bwd(
     # Don't need to compute dresidual_in separately in this case
     if has_residual and dx.dtype == x.dtype:
         dresidual_in = dx
-    return (dx, dw, db, dresidual_in) if not recompute_output else (dx, dw, db, dresidual_in, y)
+    return (dx, do, dw, db, dresidual_in) if not recompute_output else (dx, do, dw, db, dresidual_in, y)
 
 
 class LayerNormFn(torch.autograd.Function):
@@ -392,6 +422,7 @@ class LayerNormFn(torch.autograd.Function):
     def forward(
         ctx,
         x,
+        o, 
         weight,
         bias,
         residual=None,
@@ -401,8 +432,10 @@ class LayerNormFn(torch.autograd.Function):
         is_rms_norm=False,
     ):
         x_shape_og = x.shape
+        o_shape_og = o.shape
         # reshape input data into 2D tensor
         x = x.reshape(-1, x.shape[-1])
+        o = o.reshape(-1, o.shape[-1])
         if x.stride(-1) != 1:
             x = x.contiguous()
         if residual is not None:
@@ -419,10 +452,11 @@ class LayerNormFn(torch.autograd.Function):
             else (torch.float32 if residual_in_fp32 else None)
         )
         y, mean, rstd, residual_out = _layer_norm_fwd(
-            x, weight, bias, eps, residual, residual_dtype=residual_dtype, is_rms_norm=is_rms_norm
+            x, o, weight, bias, eps, residual, residual_dtype=residual_dtype, is_rms_norm=is_rms_norm
         )
-        ctx.save_for_backward(residual_out, weight, bias, mean, rstd)
+        ctx.save_for_backward(residual_out, o, weight, bias, mean, rstd)
         ctx.x_shape_og = x_shape_og
+        ctx.o_shape_og = o_shape_og
         ctx.eps = eps
         ctx.is_rms_norm = is_rms_norm
         ctx.has_residual = residual is not None
@@ -433,7 +467,7 @@ class LayerNormFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dy, *args):
-        x, weight, bias, mean, rstd = ctx.saved_tensors
+        x, o, weight, bias, mean, rstd = ctx.saved_tensors
         dy = dy.reshape(-1, dy.shape[-1])
         if dy.stride(-1) != 1:
             dy = dy.contiguous()
@@ -446,9 +480,10 @@ class LayerNormFn(torch.autograd.Function):
             assert dresidual.shape == x.shape
         else:
             dresidual = None
-        dx, dw, db, dresidual_in = _layer_norm_bwd(
+        dx, do, dw, db, dresidual_in = _layer_norm_bwd(
             dy,
             x,
+            o,
             weight,
             bias,
             ctx.eps,
@@ -461,6 +496,7 @@ class LayerNormFn(torch.autograd.Function):
         )
         return (
             dx.reshape(ctx.x_shape_og),
+            do.reshape(ctx.o_shape_og),
             dw,
             db,
             dresidual_in.reshape(ctx.x_shape_og) if ctx.has_residual else None,
@@ -471,24 +507,11 @@ class LayerNormFn(torch.autograd.Function):
         )
 
 
-def layer_norm_fn(
-    x,
-    weight,
-    bias,
-    residual=None,
-    eps=1e-6,
-    prenorm=False,
-    residual_in_fp32=False,
-    is_rms_norm=False,
-):
-    return LayerNormFn.apply(x, weight, bias, residual, eps, prenorm, residual_in_fp32, is_rms_norm)
+def rms_norm_fn(x, o, weight, bias, residual=None, prenorm=False, residual_in_fp32=False, eps=1e-6):
+    return LayerNormFn.apply(x, o, weight, bias, residual, eps, prenorm, residual_in_fp32, True)
 
 
-def rms_norm_fn(x, weight, bias, residual=None, prenorm=False, residual_in_fp32=False, eps=1e-6):
-    return LayerNormFn.apply(x, weight, bias, residual, eps, prenorm, residual_in_fp32, True)
-
-
-class RMSNorm(torch.nn.Module):
+class FusedRMSNormSwishGate(torch.nn.Module):
     def __init__(self, hidden_size, eps=1e-5):
         # factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -500,9 +523,10 @@ class RMSNorm(torch.nn.Module):
     def reset_parameters(self):
         torch.nn.init.ones_(self.weight)
 
-    def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
+    def forward(self, x, o, residual=None, prenorm=False, residual_in_fp32=False):
         return rms_norm_fn(
             x,
+            o,
             self.weight,
             self.bias,
             residual=residual,
@@ -512,136 +536,3 @@ class RMSNorm(torch.nn.Module):
         )
 
 
-class LayerNormLinearFn(torch.autograd.Function):
-    @staticmethod
-    @custom_fwd
-    def forward(
-        ctx,
-        x,
-        norm_weight,
-        norm_bias,
-        linear_weight,
-        linear_bias,
-        residual=None,
-        eps=1e-6,
-        prenorm=False,
-        residual_in_fp32=False,
-        is_rms_norm=False,
-    ):
-        x_shape_og = x.shape
-        # reshape input data into 2D tensor
-        x = x.reshape(-1, x.shape[-1])
-        if x.stride(-1) != 1:
-            x = x.contiguous()
-        if residual is not None:
-            assert residual.shape == x_shape_og
-            residual = residual.reshape(-1, residual.shape[-1])
-            if residual.stride(-1) != 1:
-                residual = residual.contiguous()
-        norm_weight = norm_weight.contiguous()
-        if norm_bias is not None:
-            norm_bias = norm_bias.contiguous()
-        residual_dtype = (
-            residual.dtype
-            if residual is not None
-            else (torch.float32 if residual_in_fp32 else None)
-        )
-        y, mean, rstd, residual_out = _layer_norm_fwd(
-            x,
-            norm_weight,
-            norm_bias,
-            eps,
-            residual,
-            out_dtype=None if not torch.is_autocast_enabled() else torch.get_autocast_gpu_dtype(),
-            residual_dtype=residual_dtype,
-            is_rms_norm=is_rms_norm,
-        )
-        y = y.reshape(x_shape_og)
-        dtype = torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else y.dtype
-        linear_weight = linear_weight.to(dtype)
-        linear_bias = linear_bias.to(
-            dtype) if linear_bias is not None else None
-        out = F.linear(y.to(linear_weight.dtype), linear_weight, linear_bias)
-        # We don't store y, will be recomputed in the backward pass to save memory
-        ctx.save_for_backward(residual_out, norm_weight,
-                              norm_bias, linear_weight, mean, rstd)
-        ctx.x_shape_og = x_shape_og
-        ctx.eps = eps
-        ctx.is_rms_norm = is_rms_norm
-        ctx.has_residual = residual is not None
-        ctx.prenorm = prenorm
-        ctx.x_dtype = x.dtype
-        ctx.linear_bias_is_none = linear_bias is None
-        return out if not prenorm else (out, residual_out.reshape(x_shape_og))
-
-    @staticmethod
-    @custom_bwd
-    def backward(ctx, dout, *args):
-        x, norm_weight, norm_bias, linear_weight, mean, rstd = ctx.saved_tensors
-        dout = dout.reshape(-1, dout.shape[-1])
-        dy = F.linear(dout, linear_weight.t())
-        dlinear_bias = None if ctx.linear_bias_is_none else dout.sum(0)
-        if dy.stride(-1) != 1:
-            dy = dy.contiguous()
-        assert dy.shape == x.shape
-        if ctx.prenorm:
-            dresidual = args[0]
-            dresidual = dresidual.reshape(-1, dresidual.shape[-1])
-            if dresidual.stride(-1) != 1:
-                dresidual = dresidual.contiguous()
-            assert dresidual.shape == x.shape
-        else:
-            dresidual = None
-        dx, dnorm_weight, dnorm_bias, dresidual_in, y = _layer_norm_bwd(
-            dy,
-            x,
-            norm_weight,
-            norm_bias,
-            ctx.eps,
-            mean,
-            rstd,
-            dresidual,
-            ctx.has_residual,
-            ctx.is_rms_norm,
-            x_dtype=ctx.x_dtype,
-            recompute_output=True,
-        )
-        dlinear_weight = torch.einsum("bo,bi->oi", dout, y)
-        return (
-            dx.reshape(ctx.x_shape_og),
-            dnorm_weight,
-            dnorm_bias,
-            dlinear_weight,
-            dlinear_bias,
-            dresidual_in.reshape(ctx.x_shape_og) if ctx.has_residual else None,
-            None,
-            None,
-            None,
-            None,
-        )
-
-
-def layer_norm_linear_fn(
-    x,
-    norm_weight,
-    norm_bias,
-    linear_weight,
-    linear_bias,
-    residual=None,
-    eps=1e-6,
-    prenorm=False,
-    residual_in_fp32=False,
-    is_rms_norm=False,
-):
-    return LayerNormLinearFn.apply(
-        x,
-        norm_weight,
-        norm_bias,
-        linear_weight,
-        linear_bias,
-        residual,
-        eps,
-        prenorm,
-        residual_in_fp32,
-        is_rms_norm,
-    )

@@ -7,8 +7,7 @@ from __future__ import annotations
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-
-from fla.modules.rmsnorm import RMSNorm
+from fla.modules import FusedRMSNormSwishGate, RMSNorm
 from fla.modules.rotary import RotaryEmbedding
 from fla.ops.retention import (chunk_retention, fused_chunk_retention,
                                fused_recurrent_retention, parallel_retention)
@@ -33,6 +32,7 @@ class MultiScaleRetention(nn.Module):
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
         mode: str = 'chunk',
+        fuse_norm: bool = True,
         *args,
         **kwargs
     ) -> MultiScaleRetention:
@@ -44,7 +44,8 @@ class MultiScaleRetention(nn.Module):
         self.value_dim = int(d_model * expand_v)
         self.num_heads = num_heads
 
-        assert mode in ['chunk', 'fused_chunk', 'parallel', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
+        assert mode in ['chunk', 'fused_chunk', 'parallel',
+                        'fused_recurrent'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
 
@@ -55,9 +56,20 @@ class MultiScaleRetention(nn.Module):
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
         self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
         self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
-        self.out_proj = nn.Linear(self.value_dim, d_model, bias=False)
+        self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
 
-        self.group_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
+        if (gate_fn == 'swish') and fuse_norm:
+            self.g_norm_swish_gate = FusedRMSNormSwishGate(
+                self.head_v_dim, eps=layernorm_eps)
+            self.fuse_norm_and_gate = True
+        else:
+            self.fuse_norm_and_gate = False
+            self.g_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
+
+        # TODO: fix this issue
+        # https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/ops/triton/rotary.py#L180 
+        # Ideally, we would want to support arbitrary d_head_qk
+        assert self.head_qk_dim <= 256, "head_qk_dim must be less than or equal to 256"
         self.rotary = RotaryEmbedding(dim=self.head_qk_dim, interleaved=False)
 
         self.reset_parameters()
@@ -67,12 +79,14 @@ class MultiScaleRetention(nn.Module):
         nn.init.xavier_uniform_(self.k_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.v_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.out_proj.weight, gain=2 ** -2.5)
+        nn.init.xavier_uniform_(self.o_proj.weight, gain=2 ** -2.5)
 
     def forward(self, x):
         mode = self.mode
-        q1 = rearrange(self.q_proj(x), '... (h d) -> ... h d', h=self.num_heads)
-        k1 = rearrange(self.k_proj(x), '... (h d) -> ... h d', h=self.num_heads)
+        q1 = rearrange(self.q_proj(
+            x), '... (h d) -> ... h d', h=self.num_heads)
+        k1 = rearrange(self.k_proj(
+            x), '... (h d) -> ... h d', h=self.num_heads)
         q, k = self.rotary(q1, k1)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
@@ -84,11 +98,22 @@ class MultiScaleRetention(nn.Module):
             o = parallel_retention(q, k, v)
         elif mode == 'fused_recurrent':
             o = fused_recurrent_retention(q, k, v)
-        # TODO: need fix to allow different d_head_qk and d_head_v for "chunk" form
         else:
             raise NotImplementedError
-        o = self.group_norm(rearrange(o, 'b h n d -> b n h d'))
-        return self.out_proj(rearrange(o, 'b n h d -> b n (h d)') * self.gate_fn(self.g_proj(x)))
+
+        o = rearrange(o, 'b h l d -> b l h d')
+        g = self.g_proj(x)
+        if self.fuse_norm_and_gate:
+            g = rearrange(g, 'b l (h d) -> b l h d', h=self.num_heads)
+            o = self.g_norm_swish_gate(o, g)
+            o = rearrange(o, 'b l h d -> b l (h d)')
+
+        else:
+            o = self.g_norm(o)
+            o = rearrange(o, 'b l h d -> b l (h d)')
+            o = o * self.gate_fn(g)
+        o = self.o_proj(o)
+        return o
 
 
 if __name__ == '__main__':
@@ -96,7 +121,8 @@ if __name__ == '__main__':
     batch = 4
     seq_len = 1024
     d_model = 1024
-    x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
+    x = torch.randn(batch, seq_len, d_model).to(
+        torch.bfloat16).cuda().requires_grad_(True)
     model = MultiScaleRetention().to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)
