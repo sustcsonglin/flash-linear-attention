@@ -35,128 +35,6 @@ def rearrange_back(x):
 
 
 @triton.jit
-def chunk_gla_fwd_kernel_h(
-    # B: batch_size, H: n_heads, T: seq_len, D: d_head
-    k,  # key [B, H, L, K]
-    v,  # value [B, H, L, V]
-    g,  # cumulative sum of log decay [B, H, L, K]
-    h,  # hidden state [B, H, C, K, V]
-
-    initial_state,  # initial state of the chunk [B, H, K, V]
-    final_state,  # final state of the chunk [B, H, K, V]
-
-    s_k_h,  # stride size: L * K
-    s_k_t,  # stride size: K
-    s_k_d,  # stride size: 1
-
-    s_vo_h,  # stride size: L * V
-    s_vo_t,  # stride size: V
-    s_vo_d,  # stride size: 1
-
-    s_hh,
-    s_ht,
-
-    scale,  # K ** -0.5
-    B: tl.constexpr,  # batch size
-    H: tl.constexpr,  # n_heads
-    T: tl.constexpr,  # seq_len
-    K: tl.constexpr,  # K
-    V: tl.constexpr,  # V
-    BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
-    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
-    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
-    USE_INITIAL_STATE: tl.constexpr,
-    STORE_FINAL_STATE: tl.constexpr,
-):
-    # indices
-    i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-
-    b_h = tl.zeros([BK, BV], dtype=tl.float32)
-
-    if USE_INITIAL_STATE:
-        p_h = tl.make_block_ptr(initial_state + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
-
-    for i in range(tl.cdiv(T, BT)):
-        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
-        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bh * s_k_h + (i + 1) * BT * K - K, (K,), (s_k_d,), (i_k * BK,), (BK,), (0,))
-
-        # [BK, BT]
-        b_k = tl.load(p_k, boundary_check=(0, 1))
-        # [BT, BV]
-        b_v = tl.load(p_v, boundary_check=(0, 1))
-        # [BT, BK]
-        # b_q = tl.load(p_q, boundary_check=(0, 1))
-
-        b_g = tl.load(p_g, boundary_check=(0,)).to(tl.float32)
-
-        p_h = tl.make_block_ptr(h + i_bh * s_hh, ((i+1)*K, V), (s_ht, 1), (i*K+i_k*BK, i_v * BV), (BK, BV), (1, 0))
-
-        tl.store(p_h, b_h.to(p_h.dtype.element_ty), boundary_check=(0, 1))
-
-        # b_o = tl.dot(b_q.to(b_v.dtype), b_h.to(b_v.dtype), allow_tf32=False)
-        b_h *= tl.math.exp(b_g)[:, None]
-        b_h += tl.dot(b_k.to(b_v.dtype), b_v, allow_tf32=False)
-
-    if STORE_FINAL_STATE:
-        p_final = tl.make_block_ptr(final_state + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        tl.store(p_final, b_h.to(p_final.dtype.element_ty), boundary_check=(0, 1))
-
-
-# Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
-@triton.jit
-def chunk_gla_bwd_kernel_dh(
-    q,
-    g,
-    do,  # gradient of output [B, H, L, V]
-    dh,
-
-    s_k_h,  # stride size: L * K
-    s_k_t,  # stride size: K
-    s_k_d,  # stride size: 1
-
-    s_vo_h,  # stride size: L * V
-    s_vo_t,  # stride size: V
-    s_vo_d,  # stride size: 1
-
-    s_hh,
-    s_ht,
-
-    B,  # batch_size
-    H,  # n_heads
-    T,  # seq_len
-    TK,
-    scale,  # K ** -0.5
-    # clamp_min,  # minimum log value of the gate for numerical stability. default: -5
-    BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
-    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
-    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
-    K: tl.constexpr,  # K
-    V: tl.constexpr,  # V
-):
-    i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-
-    # [BK, BV]
-    b_dh = tl.zeros([BK, BV], dtype=tl.float32)
-    for i in range((tl.cdiv(T, BT) - 1), -1, -1):
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
-        p_g = tl.make_block_ptr(g + i_bh * s_k_h + (i + 1) * BT * K - K, (K,), (s_k_d,), (i_k * BK,), (BK,), (0,))
-        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dh = tl.make_block_ptr(dh + i_bh * s_hh, ((i+1)*K, V), (s_ht, 1), (i*K+i_k*BK, i_v * BV), (BK, BV), (1, 0))
-
-        b_g = tl.math.exp2(tl.load(p_g, boundary_check=(0,)) * inv_ln2)
-
-        tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
-        # [K, BT]
-        b_q = tl.load(p_q, boundary_check=(0, 1))
-        # [BT, V]
-        b_do = tl.load(p_do, boundary_check=(0, 1))
-        # [K, V]
-        b_dh = b_g[:, None] * b_dh + tl.dot(b_q, b_do, allow_tf32=False)
-
-
-@triton.jit
 def fwd_decay_cumsum(
     q,
     k,
@@ -201,6 +79,185 @@ def fwd_decay_cumsum(
         b_g = tl.load(p_g, boundary_check=(0,))
         b_k *= tl.exp((cum_decay - b_g))
         tl.store(p_kg, b_k.to(p_kg.dtype.element_ty), boundary_check=(0,))
+
+
+@triton.jit
+def chunk_gla_fwd_kernel_intra(
+    q,
+    k,
+    g,
+    A,
+    s_k_h,  # stride size: L * D_head_K
+    s_k_t,  # stride size: D_head_K
+    s_k_d,  # stride size: 1
+    s_A_h,
+    s_A_t,
+    s_A_d,
+    scale,  # D_head_K ** -0.5
+    T: tl.constexpr,  # seq_len
+    K: tl.constexpr,
+    BT: tl.constexpr,
+    BC: tl.constexpr,
+    BK: tl.constexpr,
+):
+    i_k, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_t, i_i = i_c // tl.cdiv(BT, BC), i_c % tl.cdiv(BT, BC)
+    n_bh = tl.num_programs(2)
+
+    o_i = tl.arange(0, BC)
+
+    p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_c * BC, i_k * BK), (BC, BK), (1, 0))
+    p_gq = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_c * BC, i_k * BK), (BC, BK), (1, 0))
+    p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_c * BC) * K + i_k * BK,), (BK,), (0,))
+
+    # [BK,]
+    b_gn = tl.load(p_gn, boundary_check=(0,))
+    # [BC, BK]
+    b_q = tl.load(p_q, boundary_check=(0, 1))
+    b_gq = tl.load(p_gq, boundary_check=(0, 1))
+    b_qg = (b_q * tl.exp(b_gq - b_gn[None, :])).to(b_q.dtype)
+    for i in range(i_i):
+        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, (i_t * BT + i * BC)), (BK, BC), (0, 1))
+        p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, (i_t * BT + i * BC)), (BK, BC), (0, 1))
+        # [BK, BT]
+        b_k = tl.load(p_k, boundary_check=(0, 1))
+        b_gk = tl.load(p_gk, boundary_check=(0, 1))
+        b_kg = (b_k * tl.exp(b_gn[:, None] - b_gk)).to(b_q.dtype)
+        # [BC, BC]
+        b_A = tl.dot(b_qg, b_kg, allow_tf32=False) * scale
+
+        p_A = tl.make_block_ptr(A + (i_k * n_bh + i_bh) * s_A_h, (T, BT), (s_A_t, s_A_d), (i_c * BC, i * BC), (BC, BC), (1, 0))
+        tl.store(p_A, b_A.to(p_A.dtype.element_ty), boundary_check=(0, 1))
+
+    # loop over sub chunks
+    for i in range(BC):
+        o_k = i_bh * s_k_h + (i_c * BC + i) * K + tl.arange(0, BK) + i_k * BK
+        m_k = (i_c * BC + i < T) & ((tl.arange(0, BK) + i_k * BK) < K)
+        # [BK,]
+        b_k_i = tl.load(k + o_k, mask=m_k, other=0)
+        b_gk_i = tl.load(g + o_k, mask=m_k, other=0)
+        # [BC,]
+        b_s = tl.sum((b_q * b_k_i[None, :] * tl.exp(b_gq - b_gk_i[None, :])), 1)
+        b_s = (tl.where(o_i >= i, b_s, 0) * scale).to(b_q.dtype)
+
+        o_s = A + (i_k * n_bh + i_bh) * s_A_h + (i_c * BC + tl.arange(0, BC)) * BT + i_i * BC + i
+        m_s = (i_c * BC + tl.arange(0, BC)) < T
+        tl.store(o_s, b_s, mask=m_s)
+
+
+@triton.jit
+def chunk_gla_fwd_kernel_h(
+    # B: batch_size, H: n_heads, T: seq_len, D: d_head
+    k,  # key [B, H, L, K]
+    v,  # value [B, H, L, V]
+    g,  # cumulative sum of log decay [B, H, L, K]
+    h,  # hidden state [B, H, C, K, V]
+
+    initial_state,  # initial state of the chunk [B, H, K, V]
+    final_state,  # final state of the chunk [B, H, K, V]
+
+    s_k_h,  # stride size: L * K
+    s_k_t,  # stride size: K
+    s_k_d,  # stride size: 1
+
+    s_v_h,  # stride size: L * V
+    s_v_t,  # stride size: V
+    s_v_d,  # stride size: 1
+
+    s_h_h,
+    s_h_t,
+
+    T: tl.constexpr,  # seq_len
+    K: tl.constexpr,  # K
+    V: tl.constexpr,  # V
+    BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
+    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
+    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
+    USE_INITIAL_STATE: tl.constexpr,
+    STORE_FINAL_STATE: tl.constexpr,
+):
+    # indices
+    i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+
+    b_h = tl.zeros([BK, BV], dtype=tl.float32)
+
+    if USE_INITIAL_STATE:
+        p_h = tl.make_block_ptr(initial_state + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
+
+    for i in range(tl.cdiv(T, BT)):
+        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
+        p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h + (i + 1) * BT * K - K, (K,), (s_k_d,), (i_k * BK,), (BK,), (0,))
+
+        # [BK, BT]
+        b_k = tl.load(p_k, boundary_check=(0, 1))
+        # [BT, BV]
+        b_v = tl.load(p_v, boundary_check=(0, 1))
+        # [BT, BK]
+        # b_q = tl.load(p_q, boundary_check=(0, 1))
+
+        b_g = tl.load(p_g, boundary_check=(0,)).to(tl.float32)
+
+        p_h = tl.make_block_ptr(h + i_bh * s_h_h, ((i+1)*K, V), (s_h_t, 1), (i*K+i_k*BK, i_v * BV), (BK, BV), (1, 0))
+
+        tl.store(p_h, b_h.to(p_h.dtype.element_ty), boundary_check=(0, 1))
+
+        # b_o = tl.dot(b_q.to(b_v.dtype), b_h.to(b_v.dtype), allow_tf32=False)
+        b_h *= tl.math.exp(b_g)[:, None]
+        b_h += tl.dot(b_k.to(b_v.dtype), b_v, allow_tf32=False)
+
+    if STORE_FINAL_STATE:
+        p_final = tl.make_block_ptr(final_state + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        tl.store(p_final, b_h.to(p_final.dtype.element_ty), boundary_check=(0, 1))
+
+
+@triton.jit
+def chunk_gla_fwd_kernel_o(
+    q,
+    g,
+    h,
+    o,
+    s_k_h,  # stride size: L * K
+    s_k_t,  # stride size: K
+    s_k_d,  # stride size: 1
+    s_v_h,
+    s_v_t,
+    s_v_d,
+    s_h_h,
+    s_h_t,
+    s_h_d,
+    scale,
+    T,  # seq_len
+    K: tl.constexpr,  # K
+    V: tl.constexpr,  # V
+    BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
+    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
+    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
+):
+    i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+
+    # [BT, BV]
+    b_o = tl.zeros([BT, BV], dtype=tl.float32)
+    # inter chunks
+    for i_k in range(tl.cdiv(K, BK)):
+        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_h = tl.make_block_ptr(h + i_bh * s_h_h, ((i_t+1)*K, V), (s_h_t, s_h_d), (i_t*K+i_k*BK, i_v * BV), (BK, BV), (1, 0))
+
+        # [BT, BK]
+        b_q = tl.load(p_q, boundary_check=(0, 1))
+        b_g = tl.load(p_g, boundary_check=(0, 1))
+        # [BK, BV]
+        b_h = tl.load(p_h, boundary_check=(0, 1))
+
+        # [BT, BV]
+        b_o += tl.dot((b_q * tl.exp(b_g)).to(b_q.dtype), b_h, allow_tf32=False)
+    # [BT, BV]
+    b_o = b_o * scale
+
+    p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -258,86 +315,56 @@ def bwd_decay_global_cumsum(
         tl.store(p_dg, cum_grad_dg.to(p_dg.dtype.element_ty), boundary_check=(0,))
 
 
+# Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
 @triton.jit
-def chunk_gla_fwd_kernel_o(
+def chunk_gla_bwd_kernel_dh(
     q,
-    q_g,
-    k,
-    v,
     g,
-    h,
-    o,
-    A,
+    do,  # gradient of output [B, H, L, V]
+    dh,
+
     s_k_h,  # stride size: L * K
     s_k_t,  # stride size: K
     s_k_d,  # stride size: 1
-    s_v_h,
-    s_v_t,
-    s_v_d,
+
+    s_v_h,  # stride size: L * V
+    s_v_t,  # stride size: V
+    s_v_d,  # stride size: 1
+
     s_h_h,
     s_h_t,
-    s_h_d,
-    s_A_h,
-    s_A_c,
-    s_A_t,
-    scale,
+
     B,  # batch_size
     H,  # n_heads
     T,  # seq_len
+    TK,
+    scale,  # K ** -0.5
     # clamp_min,  # minimum log value of the gate for numerical stability. default: -5
-    K: tl.constexpr,  # K
-    V: tl.constexpr,  # V
     BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
+    K: tl.constexpr,  # K
+    V: tl.constexpr,  # V
 ):
-    i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
-    o_i = tl.arange(0, BT)
-    m_s = o_i[:, None] >= o_i[None, :]
+    # [BK, BV]
+    b_dh = tl.zeros([BK, BV], dtype=tl.float32)
+    for i in range((tl.cdiv(T, BT) - 1), -1, -1):
+        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
+        p_g = tl.make_block_ptr(g + i_bh * s_k_h + (i + 1) * BT * K - K, (K,), (s_k_d,), (i_k * BK,), (BK,), (0,))
+        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dh = tl.make_block_ptr(dh + i_bh * s_h_h, ((i+1)*K, V), (s_h_t, 1), (i*K+i_k*BK, i_v * BV), (BK, BV), (1, 0))
 
-    b_o = tl.zeros([BT, BV], dtype=tl.float32)
-    b_A = tl.zeros([BT, BT], dtype=tl.float32)
-    for i_k in range(tl.cdiv(K, BK)):
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_q_g = tl.make_block_ptr(q_g + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_h = tl.make_block_ptr(h + i_bh * s_h_h, ((i_t+1)*K, V), (s_h_t, s_h_d), (i_t*K+i_k*BK, i_v * BV), (BK, BV), (1, 0))
+        b_g = tl.math.exp2(tl.load(p_g, boundary_check=(0,)) * inv_ln2)
 
-        # [BT, BK]
+        tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
+        # [K, BT]
         b_q = tl.load(p_q, boundary_check=(0, 1))
-        b_q_g = tl.load(p_q_g, boundary_check=(0, 1))
-        b_g = tl.load(p_g, boundary_check=(0, 1))
-        # [BK, BT]
-        b_k = tl.load(p_k, boundary_check=(0, 1))
-        # [BK, BV]
-        b_h = tl.load(p_h, boundary_check=(0, 1))
-
-        # [BT, BV]
-        b_o += tl.dot(b_q_g, b_h, allow_tf32=False)
-
-        # [BT,]
-        b_m_gq = tl.max(b_g, 1)
-        b_m_gk = tl.min(b_g, 1)
-        # [BT, BK]
-        b_qg = (b_q * tl.exp(b_g - b_m_gq[:, None])).to(b_q.dtype)
-        # [BK, BT]
-        b_kg = (b_k * tl.trans(tl.exp(b_m_gk[:, None] - b_g))).to(b_k.dtype)
-        # [BT,]
-        b_sg = tl.dot(b_qg, b_kg, allow_tf32=False)
-        b_A += safe_exy(b_m_gq[:, None] - b_m_gk[None, :], b_sg)
-
-    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_A = tl.make_block_ptr(A + i_bh * s_A_h + i_t * s_A_c, (BT, BT), (BT, 1), (0, 0), (BT, BT), (1, 0))
-
-    b_A = tl.where(m_s, b_A, 0.) * scale
-    # [BT, BV]
-    b_v = tl.load(p_v, boundary_check=(0, 1))
-    b_o += tl.dot(b_A.to(b_v.dtype), b_v, allow_tf32=False)
-    tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
-    tl.store(p_A, b_A.to(p_A.dtype.element_ty), boundary_check=(0, 1))
+        # [BT, V]
+        b_do = tl.load(p_do, boundary_check=(0, 1))
+        # [K, V]
+        b_dh = b_g[:, None] * b_dh + tl.dot(b_q, b_do, allow_tf32=False)
 
 
 @triton.jit
@@ -423,12 +450,12 @@ class ChunkGLAFunction(torch.autograd.Function):
         g = g.to(torch.float32)
         B, H, T, K, V = *q.shape, v.shape[-1]
 
-        BT = 64
+        BT, BC = 64, 16
         BK, BV = min(K, 64), min(V, 64)
         num_stages = 1
         num_warps = 4
 
-        NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
+        NT, NC, NK, NV = triton.cdiv(T, BT), triton.cdiv(T, BC), triton.cdiv(K, BK), triton.cdiv(V, BV)
         q_g = torch.empty_like(q)
         k_g = torch.empty_like(k)
         grid = (NK, NT, B * H)
@@ -444,35 +471,49 @@ class ChunkGLAFunction(torch.autograd.Function):
         else:
             final_state = None
 
-        grid = (NV, NK, B * H)
+        BK = min(K, 128)
+        NK = triton.cdiv(K, BK)
+        A = q.new_zeros(NK, B, H, NT * BT, BT)
+        grid = (NK, NC, B * H)
+        chunk_gla_fwd_kernel_intra[grid](
+            q, k, g, A,
+            k.stride(1), k.stride(2), k.stride(3),
+            A.stride(2), A.stride(3), A.stride(4),
+            scale,
+            T=T, K=K, BT=BT, BC=BC, BK=BK,
+            num_warps=num_warps,
+            num_stages=num_stages
+        )
+        A = A.sum(0).view(B, H, NT, BT, BT)
+
+        BK = min(K, 64)
+        NK = triton.cdiv(K, BK)
         h = q.new_empty(B, H, NT * K, V)
+        grid = (NV, NK, B * H)
         chunk_gla_fwd_kernel_h[grid](
             k_g, v, g, h, initial_state, final_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             h.stride(1), h.stride(2),
-            scale,
-            B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+            T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
             USE_INITIAL_STATE=initial_state is not None,
             STORE_FINAL_STATE=output_final_state,
             num_warps=num_warps,
             num_stages=num_stages
         )
-
         o = torch.empty_like(v)
-        A = q.new_zeros(B, H, NT, BT, BT)
         grid = (NV, NT, B * H)
         chunk_gla_fwd_kernel_o[grid](
-            q, q_g, k, v, g, h, o, A,
+            q, g, h, o,
             k.stride(1), k.stride(2), k.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             h.stride(1), h.stride(2), h.stride(3),
-            A.stride(1), A.stride(2), A.stride(3),
             scale,
-            B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+            T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages
         )
+        o += (A @ v.view(B, H, NT, BT, -1)).view_as(o)
         ctx.save_for_backward(q, q_g, k, k_g, v, g, A, initial_state, h)
         ctx.BT = BT
         ctx.scale = scale
@@ -502,7 +543,6 @@ class ChunkGLAFunction(torch.autograd.Function):
             v.stride(1), v.stride(2), v.stride(3),
             h.stride(1), h.stride(2),
             B, H, T, dh.shape[-2], scale,
-            # clamp_min=-3,
             BT=BT, K=K, V=V, BK=BK, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages,
@@ -610,7 +650,7 @@ if __name__ == "__main__":
     v = torch.randn(B, H, L,  2 * D).cuda().to(dtype).requires_grad_(True)
     gk0 = (F.logsigmoid(torch.rand(B, H, L, D)) / 16).cuda().to(torch.float32)
 
-    rand = torch.rand_like(gk0) < 0.1
+    rand = torch.rand_like(gk0) < 0.5
     gk0.masked_fill_(rand, -3)
 
     do = torch.rand_like(v).cuda()
@@ -646,7 +686,6 @@ if __name__ == "__main__":
     print(f"dv\t{torch.abs(ref_dv - tri1_dv).max():3.2f}\t{torch.abs(ref_dv - tri2_dv).max():3.2f}")
     print(f"dg\t{torch.abs(ref_dg - tri1_dg).max():3.2f}\t{torch.abs(ref_dg - tri2_dg).max():3.2f}")
 
-
     @triton.testing.perf_report(
         triton.testing.Benchmark(
             # argument names to use as an x-axis for the plot
@@ -657,10 +696,10 @@ if __name__ == "__main__":
             line_arg='provider',
             # possible values for `line_arg``
             line_vals=['chunk_retention', 'chunk_gla',  'chunk_gla2', 'recurrent_gla',
-                    'chunk_retention_bwd', 'chunk_gla_bwd',  'chunk_gla2_bwd', 'recurrent_gla_bwd'],
+                       'chunk_retention_bwd', 'chunk_gla_bwd',  'chunk_gla2_bwd', 'recurrent_gla_bwd'],
             # label name for the lines
             line_names=['chunk_retention', 'chunk_gla',  'chunk_gla2', 'recurrent_gla',
-                    'chunk_retention_bwd', 'chunk_gla_bwd',  'chunk_gla2_bwd', 'recurrent_gla_bwd'],
+                        'chunk_retention_bwd', 'chunk_gla_bwd',  'chunk_gla2_bwd', 'recurrent_gla_bwd'],
             # line styles
             styles=[('green', '-'), ('blue', '--'), ('red', '-.'), ('cyan', ':'),
                     ('yellow', 'dotted'), ('cyan', '--'), ('cyan', '-'), ('black', ':')],
@@ -677,7 +716,8 @@ if __name__ == "__main__":
 
         q = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=True, dtype=dtype)
         k = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=True, dtype=dtype)
-        g = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, d_head, device=device, dtype=dtype)).clamp_min(-5).requires_grad_(True)
+        g = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, d_head,
+                         device=device, dtype=dtype)).clamp_min(-5).requires_grad_(True)
         v = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=True, dtype=dtype)
 
         do = torch.ones_like(q, dtype=dtype)
