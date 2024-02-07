@@ -790,8 +790,6 @@ class ChunkGLAFunction(torch.autograd.Function):
                               batch_size, n_heads, seq_len, scale,  BT=BT, BK=BK, BTT=BTT, DK=d_head_qk, num_stages=4,
                               num_warps=4)
 
-        BK = min(d_head_qk, 32)
-        NK = triton.cdiv(d_head_qk, BK)
         dg = torch.empty_like(g, dtype=torch.float32)
         grid = (NK, triton.cdiv(seq_len, BT), batch_size * n_heads)
         bwd_decay_global_cumsum[grid](dq2, dq, dk2, dk, q, k, g, dg,
