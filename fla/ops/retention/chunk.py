@@ -105,12 +105,11 @@ def chunk_retention_fwd_kernel_o(
         p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         p_h = tl.make_block_ptr(h + i_bh * s_h_h + i_t * K * V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-
+        # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
-        b_q = (b_q * scale).to(b_q.dtype)
         # [BK, BT]
         b_k = tl.load(p_k, boundary_check=(0, 1))
-        # [BK, BT]
+        # [BK, BV]
         b_h = tl.load(p_h, boundary_check=(0, 1))
         b_o += tl.dot((b_q * d_i[:, None]).to(b_q.dtype), b_h, allow_tf32=False)
         b_s += tl.dot(b_q, b_k, allow_tf32=False)
@@ -118,7 +117,7 @@ def chunk_retention_fwd_kernel_o(
     b_s *= d_s
     p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     b_v = tl.load(p_v, boundary_check=(0, 1))
-    b_o += tl.dot(b_s.to(b_v.dtype), b_v, allow_tf32=False)
+    b_o = (b_o + tl.dot(b_s.to(b_v.dtype), b_v, allow_tf32=False)) * scale
     p_o = tl.make_block_ptr(o + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
@@ -292,7 +291,7 @@ class ChunkRetentionFunction(torch.autograd.Function):
             v.stride(1), v.stride(2), v.stride(3),
             h.stride(1), h.stride(2),
             scale,
-            H=H, T=T, K=K, V=V, BK=BK, BV=BV, BT=BT,
+            H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -322,7 +321,7 @@ class ChunkRetentionFunction(torch.autograd.Function):
             v.stride(1), v.stride(2), v.stride(3),
             dh.stride(1), dh.stride(2),
             scale,
-            H=H, T=T, BT=BT, K=K, V=V, BK=BK, BV=BV, NT=NT,
+            H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -339,7 +338,7 @@ class ChunkRetentionFunction(torch.autograd.Function):
             v.stride(1), v.stride(2), v.stride(3),
             dh.stride(1), dh.stride(2),
             scale,
-            H=H, T=T, BT=BT, K=K, V=V, BK=BK, BV=BV, NT=NT,
+            H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             num_warps=num_warps,
             num_stages=num_stages
         )
