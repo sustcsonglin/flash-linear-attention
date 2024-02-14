@@ -248,16 +248,16 @@ def chunk_abc_fwd_kernel_intra_V(
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
         p_z = tl.make_block_ptr(z + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
         p_A = tl.make_block_ptr(A + (i_bh+i_k*n_bh)*T*BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
-        p_zq = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_i * BC) * K + i_k * BK,), (BK,), (0,))
+        p_zn = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_i * BC) * K + i_k * BK,), (BK,), (0,))
         # [BK,]
-        b_zq = tl.load(p_zq, boundary_check=(0,)).to(tl.float32)
+        b_zn = tl.load(p_zn, boundary_check=(0,)).to(tl.float32)
         # [BC, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_z = tl.load(p_z, boundary_check=(0, 1))
-        b_q = (b_q * tl.exp(b_zq[None, :] - b_z)).to(b_q.dtype)
+        b_q = (b_q * tl.exp(b_zn[None, :] - b_z)).to(b_q.dtype)
         # [BK, BC]
         b_k = tl.load(p_k, boundary_check=(0, 1))
-        b_k = tl.exp(b_k - b_zq[:, None]).to(b_k.dtype)
+        b_k = tl.exp(b_k - b_zn[:, None]).to(b_k.dtype)
         # [BC, BC]
         b_A = tl.dot(b_q, b_k, allow_tf32=False)
         tl.store(p_A, b_A.to(A.dtype.element_ty), boundary_check=(0, 1))
@@ -276,7 +276,7 @@ def chunk_abc_fwd_kernel_intra_V(
             # [BK,]
             b_k = tl.load(p_k, boundary_check=(0,)).to(tl.float32)
             # [BC,]
-            b_A = tl.sum(b_q * tl.exp(b_k[None, :] - b_z), axis=1)
+            b_A = tl.sum(b_q * tl.exp(b_k[None, :] - b_z), 1)
             b_A = tl.where(o_i >= j, b_A, 0)
             tl.store(A + o_A + j, b_A.to(b_q.dtype), mask=m_A)
 
@@ -328,15 +328,57 @@ def chunk_abc_fwd_kernel_V(
         b_h = tl.load(p_h, boundary_check=(0, 1))
         # [BT, BV]
         b_o += tl.dot(b_q, b_h, allow_tf32=False)
+    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     p_A = tl.make_block_ptr(A + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
-    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    # [BT, BT]
-    b_A = tl.load(p_A, boundary_check=(0, 1))
     # [BT, BV]
     b_v = tl.load(p_v, boundary_check=(0, 1))
+    # [BT, BT]
+    b_A = tl.load(p_A, boundary_check=(0, 1))
     b_o += tl.dot(b_A, b_v, allow_tf32=False)
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
+
+
+@triton.jit
+def softmax_bwd_kernel(
+    p,
+    o,
+    dp,
+    do,
+    ds,
+    s_v_h,
+    s_v_t,
+    s_v_d,
+    s_s_h,
+    s_s_t,
+    s_s_d,
+    T: tl.constexpr,
+    V: tl.constexpr,
+    S: tl.constexpr,
+    BT: tl.constexpr,
+    BV: tl.constexpr,
+    BS: tl.constexpr
+):
+    i_s, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+
+    # [BT,]
+    b_doo = tl.zeros([BT,], dtype=tl.float32)
+    for i_v in range(tl.cdiv(V, BV)):
+        p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        # [BT, BV]
+        b_o = tl.load(p_o, boundary_check=(0, 1))
+        b_do = tl.load(p_do, boundary_check=(0, 1))
+        # [BT,]
+        b_doo += tl.sum(b_do * b_o, 1)
+    p_p = tl.make_block_ptr(p + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+    p_dp = tl.make_block_ptr(dp + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+    p_ds = tl.make_block_ptr(ds + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+    # [BT, BS]
+    b_p = tl.load(p_p, boundary_check=(0, 1))
+    b_dp = tl.load(p_dp, boundary_check=(0, 1))
+    b_ds = b_p * (b_dp - b_doo[:, None])
+    tl.store(p_ds, b_ds.to(p_ds.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -1012,7 +1054,7 @@ class ChunkABCFunction(torch.autograd.Function):
                 T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
                 SCALE=(scale is not None),
                 NORMQ=normq,
-                num_warps=num_warps,
+                num_warps=2,
                 num_stages=num_stages
             )
             return dh
@@ -1072,7 +1114,16 @@ class ChunkABCFunction(torch.autograd.Function):
         dsv = dsv_inter.add_(dsv_intra.sum(0))
 
         # grad of softmax
-        ds = p * (dp - (o * do).sum(-1, True))
+        ds = torch.empty_like(p)
+        grid = (NM, NT, B * H)
+        softmax_bwd_kernel[grid](
+            p, o, dp, do, ds,
+            o.stride(1), o.stride(2), o.stride(3),
+            p.stride(1), p.stride(2), p.stride(3),
+            T=T, V=V, S=M, BT=BT, BV=BV, BS=BM,
+            num_warps=2,
+            num_stages=num_stages
+        )
         dhk = bwd_inner(
             q, zk, ds,
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, NT=NT,
