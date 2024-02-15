@@ -8,6 +8,14 @@ from fla.ops.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
 
 
+@torch.jit.script
+def normalize_output(q, k, o):
+    k = k.transpose(-2, -1)
+    k = k.cumsum(-1)
+    k = k.transpose(-2, -1)
+    z = (q * k).sum(-1, keepdim=True)
+    return o / z
+
 @triton.jit
 def chunk_linear_attn_fwd_kernel_h(
     k,
@@ -331,11 +339,16 @@ def chunk_linear_attn(
     k: torch.Tensor,
     v: torch.Tensor,
     initial_state: torch.Tensor = None,
-    output_final_state: bool = False
+    output_final_state: bool = False,
+    normalize: bool = True
 ):
     if initial_state is not None:
         initial_state = initial_state.detach()
     o, final_state = ChunkLinearAttentionFunction.apply(q, k, v, initial_state, output_final_state)
+
+    if normalize:
+        o = normalize_output(q, k, o)
+
     if output_final_state:
         return o, final_state
     else:

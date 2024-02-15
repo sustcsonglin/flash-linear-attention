@@ -10,6 +10,14 @@ from torch.cuda.amp import custom_bwd, custom_fwd
 
 # on-the-fly computation without materializing hidden statets into HBMs
 
+@torch.jit.script
+def normalize_output(q, k, o):
+    k = k.transpose(-2, -1)
+    k = k.cumsum(-1)
+    k = k.transpose(-2, -1)
+    z = (q * k).sum(-1, keepdim=True)
+    return o / z
+
 
 @triton.jit
 def fused_chunk_linear_attn_fwd_kernel(
@@ -296,16 +304,19 @@ class FusedChunkLinearAttentionFunction(torch.autograd.Function):
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None, None
 
 
-def fused_chunk_linear_attention(
+def fused_chunk_linear_attn(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     initial_state: torch.Tensor = None,
-    output_final_state: bool = False
+    output_final_state: bool = False,
+    normalize: bool = True
 ):
     if initial_state is not None:
         initial_state = initial_state.detach()
     o, final_state = FusedChunkLinearAttentionFunction.apply(q, k, v, initial_state, output_final_state)
+    if normalize:
+        o = normalize_output(q, k, o)
     if output_final_state:
         return o, final_state
     else:

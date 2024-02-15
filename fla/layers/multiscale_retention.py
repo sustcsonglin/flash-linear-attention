@@ -52,8 +52,8 @@ class MultiScaleRetention(nn.Module):
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = get_activation_fn(activation=str(gate_fn))
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
+        self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
         self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
