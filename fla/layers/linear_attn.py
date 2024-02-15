@@ -32,7 +32,7 @@ class LinearAttention(nn.Module):
     ):
         super().__init__()
 
-        assert feature_map in ['elu', 'relu', 'hedgedog', 't2r', 'identity'], f"Not supported feature map `{feature_map}`."
+        assert feature_map in ['elu', 'relu', 'hedgehog', 't2r', 'identity'], f"Not supported feature map `{feature_map}`."
 
         self.d_model = d_model
         self.mode = mode
@@ -47,7 +47,7 @@ class LinearAttention(nn.Module):
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
 
-        if feature_map == 'hedgedog':
+        if feature_map == 'hedgehog':
             if tie_feature_map_qk:
                 self.feature_map_q = self.feature_map_k = HedgehogFeatureMap(head_dim=self.head_qk_dim)
             else:
