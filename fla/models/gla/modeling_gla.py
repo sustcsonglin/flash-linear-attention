@@ -59,12 +59,12 @@ class GLABlock(nn.Module):
             fuse_norm=config.fuse_norm,
             layer_idx=layer_idx
         )
+        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = GLAMLP(
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -340,3 +340,7 @@ class GLAForCausalLM(GLAPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+
+def llama_hook(self, prefix, keep_vars):
+    print(type(self))
