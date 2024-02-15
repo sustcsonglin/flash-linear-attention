@@ -8,17 +8,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from transformers.activations import ACT2FN
+
 from fla.modules import FusedRMSNormSwishGate, RMSNorm
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
-
-
-def get_activation_fn(activation):
-    if activation == 'swish':
-        return F.silu
-    elif activation == 'gelu':
-        return F.gelu
-    else:
-        raise NotImplementedError
 
 
 class GatedLinearAttention(nn.Module):
@@ -43,14 +36,13 @@ class GatedLinearAttention(nn.Module):
         self.mode = mode
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
-        assert mode in ['chunk', 'fused_recurrent',
-                        'fused_chunk'], f"Not suppoerted mode `{mode}`."
+        assert mode in ['chunk', 'fused_recurrent', 'fused_chunk'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
         self.num_heads = num_heads
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
-        self.gate_fn = get_activation_fn(activation=str(gate_fn))
+        self.gate_fn = ACT2FN[gate_fn]
 
         self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
@@ -62,8 +54,7 @@ class GatedLinearAttention(nn.Module):
         self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
 
         if (gate_fn == 'swish') and fuse_norm:
-            self.g_norm_swish_gate = FusedRMSNormSwishGate(
-                self.head_v_dim, eps=layernorm_eps)
+            self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
             self.fuse_norm_and_gate = True
         else:
             self.fuse_norm_and_gate = False
@@ -88,8 +79,7 @@ class GatedLinearAttention(nn.Module):
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
-        gk = rearrange(self.gk_proj(
-            x), 'b n (h d) -> b h n d', h=self.num_heads)
+        gk = rearrange(self.gk_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         gk = (F.logsigmoid(gk) / self.gate_logit_normalizer)
 
         if mode == 'fused_recurrent':
