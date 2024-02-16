@@ -64,8 +64,8 @@ class LinearAttention(nn.Module):
         elif feature_map == 'elu':
             def elu(x):
                 return F.elu(x) + 1
-            self.feature_map_q = elu()
-            self.feature_map_k = elu()
+            self.feature_map_q = elu
+            self.feature_map_k = elu
         
         elif feature_map == 'relu':
             self.feature_map_q = nn.ReLU()
