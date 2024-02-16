@@ -45,7 +45,8 @@ def logcumsumexp_kernel(
         b_mp = b_mc
         b_zp = b_zc
         # [BT, BS]
-        b_z = tl.log(b_z) + b_mc
+        # small eps to prevent underflows
+        b_z = tl.log(tl.where(b_z != 0, b_z, 1e-10)) + b_mc
         tl.store(p_z, b_z.to(p_z.dtype.element_ty), boundary_check=(0, 1))
 
 
@@ -142,12 +143,12 @@ def chunk_abc_fwd_kernel_intra_K(
         p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
         # [BC, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
-        b_v = tl.exp(b_v - b_zn[None, :]).to(b_v.dtype)
         # [BC, BC]
         b_A = tl.load(p_A, boundary_check=(0, 1))
-        b_o += tl.dot(b_A, b_v, allow_tf32=False)
+        b_o += tl.dot(b_A, tl.exp(b_v - b_zn[None, :]).to(b_v.dtype), allow_tf32=False)
     b_o *= tl.exp(b_zn[None, :] - b_z)
 
+    o_i = tl.arange(0, BC)
     o_A = i_bh * T * BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_i * BC
     m_A = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
     for j in range(0, BC):
@@ -157,7 +158,9 @@ def chunk_abc_fwd_kernel_intra_K(
         # [BV,]
         b_v = tl.load(p_v, boundary_check=(0,)).to(tl.float32)
         # [BC, BV]
-        b_o += b_A[:, None] * tl.exp(b_v[None, :] - b_z)
+        # avoid 0 * inf = inf
+        m_i = o_i[:, None] >= j
+        b_o += tl.where(m_i, b_A[:, None] * tl.exp(b_v[None, :] - b_z), 0)
     p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
@@ -601,6 +604,7 @@ def chunk_abc_bwd_kernel_intra_V(
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
     b_dq *= b_zq
 
+    o_i = tl.arange(0, BC)
     o_dA = i_bh * T * BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_i * BC
     m_dA = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
     for j in range(0, BC):
@@ -611,7 +615,8 @@ def chunk_abc_bwd_kernel_intra_V(
         # [BK,]
         b_k = tl.load(p_k, boundary_check=(0,)).to(tl.float32)
         # [BC, BK]
-        b_kz = tl.exp(b_k[None, :] - b_z)
+        m_i = o_i[:, None] >= j
+        b_kz = tl.where(m_i, tl.exp(b_k[None, :] - b_z), 0.)
         # [BC, BK]
         b_dq += b_dA[:, None] * b_kz
         # [BK,]
@@ -819,6 +824,7 @@ def chunk_abc_bwd_kernel_intra_KV(
         b_dv += tl.dot(b_A, b_do, allow_tf32=False)
     b_dv *= tl.exp(b_v - b_zn[None, :])
 
+    o_i = tl.arange(0, BC)
     for j in range(0, BC):
         p_z = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (1,), ((i_t * BT + i_i * BC + j) * V + i_v * BV,), (BV,), (0,))
         p_A = tl.make_block_ptr(A + i_bh * T * BT, (T * BT,), (1,), ((i_t * BT + i_i * BC + j) * BT + i_i * BC,), (BC,), (0,))
@@ -829,7 +835,8 @@ def chunk_abc_bwd_kernel_intra_KV(
         b_z = tl.load(p_z, boundary_check=(0,)).to(tl.float32)
         b_do = tl.load(p_do, boundary_check=(0,))
         # [BC, BV]
-        b_dv += tl.exp(b_v - b_z[None, :]) * b_A[:, None] * b_do[None, :]
+        m_i = o_i[:, None] <= j
+        b_dv += tl.where(m_i, tl.exp(b_v - b_z[None, :]) * b_A[:, None] * b_do[None, :], 0.)
     p_dv = tl.make_block_ptr(dv + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
     tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
@@ -917,13 +924,12 @@ def chunk_abc_bwd_kernel_rcum_intra(
     for j in range(0, BC):
         p_z = tl.make_block_ptr(z + i_bh * s_s_h, (T * S,), (1,), ((i_t * BT + i_i * BC + j) * S + i_s * BS,), (BS,), (0,))
         p_ss = tl.make_block_ptr(ss + i_bh * s_s_h, (T * S,), (1,), ((i_t * BT + i_i * BC + j) * S + i_s * BS,), (BS,), (0,))
-        # [BC,]
-        b_m = tl.where(o_i <= j, 1., 0.)
         # [BS,]
         b_z = tl.load(p_z, boundary_check=(0,)).to(tl.float32)
         b_ss = tl.load(p_ss, boundary_check=(0,))
         # [BC, BS]
-        b_doo += b_m[:, None] * tl.exp(b_s - b_z[None, :]) * b_ss[None, :]
+        m_i = o_i[:, None] <= j
+        b_doo += tl.where(m_i, tl.exp(b_s - b_z[None, :]) * b_ss[None, :], 0.)
     b_doo += tl.load(p_doo, boundary_check=(0, 1))
     tl.store(p_doo, b_doo.to(p_doo.dtype.element_ty), boundary_check=(0, 1))
 
