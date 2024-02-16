@@ -34,7 +34,7 @@ class T2RFeatureMap(nn.Module):
 
 # https://arxiv.org/abs/2102.11174
 class DPFPFeatureMap(nn.Module):
-    def __init__(self, head_dim: int, nu: int = 1):
+    def __init__(self, head_dim: int, nu: int = 4):
         super().__init__()
         self.nu = nu
         

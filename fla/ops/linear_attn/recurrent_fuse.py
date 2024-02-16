@@ -14,7 +14,7 @@ def normalize_output(q, k, o):
     k = k.cumsum(-1)
     k = k.transpose(-2, -1)
     z = (q * k).sum(-1, keepdim=True)
-    return o / z
+    return o / (z + 1e-5)
 
 @triton.jit
 def fused_recurrent_linear_attn_fwd_kernel(

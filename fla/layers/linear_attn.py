@@ -22,14 +22,15 @@ class LinearAttention(nn.Module):
         feature_map: str = 'elementwise_product',
         tie_feature_map_qk: bool = False,
         output_norm: str = 'rmsnorm',
+        norm_q: bool = False,
+        norm_k: bool = False,
         # standard linear attention normalization
         do_feature_map_norm: bool = False,
         *args,
         **kwargs,
     ):
         super().__init__()
-
-        assert feature_map in ['elu', 'relu', 'hedgehog', 't2r', 'dplp',
+        assert feature_map in ['elu', 'relu', 'hedgehog', 't2r', 'dpfp',
                                'identity', 'elementwise_product'], f"Not supported feature map `{feature_map}`."
 
         assert output_norm in ['rmsnorm', 'identity'], f"Not supported output norm `{output_norm}`."
@@ -101,6 +102,8 @@ class LinearAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
 
+        self.norm_q = norm_q
+        self.norm_k = norm_k 
         
     def forward(self, x):
         mode = self.mode
@@ -109,6 +112,11 @@ class LinearAttention(nn.Module):
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         q = self.feature_map_q(q)
         k = self.feature_map_k(k)
+        if self.norm_q:
+            q = q / (q.sum(-1, keepdim=True) + 1e-4)
+        if self.norm_k:
+            k = k / (k.sum(-1, keepdim=True) + 1e-4)
+        
         if mode == 'chunk':
             o = chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
         elif mode == 'fused_chunk':
