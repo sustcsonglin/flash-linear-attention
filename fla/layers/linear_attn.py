@@ -1,19 +1,13 @@
 # -*- coding: utf-8 -*-
 
-# Retentive Network: A Successor to Transformer for Large Language Models"[https://arxiv.org/pdf/2307.08621.pdf]
-
-from __future__ import annotations
-
-from locale import normalize
-
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from fla.modules import FusedRMSNormSwishGate, RMSNorm
 from fla.modules.featue_map import HedgehogFeatureMap, T2RFeatureMap
 from fla.modules.rotary import RotaryEmbedding
-from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn
-from torch import normal
+from fla.ops.linear_attn import (chunk_linear_attn, fused_chunk_linear_attn,
+                                 fused_recurrent_linear_attn)
 
 
 class LinearAttention(nn.Module):
@@ -40,7 +34,7 @@ class LinearAttention(nn.Module):
         self.value_dim = int(d_model * expand_v)
         self.num_heads = num_heads
 
-        assert mode in ['chunk', 'fused_chunk'], f"Not suppoerted mode `{mode}`."
+        assert mode in ['chunk', 'fused_chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
 
@@ -96,12 +90,14 @@ class LinearAttention(nn.Module):
             o = chunk_linear_attn(q, k, v, normalize=self.normalize_output)
         elif mode == 'fused_chunk':
             o = fused_chunk_linear_attn(q, k, v, normalize=self.normalize_output)
+        elif mode == 'fused_recurrent':
+            o = fused_recurrent_linear_attn(q, k, v, normalize=self.normalize_output)
         else:
             raise NotImplementedError
         o = rearrange(o, 'b h n d -> b n (h d)')
         o = self.o_proj(o)
         return o
-
+    
 
 if __name__ == '__main__':
     import torch
@@ -115,5 +111,3 @@ if __name__ == '__main__':
     print(y.shape)
     y.sum().backward()
     print(x.grad.shape)
-    print(x.grad.shape)
-
