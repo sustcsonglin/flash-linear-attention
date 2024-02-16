@@ -47,8 +47,8 @@ class RetNetBlock(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.retnet_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
-        self.retnet = MultiScaleRetention(
+        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.attn = MultiScaleRetention(
             d_model=config.hidden_size,
             expand_k=config.expand_k,
             expand_v=config.expand_v,
@@ -80,12 +80,9 @@ class RetNetBlock(nn.Module):
         # currently not supported
         attn_weights, present_key_value = None, None
 
-        hidden_states = self.retnet_norm(hidden_states)
-        hidden_states = self.retnet(hidden_states)
-        hidden_states = residual + hidden_states
-
-        residual = hidden_states
-        hidden_states = self.mlp_norm(hidden_states)
+        hidden_states = self.attn_norm(hidden_states)
+        hidden_states = self.attn(hidden_states)
+        hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
