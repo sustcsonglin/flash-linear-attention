@@ -31,4 +31,27 @@ class T2RFeatureMap(nn.Module):
         
     def forward(self, x: torch.Tensor):
         return self.layer(x).relu()  
+
+# https://arxiv.org/abs/2102.11174
+class DPFPFeatureMap(nn.Module):
+    def __init__(self, head_dim: int, nu: int = 1):
+        super().__init__()
+        self.nu = nu
         
+    def forward(self, x: torch.Tensor):
+        x = torch.cat([x.relu(), -x.relu()], dim=-1)
+        x_rolled = torch.cat([x.roll(shifts=j, dims=-1) for j in range(1, self.nu+1)], dim=-1)
+        x_repeat = torch.cat([x] * self.nu, dim=-1)
+        return x_repeat * x_rolled
+
+
+class HadamardFeatureMap(nn.Module):
+    def __init__(self, head_dim: int):
+        super().__init__()
+        # Trainable map
+        self.layer1 = nn.Linear(head_dim, head_dim)
+        self.layer2 = nn.Linear(head_dim, head_dim)
+        
+    def forward(self, x: torch.Tensor):        
+        return self.layer1(x) * self.layer2(x)    
+    

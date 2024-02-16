@@ -274,8 +274,7 @@ def fused_recurrent_linear_attn(q: torch.Tensor,
     o, final_state = FusedRecurrentLinearAttentionFunction.apply(
         q, k, v, initial_state, output_final_state)
     if normalize:
-        o
-    
+        o = normalize_output(q, k, o)
     if output_final_state:
         return o, final_state
     else:

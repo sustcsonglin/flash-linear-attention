@@ -4,7 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from fla.modules import FusedRMSNormSwishGate, RMSNorm
-from fla.modules.featue_map import HedgehogFeatureMap, T2RFeatureMap
+from fla.modules.featue_map import (DPFPFeatureMap, HadamardFeatureMap,
+                                    HedgehogFeatureMap, T2RFeatureMap)
 from fla.modules.rotary import RotaryEmbedding
 from fla.ops.linear_attn import (chunk_linear_attn, fused_chunk_linear_attn,
                                  fused_recurrent_linear_attn)
@@ -18,15 +19,20 @@ class LinearAttention(nn.Module):
         expand_v: str = 1.0,
         num_heads: str = 8,
         mode: str = 'chunk',
-        feature_map: str = 'hedgedog',
+        feature_map: str = 'elementwise_product',
         tie_feature_map_qk: bool = False,
-        normalize_output: bool = True,
+        output_norm: str = 'rmsnorm',
+        # standard linear attention normalization
+        do_feature_map_norm: bool = False,
         *args,
         **kwargs,
     ):
         super().__init__()
 
-        assert feature_map in ['elu', 'relu', 'hedgehog', 't2r', 'identity'], f"Not supported feature map `{feature_map}`."
+        assert feature_map in ['elu', 'relu', 'hedgehog', 't2r', 'dplp',
+                               'identity', 'elementwise_product'], f"Not supported feature map `{feature_map}`."
+
+        assert output_norm in ['rmsnorm', 'identity'], f"Not supported output norm `{output_norm}`."
 
         self.d_model = d_model
         self.mode = mode
@@ -55,6 +61,17 @@ class LinearAttention(nn.Module):
                 self.feature_map_q = T2RFeatureMap(head_dim=self.head_qk_dim)
                 self.feature_map_k = T2RFeatureMap(head_dim=self.head_qk_dim)
 
+        elif feature_map == 'elementwise_product':
+            if tie_feature_map_qk:
+                self.feature_map_q = self.feature_map_k = HadamardFeatureMap(head_dim=self.head_qk_dim)
+            else:
+                self.feature_map_q = HadamardFeatureMap(head_dim=self.head_qk_dim)
+                self.feature_map_k = HadamardFeatureMap(head_dim=self.head_qk_dim)
+            
+        elif feature_map == 'dpfp':
+            self.feature_map_q = DPFPFeatureMap(head_dim=self.head_qk_dim)
+            self.feature_map_k = DPFPFeatureMap(head_dim=self.head_qk_dim)
+
         elif feature_map == 'elu':
             def elu(x):
                 return F.elu(x) + 1
@@ -68,11 +85,17 @@ class LinearAttention(nn.Module):
         elif feature_map == 'identity':
             self.feature_map_q = nn.Identity()
             self.feature_map_k = nn.Identity()
-        
         else:
             raise NotImplementedError
         
-        self.normalize_output = normalize_output
+        self.do_feature_map_norm = do_feature_map_norm
+        if output_norm == 'rmsnorm':
+            self.norm = RMSNorm(self.head_v_dim)
+        elif output_norm == 'identity':
+            self.norm = nn.Identity()
+        else:
+            raise NotImplemented
+
         self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
@@ -87,17 +110,17 @@ class LinearAttention(nn.Module):
         q = self.feature_map_q(q)
         k = self.feature_map_k(k)
         if mode == 'chunk':
-            o = chunk_linear_attn(q, k, v, normalize=self.normalize_output)
+            o = chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
         elif mode == 'fused_chunk':
-            o = fused_chunk_linear_attn(q, k, v, normalize=self.normalize_output)
+            o = fused_chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
         elif mode == 'fused_recurrent':
-            o = fused_recurrent_linear_attn(q, k, v, normalize=self.normalize_output)
+            o = fused_recurrent_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
         else:
             raise NotImplementedError
+        o = self.norm(o)
         o = rearrange(o, 'b h n d -> b n (h d)')
         o = self.o_proj(o)
         return o
-    
 
 if __name__ == '__main__':
     import torch
@@ -106,7 +129,7 @@ if __name__ == '__main__':
     d_model = 1024
     x = torch.randn(batch, seq_len, d_model).to(
         torch.bfloat16).cuda().requires_grad_(True)
-    model = LinearAttention(d_model=d_model, feature_map='hedgedog').to(torch.bfloat16).cuda()
+    model = LinearAttention(d_model=d_model, feature_map='dplp').to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)
     y.sum().backward()
