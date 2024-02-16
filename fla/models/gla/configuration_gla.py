@@ -14,7 +14,7 @@ class GLAConfig(PretrainedConfig):
         self,
         vocab_size: int = 32000,
         hidden_size: int = 2048,
-        expand_k: int = 1,
+        expand_k: int = 0.5,
         expand_v: int = 1,
         intermediate_size: int = 5632,
         num_hidden_layers: int = 24,
@@ -31,6 +31,7 @@ class GLAConfig(PretrainedConfig):
         eos_token_id: int = 0,
         tie_word_embeddings: bool = False,
         fuse_norm: bool = True,
+        fuse_cross_entropy: bool = True,
         **kwargs
     ):
         self.vocab_size = vocab_size
@@ -53,6 +54,7 @@ class GLAConfig(PretrainedConfig):
         self.use_gv = use_gv
         self.use_cache = use_cache
         self.fuse_norm = fuse_norm
+        self.fuse_cross_entropy = fuse_cross_entropy
 
         super().__init__(
             pad_token_id=pad_token_id,

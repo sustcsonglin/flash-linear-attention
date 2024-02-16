@@ -6,9 +6,8 @@ import warnings
 from typing import List, Optional, Tuple, Union
 
 import torch
+import torch.nn as nn
 import torch.utils.checkpoint
-from torch import nn
-from torch.nn import CrossEntropyLoss
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
@@ -18,7 +17,7 @@ from transformers.utils import logging
 
 from fla.layers.gla import GatedLinearAttention
 from fla.models.gla.configuration_gla import GLAConfig
-from fla.modules import RMSNorm
+from fla.modules import FusedCrossEntropyLoss, RMSNorm
 
 logger = logging.get_logger(__name__)
 
@@ -322,7 +321,7 @@ class GLAForCausalLM(GLAPreTrainedModel):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = CrossEntropyLoss()
+            loss_fct = FusedCrossEntropyLoss() if self.config.fuse_cross_entropy else nn.CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
             # Enable model parallelism
