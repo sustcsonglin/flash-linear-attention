@@ -18,6 +18,7 @@ from transformers.utils import logging
 from fla.layers.multiscale_retention import MultiScaleRetention
 from fla.models.retnet.configuration_retnet import RetNetConfig
 from fla.modules import FusedCrossEntropyLoss, RMSNorm
+from fla.modules.activations import swiglu
 
 logger = logging.get_logger(__name__)
 
@@ -33,13 +34,16 @@ class RetNetMLP(nn.Module):
 
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
     def forward(self, x):
-        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        y = self.gate_proj(x)
+        gate, y = y.chunk(2, -1)
+        y = swiglu(gate, y)
+        y = self.down_proj(y)
+        return y
 
 
 class RetNetBlock(nn.Module):
@@ -73,6 +77,7 @@ class RetNetBlock(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        residual: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
@@ -336,7 +341,3 @@ class RetNetForCausalLM(RetNetPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-
-
-def llama_hook(self, prefix, keep_vars):
-    print(type(self))

@@ -18,6 +18,7 @@ from transformers.utils import logging
 from fla.layers.gla import GatedLinearAttention
 from fla.models.gla.configuration_gla import GLAConfig
 from fla.modules import FusedCrossEntropyLoss, RMSNorm
+from fla.modules.activations import swiglu
 
 logger = logging.get_logger(__name__)
 
@@ -33,13 +34,16 @@ class GLAMLP(nn.Module):
 
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
     def forward(self, x):
-        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        y = self.gate_proj(x)
+        gate, y = y.chunk(2, -1)
+        y = swiglu(gate, y)
+        y = self.down_proj(y)
+        return y
 
 
 class GLABlock(nn.Module):
@@ -336,7 +340,3 @@ class GLAForCausalLM(GLAPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-
-
-def llama_hook(self, prefix, keep_vars):
-    print(type(self))
