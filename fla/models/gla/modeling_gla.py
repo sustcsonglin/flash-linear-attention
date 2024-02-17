@@ -59,6 +59,7 @@ class GLABlock(nn.Module):
             num_heads=config.num_attention_heads,
             gate_fn=config.hidden_act,
             layernorm_eps=config.rms_norm_eps,
+            clamp_min=config.clamp_min,
             fuse_norm=config.fuse_norm,
             layer_idx=layer_idx
         )

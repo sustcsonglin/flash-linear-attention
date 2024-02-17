@@ -20,6 +20,7 @@ class GLAConfig(PretrainedConfig):
         num_hidden_layers: int = 24,
         num_attention_heads: int = 8,
         num_key_value_heads: Optional[int] = None,
+        clamp_min: Optional[float] = None,
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
         rms_norm_eps: float = 1e-6,
@@ -48,6 +49,7 @@ class GLAConfig(PretrainedConfig):
             num_key_value_heads = num_attention_heads
 
         self.num_key_value_heads = num_key_value_heads
+        self.clamp_min = clamp_min
         self.hidden_act = hidden_act
         self.rms_norm_eps = rms_norm_eps
         self.use_gk = use_gk

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -27,6 +29,7 @@ class GatedLinearAttention(nn.Module):
         gate_logit_normalizer: int = 16,
         gate_low_rank_dim: int = 16,
         mode: str = 'fused_chunk',
+        clamp_min: Optional[float] = None,
         fuse_norm: bool = True,
         *args, **kwargs
     ) -> GatedLinearAttention:
@@ -36,6 +39,8 @@ class GatedLinearAttention(nn.Module):
         self.mode = mode
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
+        self.clamp_min = clamp_min
+
         assert mode in ['chunk', 'fused_recurrent', 'fused_chunk'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
@@ -82,6 +87,8 @@ class GatedLinearAttention(nn.Module):
         gk = rearrange(self.gk_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         gk = (F.logsigmoid(gk) / self.gate_logit_normalizer)
 
+        if self.clamp_min is not None:
+            gk = torch.clamp_min(gk, self.clamp_min)
         if mode == 'fused_recurrent':
             o = fused_recurrent_gla(q, k, v, gk, None)
         elif mode == 'fused_chunk':
@@ -119,10 +126,8 @@ if __name__ == '__main__':
     # print(x.grad.shape)
 
     for act in ['swish']:
-        org = GatedLinearAttention(
-            d_model=d_model, gate_fn=act, fuse_norm=False).to(torch.bfloat16).cuda()
-        fused = GatedLinearAttention(
-            d_model=d_model, gate_fn=act, fuse_norm=True).to(torch.bfloat16).cuda()
+        org = GatedLinearAttention(d_model=d_model, gate_fn=act, fuse_norm=False).to(torch.bfloat16).cuda()
+        fused = GatedLinearAttention(d_model=d_model, gate_fn=act, fuse_norm=True).to(torch.bfloat16).cuda()
         fused.q_proj.weight.data.copy_(org.q_proj.weight.data)
         fused.k_proj.weight.data.copy_(org.k_proj.weight.data)
         fused.v_proj.weight.data.copy_(org.v_proj.weight.data)
