@@ -16,10 +16,11 @@ class GLAConfig(PretrainedConfig):
         hidden_size: int = 2048,
         expand_k: int = 0.5,
         expand_v: int = 1,
-        intermediate_size: int = 5632,
+        intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
         num_attention_heads: int = 8,
         num_key_value_heads: Optional[int] = None,
+        attn_mode: str = "fused_chunk",
         clamp_min: Optional[float] = None,
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
@@ -49,6 +50,7 @@ class GLAConfig(PretrainedConfig):
             num_key_value_heads = num_attention_heads
 
         self.num_key_value_heads = num_key_value_heads
+        self.attn_mode = attn_mode
         self.clamp_min = clamp_min
         self.hidden_act = hidden_act
         self.rms_norm_eps = rms_norm_eps

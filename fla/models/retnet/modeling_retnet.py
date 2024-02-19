@@ -27,13 +27,20 @@ class RetNetMLP(nn.Module):
     def __init__(
         self,
         hidden_size: int,
-        intermediate_size: int,
+        intermediate_size: Optional[int] = None,
         hidden_act: str = 'swish'
     ) -> RetNetMLP:
         super().__init__()
 
         self.hidden_size = hidden_size
+        # the final number of params is 4d^2, where d is the hidden size
+        # `intermediate_size` is chosen to be (roughly) 2/3 of `hidden_size * hidden_ratio`, and a multiple of 256
+        if intermediate_size is None:
+            hidden_ratio, multiple_of = 4, 256
+            intermediate_size = int(hidden_size * hidden_ratio * 2 / 3)
+            intermediate_size = multiple_of * ((intermediate_size + multiple_of - 1) // multiple_of)
         self.intermediate_size = intermediate_size
+
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
@@ -59,6 +66,7 @@ class RetNetBlock(nn.Module):
             num_heads=config.num_attention_heads,
             gate_fn=config.hidden_act,
             layernorm_eps=config.rms_norm_eps,
+            mode=config.attn_mode,
             fuse_norm=config.fuse_norm,
             layer_idx=layer_idx
         )
