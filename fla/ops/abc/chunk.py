@@ -72,12 +72,12 @@ def chunk_abc_fwd_kernel_h(
     BK: tl.constexpr,
     BV: tl.constexpr,
     NT: tl.constexpr,
-    NORMQ: tl.constexpr
+    NORMK: tl.constexpr
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
-    b_zp = tl.zeros([BK if NORMQ else BV], dtype=tl.float32)
+    b_zp = tl.zeros([BK if NORMK else BV], dtype=tl.float32)
     for i_t in range(NT):
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
@@ -88,10 +88,10 @@ def chunk_abc_fwd_kernel_h(
         b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BT, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
-        if NORMQ:
+        if NORMK:
             p_zc = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + BT - 1) * K + i_k * BK,), (BK,), (0,))
             # [BK,]
-            b_zc = tl.load(p_zc, boundary_check=(0,)).to(tl.float32)
+            b_zc = tl.load(p_zc, boundary_check=(0,))
             if i_t == 0:
                 b_zp = b_zc
             b_r, b_zp = tl.exp(b_zp - b_zc), b_zc
@@ -101,7 +101,7 @@ def chunk_abc_fwd_kernel_h(
         else:
             p_zc = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), ((i_t * BT + BT - 1) * V + i_v * BV,), (BV,), (0,))
             # [BV,]
-            b_zc = tl.load(p_zc, boundary_check=(0,)).to(tl.float32)
+            b_zc = tl.load(p_zc, boundary_check=(0,))
             if i_t == 0:
                 b_zp = b_zc
             b_r, b_zp = tl.exp(b_zp - b_zc), b_zc
@@ -134,7 +134,7 @@ def chunk_abc_fwd_kernel_intra_K(
     p_z = tl.make_block_ptr(z + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
     p_zn = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), ((i_t * BT + i_i * BC) * V + i_v * BV,), (BV,), (0,))
     # [BV,]
-    b_zn = tl.load(p_zn, boundary_check=(0,)).to(tl.float32)
+    b_zn = tl.load(p_zn, boundary_check=(0,))
     # [BC, BV]
     b_z = tl.load(p_z, boundary_check=(0, 1))
     b_o = tl.zeros([BC, BV], dtype=tl.float32)
@@ -218,7 +218,7 @@ def chunk_abc_fwd_kernel_K(
     # [BT, BV]
     b_z = tl.load(p_z, boundary_check=(0, 1))
     # [BV,]
-    b_zp = tl.load(p_zp, boundary_check=(0,)).to(tl.float32)
+    b_zp = tl.load(p_zp, boundary_check=(0,))
     # [BT, BV]
     if i_t > 0:
         b_o = b_o * tl.exp(b_zp[None, :] - b_z) * scale
@@ -258,7 +258,7 @@ def chunk_abc_fwd_kernel_intra_V(
         p_A = tl.make_block_ptr(A + (i_bh+i_k*n_bh)*T*BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
         p_zn = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_i * BC) * K + i_k * BK,), (BK,), (0,))
         # [BK,]
-        b_zn = tl.load(p_zn, boundary_check=(0,)).to(tl.float32)
+        b_zn = tl.load(p_zn, boundary_check=(0,))
         # [BC, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_z = tl.load(p_z, boundary_check=(0, 1))
@@ -330,7 +330,7 @@ def chunk_abc_fwd_kernel_V(
         b_z = tl.load(p_z, boundary_check=(0, 1))
         # [BT, BK]
         if i_t > 0:
-            b_zp = tl.load(p_zp, boundary_check=(0,)).to(tl.float32)
+            b_zp = tl.load(p_zp, boundary_check=(0,))
             b_q = (b_q * tl.exp(b_zp[None, :] - b_z)).to(b_q.dtype)
         # [BK, BV]
         b_h = tl.load(p_h, boundary_check=(0, 1))
@@ -413,12 +413,12 @@ def chunk_abc_bwd_kernel_dh(
     BV: tl.constexpr,
     NT: tl.constexpr,
     SCALE: tl.constexpr,
-    NORMQ: tl.constexpr
+    NORMK: tl.constexpr
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
-    b_zp = tl.full([BK if NORMQ else BV], float('inf'), dtype=tl.float32)
+    b_zp = tl.full([BK if NORMK else BV], float('inf'), dtype=tl.float32)
     for i_t in range(NT - 1, -1, -1):
         p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
@@ -432,11 +432,11 @@ def chunk_abc_bwd_kernel_dh(
         tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
         if SCALE:
             b_do = (b_do * scale).to(b_do.dtype)
-        if NORMQ:
+        if NORMK:
             p_z = tl.make_block_ptr(z + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
             p_zc = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT - 1) * K + i_k * BK,), (BK,), (0,))
             # [BK,]
-            b_zc = tl.load(p_zc, boundary_check=(0,)).to(tl.float32)
+            b_zc = tl.load(p_zc, boundary_check=(0,))
             b_r, b_zp = tl.exp(b_zc - b_zp), b_zc
             # [BK, BT]
             b_z = tl.load(p_z, boundary_check=(0, 1))
@@ -447,10 +447,10 @@ def chunk_abc_bwd_kernel_dh(
             p_z = tl.make_block_ptr(z + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
             p_zc = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), ((i_t * BT - 1) * V + i_v * BV,), (BV,), (0,))
             # [BV,]
-            b_zc = tl.load(p_zc, boundary_check=(0,)).to(tl.float32)
+            b_zc = tl.load(p_zc, boundary_check=(0,))
             b_r, b_zp = tl.exp(b_zc - b_zp), b_zc
             # [BT, BV]
-            b_z = tl.load(p_z, boundary_check=(0,)).to(tl.float32)
+            b_z = tl.load(p_z, boundary_check=(0,))
             b_do = (b_do * tl.exp(b_zc[None, :] - b_z)).to(b_do.dtype)
             # [BK, BV]
             b_dh = b_dh * b_r[None, :]
@@ -495,7 +495,7 @@ def chunk_abc_bwd_kernel_V(
     p_A = tl.make_block_ptr(A + i_bh * T * BT, (BT, T), (1, BT), (0, i_t * BT), (BT, BT), (0, 1))
 
     # [BK,]
-    b_zc = tl.load(p_zc, boundary_check=(0,)).to(tl.float32)
+    b_zc = tl.load(p_zc, boundary_check=(0,))
     # [BT, BK]
     b_k = tl.load(p_k, boundary_check=(0, 1))
     b_k = tl.exp(b_k - b_zc[None, :]).to(b_k.dtype)
@@ -534,9 +534,9 @@ def chunk_abc_bwd_kernel_V(
     p_zp = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT - 1) * K + i_k * BK,), (BK,), (0,))
     if i_t > 0:
         # [BK,]
-        b_zp = tl.load(p_zp, boundary_check=(0,)).to(tl.float32)
+        b_zp = tl.load(p_zp, boundary_check=(0,))
         # [BT, BK]
-        b_z = tl.load(p_z, boundary_check=(0, 1)).to(tl.float32)
+        b_z = tl.load(p_z, boundary_check=(0, 1))
         b_z = tl.exp(b_zp[None, :] - b_z)
         # [BT, BK]
         b_dq = b_dq * b_z
@@ -582,7 +582,7 @@ def chunk_abc_bwd_kernel_intra_V(
     p_z = tl.make_block_ptr(z + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     p_zn = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_i * BC) * K + i_k * BK,), (BK,), (0,))
     # [BK,]
-    b_zn = tl.load(p_zn, boundary_check=(0,)).to(tl.float32)
+    b_zn = tl.load(p_zn, boundary_check=(0,))
     # [BC, BK]
     b_z = tl.load(p_z, boundary_check=(0, 1))
     b_zq = tl.exp(b_zn[None, :] - b_z)
@@ -654,7 +654,7 @@ def chunk_abc_bwd_kernel_intra_K(
         p_dA = tl.make_block_ptr(dA+(i_bh+i_v*n_bh)*T*BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
         p_zn = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), ((i_t * BT + i_i * BC) * V + i_v * BV,), (BV,), (0,))
         # [BV,]
-        b_zn = tl.load(p_zn, boundary_check=(0,)).to(tl.float32)
+        b_zn = tl.load(p_zn, boundary_check=(0,))
         # [BC, BV]
         b_do = tl.load(p_do, boundary_check=(0, 1))
         b_z = tl.load(p_z, boundary_check=(0, 1))
@@ -749,8 +749,8 @@ def chunk_abc_bwd_kernel_K(
         p_dv = tl.make_block_ptr(dv + (i_k*n_bh+i_bh) * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
 
         # [BV,]
-        b_zp = tl.load(p_zp, boundary_check=(0,)).to(tl.float32)
-        b_zc = tl.load(p_zc, boundary_check=(0,)).to(tl.float32)
+        b_zp = tl.load(p_zp, boundary_check=(0,))
+        b_zc = tl.load(p_zc, boundary_check=(0,))
         # [BT, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_v = tl.exp(b_v - b_zc[None, :]).to(b_v.dtype)
@@ -807,7 +807,7 @@ def chunk_abc_bwd_kernel_intra_KV(
     p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
     p_zn = tl.make_block_ptr(z + i_bh * s_v_h, (T*V,), (s_v_d,), ((i_t * BT + i_i * BC + BC - 1) * V + i_v * BV,), (BV,), (0,))
     # [BV,]
-    b_zn = tl.load(p_zn, boundary_check=(0,)).to(tl.float32)
+    b_zn = tl.load(p_zn, boundary_check=(0,))
     # [BC, BV]
     b_v = tl.load(p_v, boundary_check=(0, 1))
     b_dv = tl.zeros([BC, BV], dtype=tl.float32)
@@ -818,7 +818,7 @@ def chunk_abc_bwd_kernel_intra_KV(
         # [BC, BV]
         b_z = tl.load(p_z, boundary_check=(0, 1))
         b_do = tl.load(p_do, boundary_check=(0, 1))
-        b_do = (b_do * tl.exp(b_zn[None, :] - b_z)).to(b_z.dtype)
+        b_do = (b_do * tl.exp(b_zn[None, :] - b_z)).to(b_do.dtype)
         # [BC, BC]
         b_A = tl.load(p_A, boundary_check=(0, 1))
         b_dv += tl.dot(b_A, b_do, allow_tf32=False)
@@ -832,7 +832,7 @@ def chunk_abc_bwd_kernel_intra_KV(
         # [BC,]
         b_A = tl.load(p_A, boundary_check=(0,))
         # [BV,]
-        b_z = tl.load(p_z, boundary_check=(0,)).to(tl.float32)
+        b_z = tl.load(p_z, boundary_check=(0,))
         b_do = tl.load(p_do, boundary_check=(0,))
         # [BC, BV]
         m_i = o_i[:, None] <= j
@@ -867,7 +867,7 @@ def chunk_abc_bwd_kernel_rcum_inter(
         p_ss = tl.make_block_ptr(ss + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_m * BS), (BT, BS), (1, 0))
         p_doo = tl.make_block_ptr(doo + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_m * BS), (BT, BS), (1, 0))
         # [BS,]
-        b_zc = tl.load(p_zc, boundary_check=(0,)).to(tl.float32)
+        b_zc = tl.load(p_zc, boundary_check=(0,))
         # [BT, BS]
         b_s = tl.load(p_s, boundary_check=(0, 1))
         b_z = tl.load(p_z, boundary_check=(0, 1))
@@ -908,7 +908,7 @@ def chunk_abc_bwd_kernel_rcum_intra(
     # [BC, BS]
     b_s = tl.load(p_s, boundary_check=(0, 1))
     # [BS,]
-    b_zn = tl.load(p_zn, boundary_check=(0,)).to(tl.float32)
+    b_zn = tl.load(p_zn, boundary_check=(0,))
 
     b_doo = tl.zeros([BC, BS], dtype=tl.float32)
     for i_j in range(i_i + 1, NC):
@@ -925,7 +925,7 @@ def chunk_abc_bwd_kernel_rcum_intra(
         p_z = tl.make_block_ptr(z + i_bh * s_s_h, (T * S,), (1,), ((i_t * BT + i_i * BC + j) * S + i_s * BS,), (BS,), (0,))
         p_ss = tl.make_block_ptr(ss + i_bh * s_s_h, (T * S,), (1,), ((i_t * BT + i_i * BC + j) * S + i_s * BS,), (BS,), (0,))
         # [BS,]
-        b_z = tl.load(p_z, boundary_check=(0,)).to(tl.float32)
+        b_z = tl.load(p_z, boundary_check=(0,))
         b_ss = tl.load(p_ss, boundary_check=(0,))
         # [BC, BS]
         m_i = o_i[:, None] <= j
@@ -950,9 +950,10 @@ class ChunkABCFunction(torch.autograd.Function):
         num_warps = 4 if BK == 64 else 2
         num_stages = 1
 
-        def fwd_inner(q, k, v, s, B, H, T, K, V, BT, BK, BV, NT, normq=False):
+        def fwd_inner(q, k, v, s, B, H, T, K, V, BT, BK, BV, NT, normk=False):
             NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
-            z = torch.empty_like(s)
+            # keep cummulative normalizer in fp32
+            z = torch.empty_like(s, dtype=torch.float)
             grid = (NM, B * H)
             logcumsumexp_kernel[grid](
                 s, z,
@@ -969,7 +970,7 @@ class ChunkABCFunction(torch.autograd.Function):
                 v.stride(1), v.stride(2), v.stride(3),
                 h.stride(1), h.stride(2), h.stride(3),
                 T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-                NORMQ=normq,
+                NORMK=normk,
                 num_warps=num_warps,
                 num_stages=num_stages
             )
@@ -978,7 +979,7 @@ class ChunkABCFunction(torch.autograd.Function):
         zk, hk = fwd_inner(
             q=q, k=k, v=sk, s=sk,
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, NT=NT,
-            normq=False
+            normk=False
         )
         s_inter = torch.empty_like(sk)
         Ak = q.new_empty(B, H, T, BT)
@@ -1008,7 +1009,7 @@ class ChunkABCFunction(torch.autograd.Function):
         zv, hv = fwd_inner(
             q=p, k=sv, v=v, s=sv,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
-            normq=True
+            normk=True
         )
         Av = q.new_zeros(NM, B, H, T, BT)
         grid = (NM, NT * NC * NC, B * H)
@@ -1049,7 +1050,7 @@ class ChunkABCFunction(torch.autograd.Function):
         num_warps = 4 if BK == 64 else 2
         num_stages = 1
 
-        def bwd_inner(q, z, do, B, H, T, K, V, BT, BK, BV, NT, scale=None, normq=False):
+        def bwd_inner(q, z, do, B, H, T, K, V, BT, BK, BV, NT, scale=None, normk=False):
             NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
             dh = q.new_empty(B, H, NT * K, V)
             grid = (NK, NV, B * H)
@@ -1061,7 +1062,7 @@ class ChunkABCFunction(torch.autograd.Function):
                 scale,
                 T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
                 SCALE=(scale is not None),
-                NORMQ=normq,
+                NORMK=normk,
                 num_warps=2,
                 num_stages=num_stages
             )
@@ -1091,10 +1092,10 @@ class ChunkABCFunction(torch.autograd.Function):
             p, zv, do,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
             scale=None,
-            normq=True
+            normk=True
         )
         dp_inter = torch.empty_like(p)
-        dsv_inter = torch.empty_like(sv)
+        dsv_inter = torch.empty_like(sv, dtype=torch.float)
         dv = v.new_empty(NM, *v.shape)
         dAv = q.new_zeros(B, H, T, BT)
         grid = (NM, NT, B * H)
@@ -1109,7 +1110,7 @@ class ChunkABCFunction(torch.autograd.Function):
         )
         dv = dv.sum(0)
         dp_intra = torch.empty_like(p)
-        dsv_intra = sv.new_zeros(NC, *sv.shape)
+        dsv_intra = sv.new_zeros(NC, *sv.shape, dtype=torch.float)
         grid = (NM, NT * NC, B * H)
         chunk_abc_bwd_kernel_intra_V[grid](
             p, sv, zv, dAv, dp_intra, dsv_intra,
@@ -1136,7 +1137,7 @@ class ChunkABCFunction(torch.autograd.Function):
             q, zk, ds,
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, NT=NT,
             scale=scale,
-            normq=False
+            normk=False
         )
         dAk = q.new_zeros(NM, B, H, T, BT)
         grid = (NM, NT * NC * NC, B * H)
@@ -1153,7 +1154,7 @@ class ChunkABCFunction(torch.autograd.Function):
         Ak = q.new_zeros(NK, B, H, T, BT)
         dq = torch.empty_like(q)
         dk = torch.empty_like(k)
-        dsk_inter = sk.new_empty(NK, *sk.shape)
+        dsk_inter = sk.new_empty(NK, *sk.shape, dtype=torch.float)
         grid = (NK, NT, B * H)
         chunk_abc_bwd_kernel_K[grid](
             q, k, sk, hk, zk, Ak, ds, dhk, dq, dk, dsk_inter, dAk,
@@ -1167,7 +1168,7 @@ class ChunkABCFunction(torch.autograd.Function):
         )
         Ak = Ak.sum(0)
         dsk_inter = dsk_inter.sum(0)
-        dsk_intra = torch.empty_like(sk)
+        dsk_intra = torch.empty_like(sk, dtype=torch.float)
         grid = (NM, NT * NC, B * H)
         chunk_abc_bwd_kernel_intra_KV[grid](
             sk, zk, Ak, ds, dsk_intra,
@@ -1180,6 +1181,8 @@ class ChunkABCFunction(torch.autograd.Function):
 
         dsk -= bwd_post(sk, zk, s * ds, B, H, T, M, BT, BC, BM, NT, NC, NM)
         dsv -= bwd_post(sv, zv, p * dp, B, H, T, M, BT, BC, BM, NT, NC, NM)
+        dsk = dsk.to(sk.dtype)
+        dsv = dsv.to(sv.dtype)
         return dq, dk, dv, dsk, dsv
 
 
