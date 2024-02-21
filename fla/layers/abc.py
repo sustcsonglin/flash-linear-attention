@@ -63,11 +63,7 @@ class ABCAttention(nn.Module):
         self.o_proj = nn.Linear(self.hidden_size, self.val_dim, bias=False)
 
         self.g_norm = FusedRMSNormSwishGate(self.head_v_dim)
-        self.sk_proj = nn.Sequential(
-            nn.Linear(self.hidden_size, self.gate_low_rank_dim, bias=False),
-            nn.Linear(self.gate_low_rank_dim, self.num_heads * self.num_slots, bias=True)
-        )
-        self.sv_proj = nn.Sequential(
+        self.s_proj = nn.Sequential(
             nn.Linear(self.hidden_size, self.gate_low_rank_dim, bias=False),
             nn.Linear(self.gate_low_rank_dim, self.num_heads * self.num_slots, bias=True)
         )
@@ -82,10 +78,8 @@ class ABCAttention(nn.Module):
         nn.init.xavier_uniform_(self.v_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.o_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.sk_proj[0].weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.sk_proj[1].weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.sv_proj[0].weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.sv_proj[1].weight, gain=2 ** -2.5)
+        nn.init.xavier_uniform_(self.s_proj[0].weight, gain=2 ** -2.5)
+        nn.init.xavier_uniform_(self.s_proj[1].weight, gain=2 ** -2.5)
 
     def forward(
         self,
@@ -129,10 +123,9 @@ class ABCAttention(nn.Module):
             v = v.to(self.config.torch_dtype)
 
         # [batch_size, n_heads, seq_len, num_slots]
-        sk = rearrange(self.sk_proj(hidden_states), 'b t (h m) -> b h t m', h=self.num_heads)
-        sv = rearrange(self.sv_proj(hidden_states), 'b t (h m) -> b h t m', h=self.num_heads)
+        s = rearrange(self.s_proj(hidden_states), 'b t (h m) -> b h t m', h=self.num_heads)
 
-        o = chunk_abc(q, k, v, sk.clamp_(self.clamp_min, self.clamp_max), sv.clamp_(self.clamp_min, self.clamp_max))
+        o = chunk_abc(q, k, v, s.clamp_(self.clamp_min, self.clamp_max))
         o = rearrange(o, 'b h t d -> b t h d')
         g = rearrange(self.g_proj(hidden_states), 'b t (h d) -> b t h d', h=self.num_heads)
         o = rearrange(self.g_norm(o, g), 'b t h d -> b t (h d)')

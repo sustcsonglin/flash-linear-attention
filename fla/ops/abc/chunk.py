@@ -943,8 +943,8 @@ class ChunkABCFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    def forward(ctx, q, k, v, sk, sv):
-        B, H, T, K, V, M = *q.shape, v.shape[-1], sk.shape[-1]
+    def forward(ctx, q, k, v, s):
+        B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
         BT, BC = 64, 16
         BK = min(64, triton.next_power_of_2(K))
         BV = min(64, triton.next_power_of_2(V))
@@ -956,18 +956,8 @@ class ChunkABCFunction(torch.autograd.Function):
         num_stages = 1
         assert M % 64 == 0, "For efficiency, M must be a multiple of 64."
 
-        def fwd_inner(q, k, v, s, B, H, T, K, V, BT, BK, BV, NT, normk=False):
+        def fwd_inner(q, k, v, z, B, H, T, K, V, BT, BK, BV, NT, normk=False):
             NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
-            # keep cummulative normalizer in fp32
-            z = torch.empty_like(s, dtype=torch.float)
-            grid = (NM, B * H)
-            logcumsumexp_kernel[grid](
-                s, z,
-                s.stride(1), s.stride(2), s.stride(3),
-                T=T, S=M, BT=BT, BS=BM, NT=NT,
-                num_warps=num_warps,
-                num_stages=num_stages
-            )
             h = q.new_empty(B, H, NT * K, V)
             grid = (NK, NV, B * H)
             chunk_abc_fwd_kernel_h[grid](
@@ -980,57 +970,68 @@ class ChunkABCFunction(torch.autograd.Function):
                 num_warps=num_warps,
                 num_stages=num_stages
             )
-            return z, h
+            return h
 
-        zk, hk = fwd_inner(
-            q=q, k=k, v=sk, s=sk,
+        # keep cummulative normalizer in fp32
+        z = torch.empty_like(s, dtype=torch.float)
+        grid = (NM, B * H)
+        logcumsumexp_kernel[grid](
+            s, z,
+            s.stride(1), s.stride(2), s.stride(3),
+            T=T, S=M, BT=BT, BS=BM, NT=NT,
+            num_warps=num_warps,
+            num_stages=num_stages
+        )
+
+        hk = fwd_inner(
+            q=q, k=k, v=s, z=z,
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, NT=NT,
             normk=False
         )
-        s_inter = torch.empty_like(sk)
+        ok1 = torch.empty_like(s)
         Ak = q.new_empty(B, H, T, BT)
         grid = (NM, NT, B * H)
         chunk_abc_fwd_kernel_K[grid](
-            q, k, hk, zk, s_inter, Ak,
+            q, k, hk, z, ok1, Ak,
             k.stride(1), k.stride(2), k.stride(3),
-            sk.stride(1), sk.stride(2), sk.stride(3),
+            s.stride(1), s.stride(2), s.stride(3),
             hk.stride(1), hk.stride(2), hk.stride(3),
             scale,
             T=T, K=K, V=M, BT=BT, BK=BK, BV=BM,
             num_warps=num_warps,
             num_stages=num_stages
         )
-        s_intra = torch.empty_like(sk)
+        ok0 = torch.empty_like(s)
         grid = (NM, NT * NC, B * H)
         chunk_abc_fwd_kernel_intra_K[grid](
-            sk, zk, s_intra, Ak,
-            sk.stride(1), sk.stride(2), sk.stride(3),
+            s, z, ok0, Ak,
+            s.stride(1), s.stride(2), s.stride(3),
             T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
             num_warps=2,
             num_stages=num_stages
         )
-        s = s_inter.add_(s_intra)
+        ok = ok0.add_(ok1)
 
-        p = s.softmax(-1, dtype=torch.float).to(q.dtype)
-        zv, hv = fwd_inner(
-            q=p, k=sv, v=v, s=sv,
+        p = ok.softmax(-1, dtype=torch.float).to(q.dtype)
+        hv = fwd_inner(
+            q=p, k=s, v=v, z=z,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
             normk=True
         )
         Av = q.new_zeros(NM, B, H, T, BT)
         grid = (NM, NT * NC * NC, B * H)
         chunk_abc_fwd_kernel_intra_V[grid](
-            p, sv, zv, Av,
-            sv.stride(1), sv.stride(2), sv.stride(3),
+            p, s, z, Av,
+            s.stride(1), s.stride(2), s.stride(3),
             T=T, K=M, BT=BT, BC=BC, BK=BM, NC=NC,
             num_warps=2,
             num_stages=num_stages
         )
         Av = Av.sum(0)
-        o = torch.empty_like(v)
+        ov = torch.empty_like(v)
         grid = (NV, NT, B * H)
         chunk_abc_fwd_kernel_V[grid](
-            p, v, hv, zv, o, Av,
+            p, v, hv, z, ov, Av,
             p.stride(1), p.stride(2), p.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             hv.stride(1), hv.stride(2), hv.stride(3),
@@ -1038,14 +1039,14 @@ class ChunkABCFunction(torch.autograd.Function):
             num_warps=num_warps,
             num_stages=num_stages
         )
-        ctx.save_for_backward(q, k, v, o, s, p, sk, zk, hk, sv, zv, hv, Av)
+        ctx.save_for_backward(q, k, v, s, z, ok, p, ov, hk, hv, Av)
         ctx.BT = BT
-        return o
+        return ov
 
     @staticmethod
     @contiguous
-    def backward(ctx, do):
-        q, k, v, o, s, p, sk, zk, hk, sv, zv, hv, Av = ctx.saved_tensors
+    def backward(ctx, dov):
+        q, k, v, s, z, ok, p, ov, hk, hv, Av = ctx.saved_tensors
         B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
         BT, BC = ctx.BT, 16
         BK = min(64, triton.next_power_of_2(K))
@@ -1095,18 +1096,18 @@ class ChunkABCFunction(torch.autograd.Function):
             return doo
 
         dhv = bwd_inner(
-            p, zv, do,
+            p, z, dov,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
             scale=None,
             normk=True
         )
         dp_inter = torch.empty_like(p)
-        dsv_inter = torch.empty_like(sv, dtype=torch.float)
+        dsv_inter = torch.empty_like(s, dtype=torch.float)
         dv = v.new_empty(NM, *v.shape)
         dAv = q.new_zeros(B, H, T, BT)
         grid = (NM, NT, B * H)
         chunk_abc_bwd_kernel_V[grid](
-            sv, v, hv, zv, Av, do, dhv, dp_inter, dsv_inter, dv, dAv,
+            s, v, hv, z, Av, dov, dhv, dp_inter, dsv_inter, dv, dAv,
             p.stride(1), p.stride(2), p.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             hv.stride(1), hv.stride(2), hv.stride(3),
@@ -1116,31 +1117,31 @@ class ChunkABCFunction(torch.autograd.Function):
         )
         dv = dv.sum(0)
         dp_intra = torch.empty_like(p)
-        dsv_intra = sv.new_zeros(NC, *sv.shape, dtype=torch.float)
+        dsv_intra = s.new_zeros(NC, *s.shape, dtype=torch.float)
         grid = (NM, NT * NC, B * H)
         chunk_abc_bwd_kernel_intra_V[grid](
-            p, sv, zv, dAv, dp_intra, dsv_intra,
+            p, s, z, dAv, dp_intra, dsv_intra,
             p.stride(1), p.stride(2), p.stride(3),
             T=T, K=M, BT=BT, BC=BC, BK=BM, NC=NC,
             num_warps=2,
             num_stages=num_stages
         )
         dp = dp_inter.add_(dp_intra)
-        dsv = dsv_inter.add_(dsv_intra.sum(0))
+        ds = dsv_inter.add_(dsv_intra.sum(0))
 
         # grad of softmax
-        ds = torch.empty_like(p)
+        dok = torch.empty_like(p)
         grid = (NM, NT, B * H)
         softmax_bwd_kernel[grid](
-            p, o, dp, do, ds,
-            o.stride(1), o.stride(2), o.stride(3),
+            p, ov, dp, dov, dok,
+            ov.stride(1), ov.stride(2), ov.stride(3),
             p.stride(1), p.stride(2), p.stride(3),
             T=T, V=V, S=M, BT=BT, BV=BV, BS=BM,
             num_warps=2,
             num_stages=num_stages
         )
         dhk = bwd_inner(
-            q, zk, ds,
+            q, z, dok,
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, NT=NT,
             scale=scale,
             normk=False
@@ -1148,8 +1149,8 @@ class ChunkABCFunction(torch.autograd.Function):
         dAk = q.new_zeros(NM, B, H, T, BT)
         grid = (NM, NT * NC * NC, B * H)
         chunk_abc_bwd_kernel_intra_K[grid](
-            sk, zk, ds, dAk,
-            sv.stride(1), sv.stride(2), sv.stride(3),
+            s, z, dok, dAk,
+            s.stride(1), s.stride(2), s.stride(3),
             scale,
             T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
             num_warps=2,
@@ -1160,12 +1161,12 @@ class ChunkABCFunction(torch.autograd.Function):
         Ak = q.new_zeros(NK, B, H, T, BT)
         dq = torch.empty_like(q)
         dk = torch.empty_like(k)
-        dsk_inter = sk.new_empty(NK, *sk.shape, dtype=torch.float)
+        dsk_inter = s.new_empty(NK, *s.shape, dtype=torch.float)
         grid = (NK, NT, B * H)
         chunk_abc_bwd_kernel_K[grid](
-            q, k, sk, hk, zk, Ak, ds, dhk, dq, dk, dsk_inter, dAk,
+            q, k, s, hk, z, Ak, dok, dhk, dq, dk, dsk_inter, dAk,
             q.stride(1), q.stride(2), q.stride(3),
-            sk.stride(1), sk.stride(2), sk.stride(3),
+            s.stride(1), s.stride(2), s.stride(3),
             hk.stride(1), hk.stride(2), hk.stride(3),
             scale,
             T=T, K=K, V=M, BT=BT, BK=BK, BV=BM,
@@ -1174,22 +1175,20 @@ class ChunkABCFunction(torch.autograd.Function):
         )
         Ak = Ak.sum(0)
         dsk_inter = dsk_inter.sum(0)
-        dsk_intra = torch.empty_like(sk, dtype=torch.float)
+        dsk_intra = torch.empty_like(s, dtype=torch.float)
         grid = (NM, NT * NC, B * H)
         chunk_abc_bwd_kernel_intra_KV[grid](
-            sk, zk, Ak, ds, dsk_intra,
-            sk.stride(1), sk.stride(2), sk.stride(3),
+            s, z, Ak, dok, dsk_intra,
+            s.stride(1), s.stride(2), s.stride(3),
             T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
             num_warps=2,
             num_stages=num_stages
         )
-        dsk = dsk_inter.add_(dsk_intra)
+        ds.add_(dsk_inter.add_(dsk_intra))
 
-        dsk -= bwd_post(sk, zk, s * ds, B, H, T, M, BT, BC, BM, NT, NC, NM)
-        dsv -= bwd_post(sv, zv, p * dp, B, H, T, M, BT, BC, BM, NT, NC, NM)
-        dsk = dsk.to(sk.dtype)
-        dsv = dsv.to(sv.dtype)
-        return dq, dk, dv, dsk, dsv
+        ds -= bwd_post(s, z, ok * dok + p * dp, B, H, T, M, BT, BC, BM, NT, NC, NM)
+        ds = ds.to(s.dtype)
+        return dq, dk, dv, ds
 
 
 chunk_abc = ChunkABCFunction.apply
