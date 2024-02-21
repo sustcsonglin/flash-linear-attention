@@ -49,7 +49,9 @@ After careful optimization, this version generally delivers high performance in 
 
 # Usage
 
-We provide "token mixing" linear attention layers in `fla.layers` for you to use. You can replace the standard multihead attention layer in your transformer with the other linear attention layers. Example usage is as follows: 
+We provide "token mixing" linear attention layers in `fla.layers` for you to use. 
+You can replace the standard multihead attention layer in your transformer with the other linear attention layers. 
+Example usage is as follows: 
 ```py
 from fla.layers import MultiScaleRetention, GatedLinearAttention, BasedLinearAttention 
 
@@ -69,6 +71,71 @@ y2 = gla(x)
 y3 = based(x)
 
 assert y1.shape == y2.shape == y3.shape == x.shape
+```
+
+We also provide the implementations of models that are compatible with 🤗 Transformers library. 
+Here's an example of how to initialize a GLA model from the default configs in `fla`:
+
+```py
+>>> from fla.models import GLAConfig
+>>> from transformers import AutoModel
+>>> config
+GLAConfig {
+  "attn_mode": "fused_chunk",
+  "bos_token_id": 0,
+  "clamp_min": null,
+  "eos_token_id": 0,
+  "expand_k": 0.5,
+  "expand_v": 1,
+  "fuse_cross_entropy": true,
+  "fuse_norm": true,
+  "hidden_act": "swish",
+  "hidden_size": 2048,
+  "intermediate_size": null,
+  "max_position_embeddings": 2048,
+  "model_type": "gla",
+  "num_attention_heads": 8,
+  "num_hidden_layers": 24,
+  "num_key_value_heads": 8,
+  "rms_norm_eps": 1e-06,
+  "tie_word_embeddings": false,
+  "transformers_version": "4.37.2",
+  "use_cache": true,
+  "use_gk": true,
+  "use_gv": false,
+  "vocab_size": 32000
+}
+
+>>> AutoModel.from_config(config)
+GLAModel(
+  (embed_tokens): Embedding(32000, 2048)
+  (layers): ModuleList(
+    (0-23): 24 x GLABlock(
+      (attn_norm): RMSNorm()
+      (attn): GatedLinearAttention(
+        (gate_fn): SiLU()
+        (q_proj): Linear(in_features=2048, out_features=1024, bias=False)
+        (k_proj): Linear(in_features=2048, out_features=1024, bias=False)
+        (v_proj): Linear(in_features=2048, out_features=2048, bias=False)
+        (g_proj): Linear(in_features=2048, out_features=2048, bias=False)
+        (gk_proj): Sequential(
+          (0): Linear(in_features=2048, out_features=16, bias=False)
+          (1): Linear(in_features=16, out_features=1024, bias=True)
+        )
+        (o_proj): Linear(in_features=2048, out_features=2048, bias=False)
+        (g_norm_swish_gate): FusedRMSNormSwishGate()
+      )
+      (mlp_norm): RMSNorm()
+      (mlp): GLAMLP(
+        (gate_proj): Linear(in_features=2048, out_features=11264, bias=False)
+        (down_proj): Linear(in_features=5632, out_features=2048, bias=False)
+        (act_fn): SiLU()
+      )
+    )
+  )
+  (norm): RMSNorm()
+)
+
 ```
 
 # Benchmarks
