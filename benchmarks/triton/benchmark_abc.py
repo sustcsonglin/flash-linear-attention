@@ -45,20 +45,25 @@ def benchmark(seq_len, provider):
     q = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
     k = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
     v = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
-    g = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, d_head, device=device, dtype=dtype))
-    g = g.clamp_min(-5).requires_grad_(requires_grad)
-    sk = torch.randn(batch_size, n_heads, seq_len, n_slots, device=device, requires_grad=requires_grad, dtype=dtype)
-    sv = torch.randn(batch_size, n_heads, seq_len, n_slots, device=device, requires_grad=requires_grad, dtype=dtype)
+    if provider.startswith('flash'):
+        q = torch.randn(batch_size, seq_len, n_heads, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
+        k = torch.randn(batch_size, seq_len, n_heads, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
+        v = torch.randn(batch_size, seq_len, n_heads, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
+    if provider.startswith('gla'):
+        g = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, d_head, device=device, dtype=dtype))
+        g = g.clamp_min(-5).requires_grad_(requires_grad)
+    if provider.startswith('abc'):
+        s = torch.randn(batch_size, n_heads, seq_len, n_slots, device=device, requires_grad=requires_grad, dtype=dtype)
 
     do = torch.ones_like(v, dtype=dtype)
 
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'abc':
-        results = triton.testing.do_bench(lambda: chunk_abc(q, k, v, sk, sv), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: chunk_abc(q, k, v, s), quantiles=quantiles)
     elif provider == 'gla':
         results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g), quantiles=quantiles)
     elif provider == 'abc_bwd':
-        results = triton.testing.do_bench(lambda: chunk_abc(q, k, v, sk, sv).backward(do), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: chunk_abc(q, k, v, s).backward(do), quantiles=quantiles)
     elif provider == 'gla_bwd':
         results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g).backward(do), quantiles=quantiles)
     elif provider == 'retention_bwd':
@@ -69,4 +74,4 @@ def benchmark(seq_len, provider):
 
 
 if __name__ == '__main__':
-    benchmark.run(print_data=True, save_path='.')
+    benchmark.run(print_data=True)
