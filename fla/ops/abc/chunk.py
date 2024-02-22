@@ -51,6 +51,86 @@ def logcumsumexp_kernel(
 
 
 @triton.jit
+def softmax_fwd_kernel(
+    s,
+    p,
+    s_s_h,
+    s_s_t,
+    s_s_d,
+    T: tl.constexpr,
+    S: tl.constexpr,
+    BT: tl.constexpr,
+    BS: tl.constexpr
+):
+    i_s, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+
+    # [BT,]
+    b_z = tl.zeros([BT,], dtype=tl.float32)
+    b_m = tl.zeros([BT,], dtype=tl.float32)
+    for i in range(tl.cdiv(S, BS)):
+        p_s = tl.make_block_ptr(s + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i * BS), (BT, BS), (1, 0))
+        # [BT, BS]
+        b_s = tl.load(p_s, boundary_check=(0, 1))
+        # [BT]
+        b_mc = tl.max(b_s, 1)
+        b_mc = tl.maximum(b_m, b_mc)
+        if i > 0:
+            b_z = b_z * tl.exp(b_m - b_mc)
+        b_z += tl.sum(tl.exp(b_s - b_mc[:, None]), 1)
+        b_m = b_mc
+    b_z = tl.log(b_z) + b_m
+
+    p_s = tl.make_block_ptr(s + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+    p_p = tl.make_block_ptr(p + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+    # [BT, BS]
+    b_s = tl.load(p_s, boundary_check=(0, 1))
+    b_p = tl.exp(b_s - b_z[:, None])
+    tl.store(p_p, b_p.to(p_p.dtype.element_ty), boundary_check=(0, 1))
+
+
+@triton.jit
+def softmax_bwd_kernel(
+    p,
+    o,
+    dp,
+    do,
+    ds,
+    s_v_h,
+    s_v_t,
+    s_v_d,
+    s_s_h,
+    s_s_t,
+    s_s_d,
+    T: tl.constexpr,
+    V: tl.constexpr,
+    S: tl.constexpr,
+    BT: tl.constexpr,
+    BV: tl.constexpr,
+    BS: tl.constexpr
+):
+    i_s, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+
+    # [BT,]
+    b_doo = tl.zeros([BT,], dtype=tl.float32)
+    for i_v in range(tl.cdiv(V, BV)):
+        p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        # [BT, BV]
+        b_o = tl.load(p_o, boundary_check=(0, 1))
+        b_do = tl.load(p_do, boundary_check=(0, 1))
+        # [BT,]
+        b_doo += tl.sum(b_do * b_o, 1)
+    p_p = tl.make_block_ptr(p + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+    p_dp = tl.make_block_ptr(dp + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+    p_ds = tl.make_block_ptr(ds + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+    # [BT, BS]
+    b_p = tl.load(p_p, boundary_check=(0, 1))
+    b_dp = tl.load(p_dp, boundary_check=(0, 1))
+    b_ds = b_p * (b_dp - b_doo[:, None])
+    tl.store(p_ds, b_ds.to(p_ds.dtype.element_ty), boundary_check=(0, 1))
+
+
+@triton.jit
 def chunk_abc_fwd_kernel_h(
     k,
     v,
@@ -347,48 +427,6 @@ def chunk_abc_fwd_kernel_V(
     b_A = tl.load(p_A, boundary_check=(0, 1))
     b_o += tl.dot(b_A, b_v, allow_tf32=False)
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
-
-
-@triton.jit
-def softmax_bwd_kernel(
-    p,
-    o,
-    dp,
-    do,
-    ds,
-    s_v_h,
-    s_v_t,
-    s_v_d,
-    s_s_h,
-    s_s_t,
-    s_s_d,
-    T: tl.constexpr,
-    V: tl.constexpr,
-    S: tl.constexpr,
-    BT: tl.constexpr,
-    BV: tl.constexpr,
-    BS: tl.constexpr
-):
-    i_s, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-
-    # [BT,]
-    b_doo = tl.zeros([BT,], dtype=tl.float32)
-    for i_v in range(tl.cdiv(V, BV)):
-        p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        # [BT, BV]
-        b_o = tl.load(p_o, boundary_check=(0, 1))
-        b_do = tl.load(p_do, boundary_check=(0, 1))
-        # [BT,]
-        b_doo += tl.sum(b_do * b_o, 1)
-    p_p = tl.make_block_ptr(p + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-    p_dp = tl.make_block_ptr(dp + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-    p_ds = tl.make_block_ptr(ds + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-    # [BT, BS]
-    b_p = tl.load(p_p, boundary_check=(0, 1))
-    b_dp = tl.load(p_dp, boundary_check=(0, 1))
-    b_ds = b_p * (b_dp - b_doo[:, None])
-    tl.store(p_ds, b_ds.to(p_ds.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -1012,7 +1050,15 @@ class ChunkABCFunction(torch.autograd.Function):
         )
         ok = ok0.add_(ok1)
 
-        p = ok.softmax(-1, dtype=torch.float).to(q.dtype)
+        p = torch.empty_like(ok)
+        grid = (NM, NT, B * H)
+        softmax_fwd_kernel[grid](
+            ok, p,
+            s.stride(1), s.stride(2), s.stride(3),
+            T=T, S=M, BT=BT, BS=BM,
+            num_warps=num_warps,
+            num_stages=num_stages
+        )
         hv = fwd_inner(
             q=p, k=s, v=v, z=z,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
@@ -1101,13 +1147,13 @@ class ChunkABCFunction(torch.autograd.Function):
             scale=None,
             normk=True
         )
-        dp_inter = torch.empty_like(p)
-        dsv_inter = torch.empty_like(s, dtype=torch.float)
+        dp1 = torch.empty_like(p)
+        dsv1 = torch.empty_like(s, dtype=torch.float)
         dv = v.new_empty(NM, *v.shape)
         dAv = q.new_zeros(B, H, T, BT)
         grid = (NM, NT, B * H)
         chunk_abc_bwd_kernel_V[grid](
-            s, v, hv, z, Av, dov, dhv, dp_inter, dsv_inter, dv, dAv,
+            s, v, hv, z, Av, dov, dhv, dp1, dsv1, dv, dAv,
             p.stride(1), p.stride(2), p.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             hv.stride(1), hv.stride(2), hv.stride(3),
@@ -1116,18 +1162,18 @@ class ChunkABCFunction(torch.autograd.Function):
             num_stages=num_stages
         )
         dv = dv.sum(0)
-        dp_intra = torch.empty_like(p)
-        dsv_intra = s.new_zeros(NC, *s.shape, dtype=torch.float)
+        dp0 = torch.empty_like(p)
+        dsv0 = s.new_zeros(NC, *s.shape, dtype=torch.float)
         grid = (NM, NT * NC, B * H)
         chunk_abc_bwd_kernel_intra_V[grid](
-            p, s, z, dAv, dp_intra, dsv_intra,
+            p, s, z, dAv, dp0, dsv0,
             p.stride(1), p.stride(2), p.stride(3),
             T=T, K=M, BT=BT, BC=BC, BK=BM, NC=NC,
             num_warps=2,
             num_stages=num_stages
         )
-        dp = dp_inter.add_(dp_intra)
-        ds = dsv_inter.add_(dsv_intra.sum(0))
+        dp = dp1.add_(dp0)
+        ds = dsv1.add_(dsv0.sum(0))
 
         # grad of softmax
         dok = torch.empty_like(p)
@@ -1161,10 +1207,10 @@ class ChunkABCFunction(torch.autograd.Function):
         Ak = q.new_zeros(NK, B, H, T, BT)
         dq = torch.empty_like(q)
         dk = torch.empty_like(k)
-        dsk_inter = s.new_empty(NK, *s.shape, dtype=torch.float)
+        dsk1 = s.new_empty(NK, *s.shape, dtype=torch.float)
         grid = (NK, NT, B * H)
         chunk_abc_bwd_kernel_K[grid](
-            q, k, s, hk, z, Ak, dok, dhk, dq, dk, dsk_inter, dAk,
+            q, k, s, hk, z, Ak, dok, dhk, dq, dk, dsk1, dAk,
             q.stride(1), q.stride(2), q.stride(3),
             s.stride(1), s.stride(2), s.stride(3),
             hk.stride(1), hk.stride(2), hk.stride(3),
@@ -1174,17 +1220,17 @@ class ChunkABCFunction(torch.autograd.Function):
             num_stages=num_stages
         )
         Ak = Ak.sum(0)
-        dsk_inter = dsk_inter.sum(0)
-        dsk_intra = torch.empty_like(s, dtype=torch.float)
+        dsk1 = dsk1.sum(0)
+        dsk0 = torch.empty_like(s, dtype=torch.float)
         grid = (NM, NT * NC, B * H)
         chunk_abc_bwd_kernel_intra_KV[grid](
-            s, z, Ak, dok, dsk_intra,
+            s, z, Ak, dok, dsk0,
             s.stride(1), s.stride(2), s.stride(3),
             T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
             num_warps=2,
             num_stages=num_stages
         )
-        ds.add_(dsk_inter.add_(dsk_intra))
+        ds.add_(dsk1.add_(dsk0))
 
         ds -= bwd_post(s, z, ok * dok + p * dp, B, H, T, M, BT, BC, BM, NT, NC, NM)
         ds = ds.to(s.dtype)
