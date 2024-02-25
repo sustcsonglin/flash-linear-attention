@@ -20,18 +20,15 @@ class RetNetConfig(PretrainedConfig):
         expand_v: int = 1,
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
-        num_attention_heads: int = 8,
-        num_key_value_heads: Optional[int] = None,
+        num_attention_heads: int = 4,
         attn_mode: str = "fused_chunk",
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
         rms_norm_eps: float = 1e-6,
-        use_gk: bool = True,
-        use_gv: bool = False,
         use_cache: bool = True,
         pad_token_id: int = None,
-        bos_token_id: int = 0,
-        eos_token_id: int = 0,
+        bos_token_id: int = 1,
+        eos_token_id: int = 2,
         tie_word_embeddings: bool = False,
         initializer_range: float = 0.02,
         fuse_norm: bool = True,
@@ -46,17 +43,9 @@ class RetNetConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
-
-        # for backward compatibility
-        if num_key_value_heads is None:
-            num_key_value_heads = num_attention_heads
-
-        self.num_key_value_heads = num_key_value_heads
         self.attn_mode = attn_mode
         self.hidden_act = hidden_act
         self.rms_norm_eps = rms_norm_eps
-        self.use_gk = use_gk
-        self.use_gv = use_gv
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         self.fuse_norm = fuse_norm
