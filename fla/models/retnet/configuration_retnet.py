@@ -33,6 +33,7 @@ class RetNetConfig(PretrainedConfig):
         bos_token_id: int = 0,
         eos_token_id: int = 0,
         tie_word_embeddings: bool = False,
+        initializer_range: float = 0.02,
         fuse_norm: bool = True,
         fuse_cross_entropy: bool = True,
         **kwargs
@@ -57,6 +58,7 @@ class RetNetConfig(PretrainedConfig):
         self.use_gk = use_gk
         self.use_gv = use_gv
         self.use_cache = use_cache
+        self.initializer_range = initializer_range
         self.fuse_norm = fuse_norm
         self.fuse_cross_entropy = fuse_cross_entropy
 

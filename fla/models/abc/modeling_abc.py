@@ -63,6 +63,7 @@ class ABCBlock(nn.Module):
                                  expand_k=config.expand_k,
                                  expand_v=config.expand_v,
                                  num_heads=config.num_attention_heads,
+                                 num_slots=config.num_slots,
                                  layernorm_eps=config.rms_norm_eps,
                                  gate_low_rank_dim=config.gate_low_rank_dim,
                                  clamp_min=config.clamp_min,
@@ -109,6 +110,17 @@ class ABCPreTrainedModel(PreTrainedModel):
 
     def __init__(self, *inputs, **kwargs):
         super().__init__(*inputs, **kwargs)
+
+    def _init_weights(self, module):
+        std = self.config.initializer_range
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=std)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=std)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
 
 
 class ABCModel(ABCPreTrainedModel):
