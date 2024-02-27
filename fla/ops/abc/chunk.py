@@ -324,6 +324,7 @@ def chunk_abc_fwd_kernel_intra_V(
     s_k_h,
     s_k_t,
     s_k_d,
+    scale,
     T: tl.constexpr,
     K: tl.constexpr,
     BT: tl.constexpr,
@@ -346,7 +347,7 @@ def chunk_abc_fwd_kernel_intra_V(
         # [BC, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_z = tl.load(p_z, boundary_check=(0, 1))
-        b_q = (b_q * tl.exp(b_zn[None, :] - b_z)).to(b_q.dtype)
+        b_q = (b_q * tl.exp(b_zn[None, :] - b_z) * scale).to(b_q.dtype)
         # [BK, BC]
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_k = tl.exp(b_k - b_zn[:, None]).to(b_k.dtype)
@@ -368,7 +369,7 @@ def chunk_abc_fwd_kernel_intra_V(
             # [BK,]
             b_k = tl.load(p_k, boundary_check=(0,)).to(tl.float32)
             # [BC,]
-            b_A = tl.sum(b_q * tl.exp(b_k[None, :] - b_z), 1)
+            b_A = tl.sum(b_q * tl.exp(b_k[None, :] - b_z) * scale, 1)
             b_A = tl.where(o_i >= j, b_A, 0.)
             tl.store(A + o_A + j, b_A.to(b_q.dtype), mask=m_A)
 
@@ -392,6 +393,7 @@ def chunk_abc_fwd_kernel_V(
     s_h_h,
     s_h_t,
     s_h_d,
+    scale,
     T: tl.constexpr,
     K: tl.constexpr,
     V: tl.constexpr,
@@ -410,6 +412,7 @@ def chunk_abc_fwd_kernel_V(
 
         # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
+        b_q = (b_q * scale).to(b_q.dtype)
         # [BT, BK]
         b_z = tl.load(p_z, boundary_check=(0, 1))
         # [BT, BK]
@@ -456,7 +459,6 @@ def chunk_abc_bwd_kernel_dh(
     BK: tl.constexpr,
     BV: tl.constexpr,
     NT: tl.constexpr,
-    SCALE: tl.constexpr,
     NORMK: tl.constexpr
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -470,12 +472,11 @@ def chunk_abc_bwd_kernel_dh(
 
         # [BK, BT]
         b_q = tl.load(p_q, boundary_check=(0, 1))
+        b_q = (b_q * scale).to(b_q.dtype)
         # [BT, BV]
         b_do = tl.load(p_do, boundary_check=(0, 1))
 
         tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
-        if SCALE:
-            b_do = (b_do * scale).to(b_do.dtype)
         if NORMK:
             p_z = tl.make_block_ptr(z + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
             p_zc = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT - 1) * K + i_k * BK,), (BK,), (0,))
@@ -524,6 +525,7 @@ def chunk_abc_bwd_kernel_V(
     s_h_h,
     s_h_t,
     s_h_d,
+    scale,
     T: tl.constexpr,
     K: tl.constexpr,
     V: tl.constexpr,
@@ -568,15 +570,16 @@ def chunk_abc_bwd_kernel_V(
         # [BK, BV]
         b_dh = tl.load(p_dh, boundary_check=(0, 1))
 
+        # [BT, BV]
+        b_dv = tl.dot(b_k, b_dh, allow_tf32=False) + tl.dot(b_A, b_do, allow_tf32=False)
+        b_do = (b_do * scale).to(b_do.dtype)
+        tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
         # [BT, BT]
         b_dA += tl.dot(b_do, tl.trans(b_v), allow_tf32=False)
         # [BT, BK]
         b_dq += tl.dot(b_do, b_h, allow_tf32=False)
         # [BT, BK]
         b_dk += tl.dot(b_v, tl.trans(b_dh), allow_tf32=False)
-        # [BT, BV]
-        b_dv = tl.dot(b_k, b_dh, allow_tf32=False) + tl.dot(b_A, b_do, allow_tf32=False)
-        tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
     p_z = tl.make_block_ptr(z + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_zp = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT - 1) * K + i_k * BK,), (BK,), (0,))
     if i_t > 0:
@@ -1093,6 +1096,7 @@ class ChunkABCFunction(torch.autograd.Function):
         chunk_abc_fwd_kernel_intra_V[grid](
             p, s, z, Av,
             s.stride(1), s.stride(2), s.stride(3),
+            scale,
             T=T, K=M, BT=BT, BC=BC, BK=BM, NC=NC,
             num_warps=2,
             num_stages=num_stages
@@ -1105,6 +1109,7 @@ class ChunkABCFunction(torch.autograd.Function):
             p.stride(1), p.stride(2), p.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             hv.stride(1), hv.stride(2), hv.stride(3),
+            scale,
             T=T, K=M, V=V, BT=BT, BK=BM, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages
@@ -1127,7 +1132,7 @@ class ChunkABCFunction(torch.autograd.Function):
         num_warps = 4 if BK == 64 else 2
         num_stages = 1
 
-        def bwd_inner(q, z, do, B, H, T, K, V, BT, BK, BV, NT, scale=None, normk=False):
+        def bwd_inner(q, z, do, B, H, T, K, V, BT, BK, BV, NT, scale, normk=False):
             NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
             dh = q.new_empty(B, H, NT * K, V)
             grid = (NK, NV, B * H)
@@ -1138,7 +1143,6 @@ class ChunkABCFunction(torch.autograd.Function):
                 dh.stride(1), dh.stride(2), dh.stride(3),
                 scale,
                 T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-                SCALE=(scale is not None),
                 NORMK=normk,
                 num_warps=2,
                 num_stages=num_stages
@@ -1168,7 +1172,7 @@ class ChunkABCFunction(torch.autograd.Function):
         dhv = bwd_inner(
             p, z, dov,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
-            scale=None,
+            scale=scale,
             normk=True
         )
         dp1 = torch.empty_like(p)
@@ -1181,6 +1185,7 @@ class ChunkABCFunction(torch.autograd.Function):
             p.stride(1), p.stride(2), p.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             hv.stride(1), hv.stride(2), hv.stride(3),
+            scale,
             T=T, K=M, V=V, BT=BT, BK=BM, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages

@@ -17,5 +17,5 @@ def naive_abc(q, k, v, s):
     # [batch_size, n_heads, seq_len, n_slots]
     p = torch.einsum('...d,...md->...m', q * scale, K).softmax(-1, dtype=torch.float).to(dtype)
     # [batch_size, n_heads, seq_len, d_head]
-    o = torch.einsum('...m,...md->...d', p, V)
+    o = torch.einsum('...m,...md->...d', p * scale, V)
     return o
