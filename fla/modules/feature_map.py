@@ -1,6 +1,15 @@
+import math
+
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint as ckp
 
+
+def checkpoint(func):
+    def wrapper(*args, **kwargs):
+        return ckp(func, *args, **kwargs)
+
+    return wrapper
 
 # https://arxiv.org/abs/2402.04347
 class HedgehogFeatureMap(nn.Module):
@@ -54,13 +63,20 @@ class HadamardFeatureMap(nn.Module):
     def forward(self, x: torch.Tensor):        
         return self.layer1(x) * self.layer2(x)    
     
-
-def flatten_outer_product(x, y):
+@checkpoint
+def flatten_diag_outer_product(x, y):
     z = x.unsqueeze(-1) * y.unsqueeze(-2)
     N = z.size(-1)
     indicies = torch.triu_indices(N, N)
-    indicies = N * indicies[0] + indicies[1]
-    return z.flatten(-2)[..., indicies]
+    return z[..., indicies[0], indicies[1]]
+
+@checkpoint
+def flatten_diag_outer_product_off1(x, y):
+    z = x.unsqueeze(-1) * y.unsqueeze(-2)
+    N = z.size(-1)
+    indicies = torch.triu_indices(N, N, 1)
+    indices2 = torch.arange(0, N)
+    return z[..., indicies[0], indicies[1]], z[..., indices2, indices2]
 
 class LearnableOuterProductFeatureMap(nn.Module):
     def __init__(self, head_dim: int, feature_dim: int):
@@ -71,5 +87,19 @@ class LearnableOuterProductFeatureMap(nn.Module):
         self.normalizer = feature_dim ** -0.5
         
     def forward(self, x: torch.Tensor):   
-        # x = x * self.normalizer
-        return flatten_outer_product(self.layer1(x), self.layer2(x))
+        return flatten_diag_outer_product(self.layer1(x), self.layer2(x))
+
+
+class TaylorFeatureMap(nn.Module):
+    def __init__(self, head_dim):
+        super().__init__()
+        self.head_dim = head_dim
+        self.r2  = math.sqrt(2)
+        self.rd  = math.sqrt(self.head_dim)
+        self.rrd = math.sqrt(self.rd)
+
+    def forward(self, x: torch.Tensor):
+        x2_1, x2_2 = flatten_diag_outer_product_off1(x, x)        
+        return torch.cat([torch.ones_like(x[..., 0:1]), x / self.rrd, x2_2 / (self.rd * self.r2), x2_1 / self.rd], dim=-1)
+
+        

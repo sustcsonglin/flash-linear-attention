@@ -245,14 +245,14 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
     @staticmethod
     @custom_fwd
     @contiguous
-    def forward(ctx, q, k, v, initial_state, output_final_state):
+    def forward(ctx, q, k, v, scale, initial_state, output_final_state):
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT = 64
         BK, BV = min(64, triton.next_power_of_2(K)), min(64, triton.next_power_of_2(V))
         NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
         num_stages = 1
         num_warps = 4 if BK == 64 else 2
-        scale = K ** -0.5
+        ctx.scale = scale
 
         final_state = None
         if output_final_state:
@@ -299,7 +299,7 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
         NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
         num_stages = 1
         num_warps = 4 if BK == 64 else 2
-        scale = K ** -0.5
+        scale = ctx.scale
 
         dh = q.new_empty(B, H, NT * K, V)
         grid = (NK, NV, B * H)
@@ -331,24 +331,27 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
             num_stages=num_stages
         )
         dv = dv.sum(0)
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None, None
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None, None, None
 
 
 def chunk_linear_attn(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    scale: float = -1,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
     normalize: bool = True
 ):
+    if scale == -1:
+        scale = q.shape[-1] ** -0.5
     if initial_state is not None:
         initial_state = initial_state.detach()
-    o, final_state = ChunkLinearAttentionFunction.apply(q, k, v, initial_state, output_final_state)
+    o, final_state = ChunkLinearAttentionFunction.apply(q, k, v, scale, initial_state, output_final_state)
 
     if normalize:
-        o = normalize_output(q, k, o)
-
+        o = normalize_output(q * scale, k, o)
+        
     if output_final_state:
         return o, final_state
     else:

@@ -219,19 +219,16 @@ class FusedChunkLinearAttentionFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @custom_fwd
-    def forward(ctx, q, k, v, initial_state, output_final_state):
+    def forward(ctx, q, k, v, scale, initial_state, output_final_state):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-
-        scale = d_head_qk ** -0.5
+        ctx.scale = scale
         BT = 64
         BK, BV = min(triton.next_power_of_2(d_head_qk), 64), min(triton.next_power_of_2(d_head_v), 64)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         num_stages = 1
         num_warps = 4
-
         o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
-
         if output_final_state:
             final_state = q.new_empty(batch_size, n_heads, d_head_qk, d_head_v, dtype=torch.float32, requires_grad=False)
         else:
@@ -274,7 +271,7 @@ class FusedChunkLinearAttentionFunction(torch.autograd.Function):
         q, k, v, initial_state = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-        scale = d_head_qk ** -0.5
+        scale = ctx.scale
 
         BT = 64
         BK, BV = min(triton.next_power_of_2(d_head_qk), 64), min(triton.next_power_of_2(d_head_v), 64)
@@ -301,22 +298,25 @@ class FusedChunkLinearAttentionFunction(torch.autograd.Function):
         dq = dq.sum(0)
         dk = dk.sum(0)
         dv = dv.sum(0)
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None, None
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None, None, None
 
 
 def fused_chunk_linear_attn(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    scale: float = -1,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
     normalize: bool = True
 ):
     if initial_state is not None:
         initial_state = initial_state.detach()
-    o, final_state = FusedChunkLinearAttentionFunction.apply(q, k, v, initial_state, output_final_state)
+    if scale == -1:
+        scale = q.shape[-1] ** -0.5
+    o, final_state = FusedChunkLinearAttentionFunction.apply(q, k, v, scale, initial_state, output_final_state)
     if normalize:
-        o = normalize_output(q, k, o)
+        o = normalize_output(q * scale, k, o)
     if output_final_state:
         return o, final_state
     else:

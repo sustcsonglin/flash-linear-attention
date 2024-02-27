@@ -12,6 +12,8 @@ import torch.nn as nn
 from einops import rearrange
 
 from fla.ops.based import fused_chunk_based, parallel_based
+from fla.ops.linear_attn import fused_chunk_linear_attn, chunk_linear_attn
+from fla.modules.feature_map import TaylorFeatureMap
 
 
 def init_feature_map(feature_map: str = 'none', **kwargs: any):
@@ -104,7 +106,7 @@ class BasedLinearAttention(nn.Module):
         self.d_model = d_model
         self.l_max = l_max
         self.mode = mode
-        assert self.mode in ["fused_chunk", "parallel"]
+        assert self.mode in ["fused_chunk", "parallel", 'chunk']
 
         # linear attention
         self.feature_name = feature_name
@@ -119,8 +121,8 @@ class BasedLinearAttention(nn.Module):
             'temp': 1.,
             'eps': 1e-12
         }
-        self.feature_map = init_feature_map(
-            feature_map=self.feature_name, **feature_map_kwargs)
+
+
         self.proj_q = nn.Linear(
             self.d_model, self.feature_dim * self.num_heads, bias=False)
         self.proj_k = nn.Linear(
@@ -131,6 +133,7 @@ class BasedLinearAttention(nn.Module):
             self.num_heads * self.head_dim, self.d_model, bias=False)
         self.dropout = nn.Identity()
         self.eps = eps
+        self.feature_map = TaylorFeatureMap(feature_dim)
 
     def forward(self, hidden_states: torch.Tensor, **kwargs):
         mode = self.mode
@@ -140,8 +143,11 @@ class BasedLinearAttention(nn.Module):
         q, k, v = map(lambda x: rearrange(
             x, "b l (h d) -> b h l d", h=self.num_heads), [q, k, v])
         if mode == "fused_chunk":
-            assert q.shape[-1] <= 16
-            o = fused_chunk_based(q, k, v, True, True)
+            q, k = self.feature_map(q), self.feature_map(k)
+            o = fused_chunk_linear_attn(q, k, v, normalize=True, scale=1)
+        elif mode == 'chunk':
+            q, k = self.feature_map(q), self.feature_map(k)
+            o = chunk_linear_attn(q, k, v, normalize=True, scale=1)
         elif mode == 'parallel':
             assert q.shape[-1] <= 128
             o = parallel_based(q, k, v, True, True)
@@ -192,7 +198,7 @@ if __name__ == '__main__':
         dtype).cuda().requires_grad_(True)
     dy = torch.randn(batch, seq_len, d_model).to(
         dtype).cuda()
-    model = BasedLinearAttention(d_model=d_model).to(dtype).cuda()
+    model = BasedLinearAttention(d_model=d_model, mode='chunk').to(dtype).cuda()
     y = model(x)
     y.backward(dy, retain_graph=True)
     x_grad, x.grad = x.grad, None
@@ -200,3 +206,5 @@ if __name__ == '__main__':
     y2.backward(dy)
     assert y.allclose(y2, 0, 1e-4), breakpoint()
     assert x_grad.allclose(x.grad, 0, 1e-4), breakpoint()
+    print("Pass")
+
