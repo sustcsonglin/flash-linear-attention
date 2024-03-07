@@ -4,19 +4,21 @@
 https://github.com/corl-team/rebased/blob/main/flash_linear_attention/fla/layers/rebased_fast.py
 """
 import math
-import opt_einsum as oe
+
 import torch
 import torch.nn as nn
 from einops import rearrange
 
-from fla.ops.rebased import parallel_rebased
 from fla.modules.feature_map import RebasedFeatureMap
 from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn
+from fla.ops.rebased import parallel_rebased
+
 
 class FeatureMap(nn.Module):
     """
     Parent feature map; default is identity function
     """
+
     def __init__(self,
                  input_dim: int,
                  temp: int = None,
@@ -54,7 +56,6 @@ class TaylorExp(FeatureMap):
         return x2 / self.rd
 
 
-
 class ReBasedLinearAttention(nn.Module):
     def __init__(
         self,
@@ -82,14 +83,10 @@ class ReBasedLinearAttention(nn.Module):
         self.head_dim = self.d_model // self.num_key_value_heads
         self.causal = causal
         self.feature_map = RebasedFeatureMap(self.feature_dim)
-        self.proj_q = nn.Linear(
-            self.d_model, self.feature_dim * self.num_heads, bias=False)
-        self.proj_k = nn.Linear(
-            self.d_model, self.feature_dim * self.num_heads, bias=False)
-        self.proj_v = nn.Linear(
-            self.d_model, self.num_key_value_heads * self.head_dim, bias=False)
-        self.proj_o = nn.Linear(
-            self.num_heads * self.head_dim, self.d_model, bias=False)
+        self.proj_q = nn.Linear(self.d_model, self.feature_dim * self.num_heads, bias=False)
+        self.proj_k = nn.Linear(self.d_model, self.feature_dim * self.num_heads, bias=False)
+        self.proj_v = nn.Linear(self.d_model, self.num_key_value_heads * self.head_dim, bias=False)
+        self.proj_o = nn.Linear(self.num_heads * self.head_dim, self.d_model, bias=False)
         self.dropout = nn.Identity()
         self.eps = eps
 
@@ -127,10 +124,8 @@ class ReBasedLinearAttention(nn.Module):
             hidden_states), self.proj_v(hidden_states)
 
         q = q.view(b, l, self.num_heads, self.feature_dim).transpose(1, 2)
-        k = k.view(b, l, self.num_key_value_heads,
-                   self.feature_dim).transpose(1, 2)
-        v = v.view(b, l, self.num_key_value_heads,
-                   self.head_dim).transpose(1, 2)
+        k = k.view(b, l, self.num_key_value_heads, self.feature_dim).transpose(1, 2)
+        v = v.view(b, l, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         # Linear attention
         q, k = self.feature_map(q), self.feature_map(k)
@@ -145,6 +140,7 @@ class ReBasedLinearAttention(nn.Module):
         y = self.proj_o(y.to(hidden_states.dtype))
         y = self.dropout(y)
         return y.to(hidden_states.dtype)
+
 
 if __name__ == '__main__':
     batch = 4
@@ -168,12 +164,3 @@ if __name__ == '__main__':
     assert y.allclose(y2, 0, 1e-4), breakpoint()
     assert x_grad.allclose(x.grad, 0, 1e-4), breakpoint()
     print("Pass")
-
-
-    
-
-
-
-
-
-

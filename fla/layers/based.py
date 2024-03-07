@@ -11,9 +11,9 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from fla.ops.based import fused_chunk_based, parallel_based
-from fla.ops.linear_attn import fused_chunk_linear_attn, chunk_linear_attn
 from fla.modules.feature_map import TaylorFeatureMap
+from fla.ops.based import parallel_based
+from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn
 
 
 def init_feature_map(feature_map: str = 'none', **kwargs: any):
@@ -122,7 +122,6 @@ class BasedLinearAttention(nn.Module):
             'eps': 1e-12
         }
 
-
         self.proj_q = nn.Linear(
             self.d_model, self.feature_dim * self.num_heads, bias=False)
         self.proj_k = nn.Linear(
@@ -207,4 +206,3 @@ if __name__ == '__main__':
     assert y.allclose(y2, 0, 1e-4), breakpoint()
     assert x_grad.allclose(x.grad, 0, 1e-4), breakpoint()
     print("Pass")
-

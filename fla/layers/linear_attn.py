@@ -3,10 +3,10 @@
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from fla.modules import FusedRMSNormSwishGate, RMSNorm
-from fla.modules.featue_map import (DPFPFeatureMap, HadamardFeatureMap,
-                                    HedgehogFeatureMap, T2RFeatureMap)
-from fla.modules.rotary import RotaryEmbedding
+
+from fla.modules import RMSNorm
+from fla.modules.feature_map import (DPFPFeatureMap, HadamardFeatureMap,
+                                     HedgehogFeatureMap, T2RFeatureMap)
 from fla.ops.linear_attn import (chunk_linear_attn, fused_chunk_linear_attn,
                                  fused_recurrent_linear_attn)
 
@@ -54,7 +54,7 @@ class LinearAttention(nn.Module):
             else:
                 self.feature_map_q = HedgehogFeatureMap(head_dim=self.head_qk_dim)
                 self.feature_map_k = HedgehogFeatureMap(head_dim=self.head_qk_dim)
-        
+
         elif feature_map == 't2r':
             if tie_feature_map_qk:
                 self.feature_map_q = self.feature_map_k = T2RFeatureMap(head_dim=self.head_qk_dim)
@@ -68,7 +68,7 @@ class LinearAttention(nn.Module):
             else:
                 self.feature_map_q = HadamardFeatureMap(head_dim=self.head_qk_dim)
                 self.feature_map_k = HadamardFeatureMap(head_dim=self.head_qk_dim)
-            
+
         elif feature_map == 'dpfp':
             self.feature_map_q = DPFPFeatureMap(head_dim=self.head_qk_dim)
             self.feature_map_k = DPFPFeatureMap(head_dim=self.head_qk_dim)
@@ -78,24 +78,24 @@ class LinearAttention(nn.Module):
                 return F.elu(x) + 1
             self.feature_map_q = elu
             self.feature_map_k = elu
-        
+
         elif feature_map == 'relu':
             self.feature_map_q = nn.ReLU()
             self.feature_map_k = nn.ReLU()
-                        
+
         elif feature_map == 'identity':
             self.feature_map_q = nn.Identity()
             self.feature_map_k = nn.Identity()
         else:
             raise NotImplementedError
-        
+
         self.do_feature_map_norm = do_feature_map_norm
         if output_norm == 'rmsnorm':
             self.norm = RMSNorm(self.head_v_dim)
         elif output_norm == 'identity':
             self.norm = nn.Identity()
         else:
-            raise NotImplemented
+            raise NotImplementedError
 
         self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
@@ -103,8 +103,8 @@ class LinearAttention(nn.Module):
         self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
 
         self.norm_q = norm_q
-        self.norm_k = norm_k 
-        
+        self.norm_k = norm_k
+
     def forward(self, x):
         mode = self.mode
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
@@ -116,7 +116,7 @@ class LinearAttention(nn.Module):
             q = q / (q.sum(-1, keepdim=True) + 1e-4)
         if self.norm_k:
             k = k / (k.sum(-1, keepdim=True) + 1e-4)
-        
+
         if mode == 'chunk':
             o = chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
         elif mode == 'fused_chunk':
@@ -129,6 +129,7 @@ class LinearAttention(nn.Module):
         o = rearrange(o, 'b h n d -> b n (h d)')
         o = self.o_proj(o)
         return o
+
 
 if __name__ == '__main__':
     import torch

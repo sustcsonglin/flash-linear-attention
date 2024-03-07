@@ -5,15 +5,12 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from transformers.activations import ACT2FN
 
-from fla.modules import FusedRMSNormSwishGate, RMSNorm
+from fla.modules import RMSNorm
 from fla.ops.delta_rule import fused_recurrent_linear_attn_delta_rule
 
 
@@ -49,7 +46,7 @@ class DeltaNet(nn.Module):
         self.num_heads = num_heads
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
-        
+
         self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
@@ -78,8 +75,7 @@ if __name__ == '__main__':
     batch = 4
     seq_len = 1024
     d_model = 1024
-    x = torch.randn(batch, seq_len, d_model).to(
-        torch.bfloat16).cuda().requires_grad_(True)
+    x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
     model = DeltaNet(d_model=d_model).to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)
