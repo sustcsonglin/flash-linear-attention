@@ -33,10 +33,10 @@ def delta_rule_scan(q, k, v, beta, scan_depth=7):
     k_cum_decay_second = k_cum_decay[:, :, 1::2]
     k_cumsum_first = k_cumsum[:, :, 0::2]
 
-    next_k_cum_decay_second = k_cum_decay_second + k_cum_decay_second @ (-k_first).transpose(-1, -2) @ k_cum_decay_first
+    next_k_cum_decay_second = k_cum_decay_second + (k_cum_decay_second @ (-k_first).transpose(-1, -2)) @ k_cum_decay_first
 
     if i > 0:
-      next_k_cumsum = (k_cum_decay_second @ -k_first.transpose(-1, -2)) @ k_cumsum_first + (k_cum_decay_second @ k_first.transpose(-1, -2)) @ v_first
+      next_k_cumsum = (k_cum_decay_second @ k_first.transpose(-1, -2)) @ (-k_cumsum_first + v_first)
     else:
       next_k_cumsum = (k_cum_decay_second @ k_first.transpose(-1, -2)) @ v_first
 
