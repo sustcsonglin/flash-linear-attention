@@ -1,8 +1,16 @@
+# -*- coding: utf-8 -*-
+
+from __future__ import annotations
+
 import math
+from typing import Optional
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.utils.checkpoint import checkpoint as ckp
+
+from fla.modules.rmsnorm import layer_norm_fn
 
 
 def checkpoint(func):
@@ -108,3 +116,36 @@ class TaylorFeatureMap(nn.Module):
     def forward(self, x: torch.Tensor):
         x2_1, x2_2 = flatten_diag_outer_product_off1(x, x)
         return torch.cat([torch.ones_like(x[..., 0:1]), x / self.rrd, x2_2 / (self.rd * self.r2), x2_1 / self.rd], dim=-1)
+
+
+class RebasedFeatureMap(nn.Module):
+
+    def __init__(
+        self,
+        head_dim: int,
+        use_gamma: Optional[bool] = True,
+        use_beta: Optional[bool] = True,
+        normalize: Optional[bool] = True
+    ) -> RebasedFeatureMap:
+        super().__init__()
+        self.head_dim = head_dim
+        self.use_gamma = use_gamma
+        self.use_beta = use_beta
+        self.normalize = normalize
+
+        self.gamma = None
+        self.beta = None
+        if use_gamma:
+            self.gamma = nn.Parameter(torch.ones(head_dim))
+        if use_beta:
+            self.beta = nn.Parameter(torch.zeros(head_dim))
+
+    def forward(self, x: torch.Tensor):
+        if self.use_beta and self.use_gamma and self.normalize:
+            return layer_norm_fn(x, self.gamma, self.beta)
+        elif self.normalize:
+            return F.layer_norm(x, (self.head_dim,), self.gamma, self.beta)
+        elif self.use_gamma and self.use_beta:
+            return torch.addcmul(self.beta, x, self.gamma)
+        elif self.use_gamma:
+            return x.mul(self.gamma)
