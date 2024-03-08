@@ -971,11 +971,11 @@ class ChunkABCFunction(torch.autograd.Function):
         # p = ok.softmax(-1, torch.float)
         # p is kept in fp32 for safe softmax backward
         p = torch.empty_like(ok, dtype=torch.float)
-        grid = (NM, NT, B * H)
+        grid = (NT, B * H)
         softmax_fwd_kernel[grid](
             ok, p,
             s.stride(1), s.stride(2), s.stride(3),
-            T=T, S=M, BT=BT, BS=BM,
+            T=T, S=M, BT=BT,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -1106,12 +1106,12 @@ class ChunkABCFunction(torch.autograd.Function):
         # softmax gradient, equivalent to:
         # dok = p * (dp - (p * dp).sum(-1, True))
         dok = torch.empty_like(ok)
-        grid = (NM, NT, B * H)
+        grid = (NT, B * H)
         softmax_bwd_kernel[grid](
             p, dp, dok,
             s.stride(1), s.stride(2), s.stride(3),
-            T=T, S=M, BT=BT, BS=BM,
-            num_warps=2,
+            T=T, S=M, BT=BT,
+            num_warps=num_warps,
             num_stages=num_stages
         )
 
