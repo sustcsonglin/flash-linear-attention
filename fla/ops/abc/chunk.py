@@ -988,11 +988,11 @@ class ChunkABCFunction(torch.autograd.Function):
         # p = ok.softmax(-1, torch.float)
         # p is kept in fp32 for safe softmax backward
         p = torch.empty_like(ok, dtype=torch.float)
-        grid = (NM, NT, B * H)
+        grid = (NT, B * H)
         softmax_fwd_kernel[grid](
             ok, p,
             s.stride(1), s.stride(2), s.stride(3),
-            T=T, S=M, BT=BT, BS=BM,
+            T=T, S=M, BT=BT,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -1121,12 +1121,12 @@ class ChunkABCFunction(torch.autograd.Function):
         # softmax gradient, equivalent to:
         # dok = p * (dp - (p * dp).sum(-1, True))
         dok = torch.empty_like(ok)
-        grid = (NM, NT, B * H)
+        grid = (NT, B * H)
         softmax_bwd_kernel[grid](
             p, dp, dok,
             s.stride(1), s.stride(2), s.stride(3),
-            T=T, S=M, BT=BT, BS=BM,
-            num_warps=2,
+            T=T, S=M, BT=BT,
+            num_warps=num_warps,
             num_stages=num_stages
         )
 
@@ -1196,3 +1196,105 @@ def chunk_abc(
         warnings.warn("output_final_state is not supported in ABC, setting it to `False`.")
     ov, _ = ChunkABCFunction.apply(q, k, v, s, initial_state, output_final_state)
     return ov
+
+
+if __name__ == '__main__':
+    from fla.ops.abc.chunk_gate import gated_chunk_abc
+    from fla.ops.abc.naive import naive_recurrent_abc
+    B, H, T, D, M = 8, 4, 2048, 128, 128
+    dtype = torch.bfloat16
+    torch.manual_seed(42)
+    # [batch_size, n_heads, seq_len, d_head]
+    q0 = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
+    k0 = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
+    v0 = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
+    # [batch_size, n_heads, seq_len, n_slots]
+    s0 = torch.randn((B, H, T, M), dtype=dtype, device='cuda')
+    # z0 = s0.logcumsumexp(2)
+    # g0 = torch.cat((z0[:, :, :1], z0[:, :, :-1]), 2) - z0
+    # s0 = torch.exp(s0 - z0).to(k0.dtype)
+
+    # B, H, T, D, M = *q0.shape, s0.shape[-1]
+    q0 = torch.where(torch.rand_like(q0) < 0.1, q0 * 4, q0)
+    k0 = torch.where(torch.rand_like(k0) < 0.1, k0 * 4, k0)
+    v0 = torch.where(torch.rand_like(v0) < 0.1, v0 * 4, v0)
+    s0 = torch.where(torch.rand_like(s0) < 0.1, s0 * 4, s0).clamp_(-32, 32)
+    print('Testing...')
+    print(f'q:\t{float(q0.min()):>10.6f}\t{float(q0.max()):>10.6f}')
+    print(f'k:\t{float(k0.min()):>10.6f}\t{float(k0.max()):>10.6f}')
+    print(f'v:\t{float(v0.min()):>10.6f}\t{float(v0.max()):>10.6f}')
+    print(f's:\t{float(s0.min()):>10.6f}\t{float(s0.max()):>10.6f}')
+    q1, k1, v1, s1 = (i.detach().clone().to(dtype).requires_grad_() for i in (q0, k0, v0, s0))
+    print(f"DTYPE:\t{q1.dtype}")
+    do = torch.randn_like(v1)
+    ref = naive_recurrent_abc(q1, k1, v1, s1)
+    ref.backward(do)
+    # import torch.nn as nn
+    # print(nn.utils.clip_grad_norm_([q1, k1, v1, s1], 100))
+    ref_dq, q1.grad = q1.grad.clone(), None
+    ref_dk, k1.grad = k1.grad.clone(), None
+    ref_dv, v1.grad = v1.grad.clone(), None
+    ref_ds, s1.grad = s1.grad.clone(), None
+
+    # triton implementation
+    q1, k1, v1, s1 = (i.detach().clone().to(dtype).requires_grad_() for i in (q0, k0, v0, s0))
+    do = do.to(q1.dtype)
+    print(f"DTYPE:\t{q1.dtype}")
+    tri = chunk_abc(q1, k1, v1, s1)
+    tri.backward(do)
+    tri_dq, q1.grad = q1.grad.clone(), None
+    tri_dk, k1.grad = k1.grad.clone(), None
+    tri_dv, v1.grad = v1.grad.clone(), None
+    tri_ds, s1.grad = s1.grad.clone(), None
+
+    print("  \t   DIFF\t    MAX")
+    print(' o\t',       f"{float((ref - tri).abs().max()):>10.6f}\t{float(ref.max()):>10.6f}")
+    print('dq\t', f"{float((ref_dq - tri_dq).abs().max()):>10.6f}\t{float(ref_dq.max()):>10.6f}")
+    print('dk\t', f"{float((ref_dk - tri_dk).abs().max()):>10.6f}\t{float(ref_dk.max()):>10.6f}")
+    print('dv\t', f"{float((ref_dv - tri_dv).abs().max()):>10.6f}\t{float(ref_dv.max()):>10.6f}")
+    print('ds\t', f"{float((ref_ds - tri_ds).abs().max()):>10.6f}\t{float(ref_ds.max()):>10.6f}")
+    print('Done!')
+
+    @triton.testing.perf_report(
+        triton.testing.Benchmark(
+            # argument names to use as an x-axis for the plot
+            x_names=['seq_len'],
+            # different possible values for `x_name`
+            x_vals=[128 * 2 ** i for i in range(0, 8)],
+            # argument name whose value corresponds to a different line in the plot
+            line_arg='provider',
+            # possible values for `line_arg``
+            line_vals=['gate', 'chunk', 'torch_bwd', 'chunk_bwd'],
+            # label name for the lines
+            line_names=['gate', 'chunk', 'torch_bwd', 'chunk_bwd'],
+            # line styles
+            styles=[('green', '-'), ('blue', '--'), ('red', '-.'), ('cyan', ':'), ('yellow', 'dotted'), ('black', 'dashed')],
+            ylabel="Execution Time (ms)",  # label name for the y-axis
+            # name for the plot. Used also as a file name for saving the plot.
+            plot_name="Performance",
+            args={},
+        )
+    )
+    def benchmark(seq_len, provider):
+        device = 'cuda'
+        dtype = torch.bfloat16
+        requires_grad = True
+        batch_size, n_heads, d_head, n_slots = 16, 8, 100, 128
+
+        q = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
+        k = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
+        v = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
+        s = torch.randn(batch_size, n_heads, seq_len, n_slots, device=device, requires_grad=requires_grad, dtype=dtype)
+        do = torch.ones_like(q, dtype=dtype)
+        quantiles = [0.5, 0.2, 0.8]
+        results = 0, 0, 0
+        if provider == 'gate':
+            results = triton.testing.do_bench(lambda: gated_chunk_abc(q, k, v, s), quantiles=quantiles)
+        elif provider == 'chunk':
+            results = triton.testing.do_bench(lambda: chunk_abc(q, k, v, s), quantiles=quantiles)
+        elif provider == 'torch_bwd':
+            results = triton.testing.do_bench(lambda: gated_chunk_abc(q, k, v, s).backward(do), quantiles=quantiles)
+        elif provider == 'chunk_bwd':
+            results = triton.testing.do_bench(lambda: chunk_abc(q, k, v, s).backward(do), quantiles=quantiles)
+        return results
+    benchmark.run(print_data=True)
