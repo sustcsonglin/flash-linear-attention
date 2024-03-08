@@ -18,7 +18,7 @@ from transformers.utils import logging
 from fla.layers.multiscale_retention import MultiScaleRetention
 from fla.models.retnet.configuration_retnet import RetNetConfig
 from fla.modules import FusedCrossEntropyLoss, RMSNorm
-from fla.modules.activations import swiglu
+from fla.modules.activations import swiglu_linear
 
 logger = logging.get_logger(__name__)
 
@@ -48,9 +48,7 @@ class RetNetMLP(nn.Module):
     def forward(self, x):
         y = self.gate_proj(x)
         gate, y = y.chunk(2, -1)
-        y = swiglu(gate, y)
-        y = self.down_proj(y)
-        return y
+        return swiglu_linear(gate, y, self.down_proj.weight, self.down_proj.bias)
 
 
 class RetNetBlock(nn.Module):

@@ -19,7 +19,7 @@ from transformers.utils import logging
 from fla.layers.abc import ABCAttention
 from fla.models.abc.configuration_abc import ABCConfig
 from fla.modules import FusedCrossEntropyLoss, RMSNorm
-from fla.modules.activations import swiglu
+from fla.modules.activations import swiglu_linear
 
 logger = logging.get_logger(__name__)
 
@@ -48,9 +48,7 @@ class ABCMLP(nn.Module):
     def forward(self, x):
         y = self.gate_proj(x)
         gate, y = y.chunk(2, -1)
-        y = swiglu(gate, y)
-        y = self.down_proj(y)
-        return y
+        return swiglu_linear(gate, y, self.down_proj.weight, self.down_proj.bias)
 
 
 class ABCBlock(nn.Module):
