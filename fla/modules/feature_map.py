@@ -118,7 +118,7 @@ class TaylorFeatureMap(nn.Module):
         return torch.cat([torch.ones_like(x[..., 0:1]), x / self.rrd, x2_2 / (self.rd * self.r2), x2_1 / self.rd], dim=-1)
 
 
-class RebasedFeatureMap(nn.Module):
+class RebasedFeatureMap(TaylorFeatureMap):
 
     def __init__(
         self,
@@ -127,8 +127,8 @@ class RebasedFeatureMap(nn.Module):
         use_beta: Optional[bool] = True,
         normalize: Optional[bool] = True
     ) -> RebasedFeatureMap:
-        super().__init__()
-        self.head_dim = head_dim
+        super().__init__(head_dim)
+
         self.use_gamma = use_gamma
         self.use_beta = use_beta
         self.normalize = normalize
@@ -142,10 +142,16 @@ class RebasedFeatureMap(nn.Module):
 
     def forward(self, x: torch.Tensor):
         if self.use_beta and self.use_gamma and self.normalize:
-            return layer_norm_fn(x, self.gamma, self.beta)
+            x = layer_norm_fn(x, self.gamma, self.beta)
         elif self.normalize:
-            return F.layer_norm(x, (self.head_dim,), self.gamma, self.beta)
+            x = F.layer_norm(x, (self.head_dim,), self.gamma, self.beta)
         elif self.use_gamma and self.use_beta:
-            return torch.addcmul(self.beta, x, self.gamma)
+            x = torch.addcmul(self.beta, x, self.gamma)
         elif self.use_gamma:
-            return x.mul(self.gamma)
+            x = x.mul(self.gamma)
+        else:
+            raise RuntimeError(f"Not supported combination of `use_gamma`, `use_beta` and `normalize`, "
+                               f"which is currentlt set as (`{self.use_gamma}`, `{self.use_beta}`, `{self.normalize}`)")
+
+        x2_1, x2_2 = flatten_diag_outer_product_off1(x, x)
+        return torch.cat([torch.ones_like(x[..., 0:1]), x / self.rrd, x2_2 / (self.rd * self.r2), x2_1 / self.rd], dim=-1)

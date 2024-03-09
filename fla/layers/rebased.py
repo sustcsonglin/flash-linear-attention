@@ -58,15 +58,13 @@ class ReBasedLinearAttention(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, **kwargs):
         mode = self.mode
-        b, l, _ = hidden_states.size()
-        q, k, v = self.proj_q(hidden_states), self.proj_k(
-            hidden_states), self.proj_v(hidden_states)
-        q, k, v = map(lambda x: rearrange(
-            x, "b l (h d) -> b h l d", h=self.num_heads), [q, k, v])
-        q, k = self.feature_map(q), self.feature_map(k)
+        q, k, v = self.proj_q(hidden_states), self.proj_k(hidden_states), self.proj_v(hidden_states)
+        q, k, v = map(lambda x: rearrange(x, "b l (h d) -> b h l d", h=self.num_heads), [q, k, v])
         if mode == "fused_chunk":
+            q, k = self.feature_map(q), self.feature_map(k)
             o = fused_chunk_linear_attn(q, k, v, normalize=True, scale=1)
         elif mode == 'chunk':
+            q, k = self.feature_map(q), self.feature_map(k)
             o = chunk_linear_attn(q, k, v, normalize=True, scale=1)
         elif mode == 'parallel':
             assert q.shape[-1] <= 128
