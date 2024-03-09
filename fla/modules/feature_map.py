@@ -118,7 +118,7 @@ class TaylorFeatureMap(nn.Module):
         return torch.cat([torch.ones_like(x[..., 0:1]), x / self.rrd, x2_2 / (self.rd * self.r2), x2_1 / self.rd], dim=-1)
 
 
-class RebasedFeatureMap(TaylorFeatureMap):
+class RebasedFeatureMap(nn.Module):
 
     def __init__(
         self,
@@ -127,8 +127,9 @@ class RebasedFeatureMap(TaylorFeatureMap):
         use_beta: Optional[bool] = True,
         normalize: Optional[bool] = True
     ) -> RebasedFeatureMap:
-        super().__init__(head_dim)
+        super().__init__()
 
+        self.head_dim = head_dim
         self.use_gamma = use_gamma
         self.use_beta = use_beta
         self.normalize = normalize
@@ -140,7 +141,7 @@ class RebasedFeatureMap(TaylorFeatureMap):
         if use_beta:
             self.beta = nn.Parameter(torch.zeros(head_dim))
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, flatten: Optional[bool] = True):
         if self.use_beta and self.use_gamma and self.normalize:
             x = layer_norm_fn(x, self.gamma, self.beta)
         elif self.normalize:
@@ -152,6 +153,8 @@ class RebasedFeatureMap(TaylorFeatureMap):
         else:
             raise RuntimeError(f"Not supported combination of `use_gamma`, `use_beta` and `normalize`, "
                                f"which is currentlt set as (`{self.use_gamma}`, `{self.use_beta}`, `{self.normalize}`)")
-
+        if not flatten:
+            return x
         x2_1, x2_2 = flatten_diag_outer_product_off1(x, x)
-        return torch.cat([torch.ones_like(x[..., 0:1]), x / self.rrd, x2_2 / (self.rd * self.r2), x2_1 / self.rd], dim=-1)
+        # rebased use learnable parameters to approximate any quadratic function
+        return torch.cat([x2_2 * self.head_dim ** -0.5, x2_1 * (2 / self.head_dim) ** 0.5], dim=-1)
