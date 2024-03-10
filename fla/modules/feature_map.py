@@ -22,7 +22,11 @@ def checkpoint(func):
 
 
 class HedgehogFeatureMap(nn.Module):
-    def __init__(self, head_dim: int):
+
+    def __init__(
+        self,
+        head_dim: int
+    ) -> HedgehogFeatureMap:
         super().__init__()
         # Trainable map
         self.layer = nn.Linear(head_dim, head_dim)
@@ -30,7 +34,9 @@ class HedgehogFeatureMap(nn.Module):
 
     def init_weights_(self):
         """Initialize trainable map as identity"""
-        nn.init.eye_(self.layer.weight)
+        with torch.no_grad():
+            identity = torch.eye(*self.layer.weight.shape[-2:], dtype=torch.float)
+            self.layer.weight.copy_(identity.to(self.layer.weight))
         nn.init.zeros_(self.layer.bias)
 
     def forward(self, x: torch.Tensor):
@@ -40,7 +46,11 @@ class HedgehogFeatureMap(nn.Module):
 
 # https://arxiv.org/abs/2103.13076
 class T2RFeatureMap(nn.Module):
-    def __init__(self, head_dim: int, dot_dim: int = None):
+    def __init__(
+        self,
+        head_dim: int,
+        dot_dim: int = None
+    ) -> T2RFeatureMap:
         super().__init__()
         # Trainable map
         if dot_dim is None:
@@ -54,7 +64,12 @@ class T2RFeatureMap(nn.Module):
 
 
 class DPFPFeatureMap(nn.Module):
-    def __init__(self, head_dim: int, nu: int = 4):
+
+    def __init__(
+        self,
+        head_dim: int,
+        nu: int = 4
+    ) -> DPFPFeatureMap:
         super().__init__()
         self.nu = nu
 
@@ -66,7 +81,10 @@ class DPFPFeatureMap(nn.Module):
 
 
 class HadamardFeatureMap(nn.Module):
-    def __init__(self, head_dim: int):
+    def __init__(
+        self,
+        head_dim: int
+    ) -> HadamardFeatureMap:
         super().__init__()
         # Trainable map
         self.layer1 = nn.Linear(head_dim, head_dim)
@@ -94,7 +112,11 @@ def flatten_diag_outer_product_off1(x, y):
 
 
 class LearnableOuterProductFeatureMap(nn.Module):
-    def __init__(self, head_dim: int, feature_dim: int):
+    def __init__(
+        self,
+        head_dim: int,
+        feature_dim: int
+    ) -> LearnableOuterProductFeatureMap:
         super().__init__()
         # Trainable map
         self.layer1 = nn.Linear(head_dim, feature_dim, bias=False)
@@ -106,7 +128,10 @@ class LearnableOuterProductFeatureMap(nn.Module):
 
 
 class TaylorFeatureMap(nn.Module):
-    def __init__(self, head_dim):
+    def __init__(
+        self,
+        head_dim: int
+    ) -> TaylorFeatureMap:
         super().__init__()
         self.head_dim = head_dim
         self.r2 = math.sqrt(2)
