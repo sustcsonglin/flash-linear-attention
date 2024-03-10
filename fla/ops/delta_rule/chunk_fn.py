@@ -4,8 +4,9 @@ import math
 from einops import rearrange
 from fla.ops.delta_rule.triton_fn import prepare_wy_repr
 from fla.ops.delta_rule.chunk_fused import fused_chunk_delta_rule
+from fla.ops.delta_rule.chunk import chunk_delta_rule
 
-def fused_chunk_linear_attn_delta_rule(q, k, v, beta=None, chunk_size=32):
+def chunk_linear_attn_delta_rule(q, k, v, beta=None, chunk_size=64, fused_chunk=False):
     b, h, l, d_k = q.shape
     if beta is None:
       beta = q.new_ones(b, h, l)
@@ -25,7 +26,10 @@ def fused_chunk_linear_attn_delta_rule(q, k, v, beta=None, chunk_size=32):
     # can fuse.
     v_new = v - k_cumsum
     q, k, v_new, k_cumdecay = map(lambda x: rearrange(x, 'b h n c d -> b h (n c) d'), (q, k, v_new, k_cumdecay))
-    o = fused_chunk_delta_rule(q, k, v_new, k_cumdecay, chunk_size)
+    if fused_chunk:
+        o = fused_chunk_delta_rule(q, k, v_new, k_cumdecay, chunk_size)
+    else:
+        o = chunk_delta_rule(q, k, v_new, k_cumdecay, chunk_size)
     return o 
 
 def delta_rule_recurrence(q, k, v, beta):
@@ -65,7 +69,7 @@ if __name__ == "__main__":
     q_grad2, k_grad2, v_grad2, beta_grad2 = q.grad, k.grad, v.grad, beta.grad
     q.grad = k.grad = v.grad = beta.grad = None
 
-    o = fused_chunk_linear_attn_delta_rule(q, k, v, beta)
+    o = chunk_linear_attn_delta_rule(q, k, v, beta)
     o.backward(do, retain_graph=True)
     q_grad, k_grad, v_grad, beta_grad = q.grad, k.grad, v.grad, beta.grad
     q.grad = k.grad = v.grad = beta.grad = None

@@ -6,7 +6,7 @@ from benchmark import benchmark_combined, benchmark_forward
 
 from fla.ops.retention import chunk_retention, fused_chunk_retention
 from fla.ops.delta_rule import fused_recurrent_linear_attn_delta_rule
-from fla.ops.delta_rule import fused_chunk_linear_attn_delta_rule
+from fla.ops.delta_rule import chunk_linear_attn_delta_rule
 
 def time_fwd(func, *args, **kwargs):
     time_fb = benchmark_forward(func, *args, **kwargs)
@@ -18,7 +18,7 @@ def time_fwd_bwd(func, *args, **kwargs):
 
 repeats = 256
 device = 'cuda'
-dtype = torch.float16
+dtype = torch.bfloat16
 
 bs_seqlen_vals = [(32, 512), (16, 1024), (8, 2048), (4, 4096), (2, 8192), (1, 16384)]
 causal_vals = [True]
@@ -26,7 +26,7 @@ headdim_vals = [64, 128]
 dim = 2048
 dropout_p = 0.0
 
-methods = (["retnet_fused_chunk", "delta_chunk", "delta_recurrent"])
+methods = (["retnet_fused_chunk", "delta_chunk", "delta_fused_chunk", "delta_recurrent"])
 
 time_f = {}
 time_b = {}
@@ -50,7 +50,16 @@ for causal in causal_vals:
             v2 = torch.randn(batch_size, nheads, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
 
             f_b = time_fwd_bwd(
-                fused_chunk_linear_attn_delta_rule, q, k, v, verbose=False
+                chunk_linear_attn_delta_rule, q, k, v, None, 32, False, verbose=False
+            )
+            time_f_b[config, "delta_fused_chunk"] = f_b
+
+            q2 = torch.randn(batch_size, nheads, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
+            k2 = torch.randn(batch_size, nheads, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
+            v2 = torch.randn(batch_size, nheads, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
+
+            f_b = time_fwd_bwd(
+                chunk_linear_attn_delta_rule, q, k, v, None, 32, True, verbose=False
             )
             time_f_b[config, "delta_chunk"] = f_b
 
