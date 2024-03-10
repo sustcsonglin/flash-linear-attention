@@ -22,7 +22,7 @@ def delta_rule_recurrence(q, k, v, beta):
         o[:, :, i] = torch.einsum('bhd,bhdm->bhm', _q, S)
     return o
 
-
+    
 def delta_rule_backward(q, k, v, do):
     b, h, l, d_k = q.shape
     d_v = v.shape[-1]
@@ -81,7 +81,7 @@ if __name__ == '__main__':
     B = 2
     H = 4
     L = 128
-    DK = 32
+    DK = 64
     q = (torch.randn(B, H, L, DK)).cuda().requires_grad_(True) 
     k = (torch.randn(B, H, L, DK) / 10).cuda().requires_grad_(True) 
     v = (torch.randn(B, H, L, DK)).cuda().requires_grad_(True) 

@@ -137,7 +137,7 @@ def fused_recurrent_bwd_kernel(
     p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
     p_beta = beta + i_bh * T + T - 1 
-    p_dbeta = dbeta + i_bh * T + T - 1 
+    p_dbeta = dbeta + (i_bh + i_v * B * H) * T + T - 1 
 
     p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * \
         BK + tl.arange(0, BK) + (T - 1) * DK
@@ -229,7 +229,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
         d_head_v = v.shape[-1]
 
         scale = d_head_qk ** -0.5
-        BK, BV = d_head_qk, min(d_head_v, 8)
+        BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 8)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         num_stages = 1
         num_warps = 1
@@ -265,17 +265,17 @@ class FusedRecurrentFunction(torch.autograd.Function):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
         scale = d_head_qk ** -0.5
-
-        BK, BV = min(d_head_qk, 32), min(d_head_v, 32)
+        BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
+        assert NK == 1, "NK > 1 is not supported yet"        
         num_stages = 1
-        num_warps = 1
+        num_warps = 2
 
         dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
         dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
         dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
         grid = (NV, NK, batch_size * n_heads)
-        dbeta = torch.empty_like(beta)
+        dbeta = q.new_empty(NV, batch_size, n_heads, seq_len)
 
         fused_recurrent_bwd_kernel[grid](
             q, k, v, beta, do, dq, dk, dv, dbeta, initial_state,
@@ -290,6 +290,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
         dq = dq.sum(0)
         dk = dk.sum(0)
         dv = dv.sum(0)
+        dbeta = dbeta.sum(0)
         return dq.to(q), dk.to(k), dv.to(v), dbeta.to(beta), None, None
 
 

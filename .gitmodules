@@ -1,0 +1,3 @@
+[submodule "3rdparty/appy"]
+	path = 3rdparty/appy
+	url = https://github.com/habanero-lab/APPy.git
