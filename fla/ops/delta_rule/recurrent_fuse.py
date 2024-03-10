@@ -298,12 +298,14 @@ class FusedRecurrentFunction(torch.autograd.Function):
 def fused_recurrent_linear_attn_delta_rule(q: torch.Tensor,
                               k: torch.Tensor,
                               v: torch.Tensor,
-                              beta: torch.Tensor,
+                              beta: torch.Tensor = None,
                               initial_state: torch.Tensor = None,
                               output_final_state: bool = False,
                               normalize: bool = False):
     if initial_state is not None:
         initial_state = initial_state.detach()
+    if beta is None:
+        beta = torch.ones_like(q[..., 0])
     o, final_state = FusedRecurrentFunction.apply(
         q, k, v, beta, initial_state, output_final_state)
     if output_final_state:
