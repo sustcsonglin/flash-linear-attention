@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from fla.modules import RMSNorm
-from fla.ops.delta_rule import fused_recurrent_linear_attn_delta_rule
+from fla.ops.delta_rule import fused_recurrent_linear_attn_delta_rule, fused_chunk_linear_attn_delta_rule
 
 
 @torch.jit.script
@@ -33,11 +33,13 @@ class DeltaNet(nn.Module):
         expand_v: float = 1.0,
         expand_k: float = 1.0,
         num_heads: int = 4,
+        mode: str = 'fused_chunk',
         *args, **kwargs
     ) -> DeltaNet:
         super().__init__()
         self.d_model = d_model
-
+        self.mode = mode 
+        assert mode in ['fused_chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
 
@@ -63,7 +65,10 @@ class DeltaNet(nn.Module):
         k = sum_norm(elu_p1(k))
 
         beta = rearrange(self.beta_proj(x), 'b n h -> b h n').sigmoid()
-        o = fused_recurrent_linear_attn_delta_rule(q, k, v, beta)
+        if self.mode == 'fused_recurrent':
+            o = fused_recurrent_linear_attn_delta_rule(q, k, v, beta)
+        elif self.mode == 'fused_chunk':
+            o = fused_chunk_linear_attn_delta_rule(q, k, v, beta)
         o = self.norm(o)
         o = rearrange(o, 'b h l d -> b l (h d)')
         o = self.o_proj(o)
