@@ -15,9 +15,9 @@ class LinearAttention(nn.Module):
     def __init__(
         self,
         d_model: str = 1024,
-        expand_k: str = 1.0,
-        expand_v: str = 1.0,
-        num_heads: str = 8,
+        expand_k: int = 1.0,
+        expand_v: int = 1.0,
+        num_heads: int = 8,
         mode: str = 'chunk',
         feature_map: str = 'elementwise_product',
         tie_feature_map_qk: bool = False,
@@ -136,8 +136,7 @@ if __name__ == '__main__':
     batch = 4
     seq_len = 1024
     d_model = 1024
-    x = torch.randn(batch, seq_len, d_model).to(
-        torch.bfloat16).cuda().requires_grad_(True)
+    x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
     model = LinearAttention(d_model=d_model, feature_map='dplp').to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)
