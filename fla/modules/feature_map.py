@@ -8,16 +8,26 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.utils.checkpoint import checkpoint as ckp
 
 from fla.modules.rmsnorm import layer_norm_fn
+from fla.modules.utils import checkpoint
 
 
-def checkpoint(func):
-    def wrapper(*args, **kwargs):
-        return ckp(func, *args, **kwargs)
-    return wrapper
+@checkpoint
+def flatten_diag_outer_product(x, y):
+    z = torch.einsum("...i,...j->...ij", x, y)
+    N = z.size(-1)
+    indicies = torch.triu_indices(N, N)
+    return z[..., indicies[0], indicies[1]]
 
+
+@checkpoint
+def flatten_diag_outer_product_off1(x, y):
+    z = torch.einsum("...i,...j->...ij", x, y)
+    N = z.size(-1)
+    indicies = torch.triu_indices(N, N, 1)
+    indices2 = torch.arange(0, N)
+    return z[..., indicies[0], indicies[1]], z[..., indices2, indices2]
 # https://arxiv.org/abs/2402.04347
 
 
@@ -92,23 +102,6 @@ class HadamardFeatureMap(nn.Module):
 
     def forward(self, x: torch.Tensor):
         return self.layer1(x) * self.layer2(x)
-
-
-@checkpoint
-def flatten_diag_outer_product(x, y):
-    z = x.unsqueeze(-1) * y.unsqueeze(-2)
-    N = z.size(-1)
-    indicies = torch.triu_indices(N, N)
-    return z[..., indicies[0], indicies[1]]
-
-
-@checkpoint
-def flatten_diag_outer_product_off1(x, y):
-    z = x.unsqueeze(-1) * y.unsqueeze(-2)
-    N = z.size(-1)
-    indicies = torch.triu_indices(N, N, 1)
-    indices2 = torch.arange(0, N)
-    return z[..., indicies[0], indicies[1]], z[..., indices2, indices2]
 
 
 class LearnableOuterProductFeatureMap(nn.Module):
