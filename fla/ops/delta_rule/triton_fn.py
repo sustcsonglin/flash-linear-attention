@@ -6,6 +6,7 @@ from fla.ops.utils import contiguous
 from packaging import version
 from torch.cuda.amp import custom_bwd, custom_fwd
 
+# Inspired by "THE WY REPRESENTATION FOR PRODUCTS OF HOUSEHOLDER MATRICES" https://epubs.siam.org/doi/pdf/10.1137/0908009
 @triton.jit
 def fwd_prepare_wy_repr(A, x, k, cumsum, cumdecay,
                                   NT, DK,

@@ -6,7 +6,7 @@ from fla.ops.delta_rule.triton_fn import prepare_wy_repr
 from fla.ops.delta_rule.chunk_fused import fused_chunk_delta_rule
 from fla.ops.delta_rule.chunk import chunk_delta_rule
 
-def chunk_linear_attn_delta_rule(q, k, v, beta=None, chunk_size=64, fused_chunk=False):
+def chunk_linear_attn_delta_rule(q, k, v, beta=None, chunk_size=32, fused_chunk=False):
     b, h, l, d_k = q.shape
     if beta is None:
       beta = q.new_ones(b, h, l)
