@@ -31,6 +31,8 @@ class ReBasedLinearAttention(nn.Module):
         causal: bool = True,
         eps: float = 1e-5,
         mode: str = "parallel",
+        layer_idx: Optional[int] = None,
+        **kwargs
     ) -> ReBasedLinearAttention:
         super().__init__()
         self.d_model = d_model
@@ -74,7 +76,6 @@ class ReBasedLinearAttention(nn.Module):
         return o
 
     # https://github.com/HazyResearch/zoology/blob/main/zoology/mixers/based.py#L119
-
     def forward_reference(self, hidden_states: torch.Tensor, filters: torch.Tensor = None, *args, **kwargs):
         """
         x (torch.Tensor): tensor of shape (b, d, l)
