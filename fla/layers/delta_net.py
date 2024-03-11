@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from fla.modules import RMSNorm
-from fla.ops.delta_rule import fused_recurrent_linear_attn_delta_rule, fused_chunk_linear_attn_delta_rule
+from fla.ops.delta_rule import fused_recurrent_linear_attn_delta_rule, chunk_linear_attn_delta_rule
 
 
 @torch.jit.script
@@ -23,10 +23,12 @@ def elu_p1(x):
 def sum_norm(x):
     return x / x.sum(-1, keepdim=True)
 
+@torch.jit.script
+def l2_norm(x):
+    return x / x.norm(p=2, dim=-1, keepdim=True)
 
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
 class DeltaNet(nn.Module):
-
     def __init__(
         self,
         d_model: int = 1024,
@@ -34,12 +36,14 @@ class DeltaNet(nn.Module):
         expand_k: float = 1.0,
         num_heads: int = 4,
         mode: str = 'fused_chunk',
+        chunk_size: int = 32,
         *args, **kwargs
     ) -> DeltaNet:
         super().__init__()
         self.d_model = d_model
         self.mode = mode 
-        assert mode in ['fused_chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
+        assert mode in ['fused_chunk', 'fused_recurrent', 'chunk'], f"Not suppoerted mode `{mode}`."
+        self.chunk_size = chunk_size
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
 
@@ -61,14 +65,20 @@ class DeltaNet(nn.Module):
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
-        q = sum_norm(elu_p1(q))
-        k = sum_norm(elu_p1(k))
-
+        # q = l2_norm(elu_p1(q))
+        # k = l2_norm(elu_p1(k))
+        q = l2_norm(q)
+        k = l2_norm(k)
         beta = rearrange(self.beta_proj(x), 'b n h -> b h n').sigmoid()
         if self.mode == 'fused_recurrent':
             o = fused_recurrent_linear_attn_delta_rule(q, k, v, beta)
         elif self.mode == 'fused_chunk':
-            o = fused_chunk_linear_attn_delta_rule(q, k, v, beta)
+            o = chunk_linear_attn_delta_rule(q, k, v, beta, self.chunk_size, fused_chunk=True)
+        elif self.mode == 'chunk':
+            o = chunk_linear_attn_delta_rule(q, k, v, beta, self.chunk_size, fused_chunk=False)
+        else:
+            raise NotImplementedError(f"Not supported mode `{self.mode}`.")
+
         o = self.norm(o)
         o = rearrange(o, 'b h l d -> b l (h d)')
         o = self.o_proj(o)
