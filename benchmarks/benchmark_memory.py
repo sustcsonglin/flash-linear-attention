@@ -22,13 +22,6 @@ configs = {
     'linear_attn': LinearAttentionConfig,
     'retnet': RetNetConfig,
 }
-models = {
-    'abc': ABCForCausalLM,
-    'deltanet': DeltaNetForCausalLM,
-    'gla': GLAForCausalLM,
-    'linear_attn': LinearAttentionForCausalLM,
-    'retnet': RetNetForCausalLM,
-}
 
 
 def sizeof_fmt(num, suffix='B'):
@@ -52,8 +45,6 @@ def profile_memory(name: str, batch_size: int = 8, seq_len: int = 2048, steps: i
     optimizer = AdamW(model.parameters())
 
     for _ in tqdm(range(steps)):
-        # create random inputs
-
         # forward pass
         tokens = torch.randint(high=config.vocab_size, size=(batch_size, seq_len)).cuda()
         outputs = model(tokens, labels=tokens)
