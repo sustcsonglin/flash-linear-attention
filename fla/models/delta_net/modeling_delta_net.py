@@ -16,8 +16,7 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
 from fla.layers.delta_net import DeltaNet
-from fla.models.delta_net.configuration_delta_net import \
-    DeltaNetConfig
+from fla.models.delta_net.configuration_delta_net import DeltaNetConfig
 from fla.modules import FusedCrossEntropyLoss, RMSNorm
 from fla.modules.activations import swiglu_linear
 
@@ -335,7 +334,6 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
 
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
-        logits = logits.float()
 
         loss = None
         if labels is not None:
@@ -343,7 +341,10 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = FusedCrossEntropyLoss() if self.config.fuse_cross_entropy else nn.CrossEntropyLoss()
+            if self.config.fuse_cross_entropy:
+                loss_fct = FusedCrossEntropyLoss(inplace_backward=True)
+            else:
+                loss_fct = nn.CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
             # Enable model parallelism

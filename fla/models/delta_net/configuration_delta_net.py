@@ -7,7 +7,7 @@ from transformers.configuration_utils import PretrainedConfig
 
 class DeltaNetConfig(PretrainedConfig):
 
-    model_type = 'linear_attn'
+    model_type = 'delta_net'
     keys_to_ignore_at_inference = ['past_key_values']
 
     def __init__(
