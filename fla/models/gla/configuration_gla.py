@@ -14,11 +14,12 @@ class GLAConfig(PretrainedConfig):
         self,
         vocab_size: int = 32000,
         hidden_size: int = 2048,
-        expand_k: int = 0.5,
+        expand_k: int = 1,
         expand_v: int = 1,
+        hidden_ratio: Optional[int] = 2,
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
-        num_attention_heads: int = 4,
+        num_heads: int = 8,
         attn_mode: str = "fused_chunk",
         clamp_min: Optional[float] = None,
         hidden_act: str = "swish",
@@ -41,9 +42,10 @@ class GLAConfig(PretrainedConfig):
         self.hidden_size = hidden_size
         self.expand_k = expand_k
         self.expand_v = expand_v
+        self.hidden_ratio = hidden_ratio
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
-        self.num_attention_heads = num_attention_heads
+        self.num_heads = num_heads
         self.attn_mode = attn_mode
         self.clamp_min = clamp_min
         self.hidden_act = hidden_act

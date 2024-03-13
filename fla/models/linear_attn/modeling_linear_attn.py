@@ -28,18 +28,21 @@ class LinearAttentionMLP(nn.Module):
     def __init__(
         self,
         hidden_size: int,
+        hidden_ratio: Optional[int] = None,
         intermediate_size: Optional[int] = None,
         hidden_act: str = 'swish'
     ) -> LinearAttentionMLP:
         super().__init__()
 
         self.hidden_size = hidden_size
-        # the final number of params is 4d^2, where d is the hidden size
-        # `intermediate_size` is chosen to be (roughly) 2/3 of `hidden_size * hidden_ratio`, and a multiple of 256
+        # the final number of params is `hidden_ratio * hidden_size^2`
+        # `intermediate_size` is chosen to be a multiple of 256 closest to `2/3 * hidden_size * hidden_ratio`
+        if hidden_ratio is None:
+            hidden_ratio = 4
         if intermediate_size is None:
-            hidden_ratio, multiple_of = 4, 256
             intermediate_size = int(hidden_size * hidden_ratio * 2 / 3)
-            intermediate_size = multiple_of * ((intermediate_size + multiple_of - 1) // multiple_of)
+            intermediate_size = 256 * ((intermediate_size + 256 - 1) // 256)
+        self.hidden_ratio = hidden_ratio
         self.intermediate_size = intermediate_size
 
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
@@ -62,7 +65,7 @@ class LinearAttentionBlock(nn.Module):
             d_model=config.hidden_size,
             expand_k=config.expand_k,
             expand_v=config.expand_v,
-            num_heads=config.num_attention_heads,
+            num_heads=config.num_heads,
             mode=config.attn_mode,
             feature_map=config.feature_map,
             tie_feature_map_qk=config.tie_feature_map_qk,
@@ -74,6 +77,7 @@ class LinearAttentionBlock(nn.Module):
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = LinearAttentionMLP(
             hidden_size=config.hidden_size,
+            hidden_ratio=config.hidden_ratio,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act
         )
@@ -335,7 +339,6 @@ class LinearAttentionForCausalLM(LinearAttentionPreTrainedModel):
 
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
-        logits = logits.float()
 
         loss = None
         if labels is not None:
@@ -343,7 +346,10 @@ class LinearAttentionForCausalLM(LinearAttentionPreTrainedModel):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = FusedCrossEntropyLoss() if self.config.fuse_cross_entropy else nn.CrossEntropyLoss()
+            if self.config.fuse_cross_entropy:
+                loss_fct = FusedCrossEntropyLoss(inplace_backward=True)
+            else:
+                loss_fct = nn.CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
             # Enable model parallelism

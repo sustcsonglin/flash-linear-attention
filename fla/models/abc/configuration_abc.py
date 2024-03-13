@@ -17,9 +17,10 @@ class ABCConfig(PretrainedConfig):
         gate_low_rank_dim: int = 16,
         clamp_min: float = -32,
         clamp_max: float = 32,
+        hidden_ratio: Optional[int] = 2,
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
-        num_attention_heads: int = 8,
+        num_heads: int = 8,
         num_slots: Optional[int] = None,
         exapnd_k: float = 1,
         exapnd_v: float = 1,
@@ -43,9 +44,10 @@ class ABCConfig(PretrainedConfig):
         self.gate_low_rank_dim = gate_low_rank_dim
         self.clamp_min = clamp_min
         self.clamp_max = clamp_max
+        self.hidden_ratio = hidden_ratio
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
-        self.num_attention_heads = num_attention_heads
+        self.num_heads = num_heads
         self.num_slots = num_slots
         self.expand_k = exapnd_k
         self.expand_v = exapnd_v
