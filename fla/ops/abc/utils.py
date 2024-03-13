@@ -16,31 +16,30 @@ def logcumsumexp_fwd_kernel(
     T: tl.constexpr,
     S: tl.constexpr,
     BT: tl.constexpr,
-    BS: tl.constexpr,
     NT: tl.constexpr
 ):
-    i_s, i_bh = tl.program_id(0), tl.program_id(1)
+    i_bh = tl.program_id(0)
     o_i = tl.arange(0, BT)
     m_s = tl.where(o_i[:, None] >= o_i[None, :], 1., 0.)
 
-    b_mp = tl.full([BS,], float('-inf'), dtype=tl.float32)
-    b_zp = tl.zeros([BS,], dtype=tl.float32)
+    b_mp = tl.full([S,], float('-inf'), dtype=tl.float32)
+    b_zp = tl.zeros([S,], dtype=tl.float32)
     for i_t in range(NT):
-        p_s = tl.make_block_ptr(s + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-        p_z = tl.make_block_ptr(z + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+        p_s = tl.make_block_ptr(s + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, 0), (BT, S), (1, 0))
+        p_z = tl.make_block_ptr(z + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, 0), (BT, S), (1, 0))
 
-        # [BT, BS]
+        # [BT, S]
         b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
-        # [BS,]
+        # [S,]
         b_mc = tl.max(b_s, 0)
         # workaround for compiler bugs
         if i_t > 0:
             b_mc = tl.maximum(b_mp, b_mc)
         b_zp = b_zp * tl.exp(b_mp - b_mc)
-        # [BT, BS]
+        # [BT, S]
         b_s = tl.exp(b_s - b_mc)
-        b_z = tl.dot(m_s, b_s) + b_zp
-        # [BS,]
+        b_z = tl.dot(m_s, b_s, allow_tf32=False) + b_zp
+        # [S,]
         b_zc = tl.max(b_z, 0)
         b_mp = b_mc
         b_zp = b_zc
