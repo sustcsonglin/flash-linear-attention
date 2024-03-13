@@ -4,6 +4,8 @@
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
 # on-the-fly computation without materializing hidden statets into HBMs
 
+from typing import Tuple
+
 import torch
 import torch.nn.functional as F
 import triton
@@ -531,7 +533,7 @@ def fused_chunk_gla(
     scale: int = -1,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if scale == -1:
         scale = q.shape[-1] ** -0.5
     if initial_state is not None:
@@ -542,6 +544,4 @@ def fused_chunk_gla(
     o, final_state = FusedChunkGLAFunction.apply(
         q, k, v, g, scale, initial_state, output_final_state)
     o = o[..., :seq_len, :d_head_v]
-    if output_final_state:
-        return o, final_state
-    return o
+    return o, final_state

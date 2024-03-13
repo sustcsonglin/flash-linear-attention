@@ -2,6 +2,8 @@
 
 # Copyright (c) 2023, Songlin Yang
 
+from typing import Tuple
+
 import torch
 import triton
 import triton.language as tl
@@ -373,25 +375,24 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
 
 # if scale is None, use d_head_qk ** -0.5 by default. Otherwise specify the scale yourself. e.g. scale = 1.0
-def fused_recurrent_gla(q: torch.Tensor,
-                        k: torch.Tensor,
-                        v: torch.Tensor,
-                        gk: torch.Tensor = None,
-                        gv: torch.Tensor = None,
-                        scale: int = -1,
-                        initial_state: torch.Tensor = None,
-                        output_final_state: bool = False,
-                        causal: bool = True):
+def fused_recurrent_gla(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    gk: torch.Tensor = None,
+    gv: torch.Tensor = None,
+    scale: int = -1,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = False,
+    causal: bool = True
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if scale == -1:
         scale = q.shape[-1] ** -0.5
     if initial_state is not None:
         initial_state = initial_state.detach()
     if causal:
-        o, final_state = FusedRecurrentGLAFunction.apply(
-            q, k, v, gk, gv, scale, initial_state, output_final_state)
-        if output_final_state:
-            return o, final_state
-        return o
+        o, final_state = FusedRecurrentGLAFunction.apply(q, k, v, gk, gv, scale, initial_state, output_final_state)
+        return o, final_state
     else:
         # do not support initial_state yet. looks very strange for bidirectional modeling
         assert initial_state is None

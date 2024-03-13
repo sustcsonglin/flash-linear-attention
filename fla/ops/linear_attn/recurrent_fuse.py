@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023, Yu Zhang, Songlin Yang
 
+from typing import Tuple
+
 import torch
 import triton
 import triton.language as tl
+
 from fla.ops.utils import contiguous
 
 # on-the-fly computation without materializing hidden statets into HBMs
+
 
 @torch.jit.script
 def normalize_output(q, k, o):
@@ -15,6 +19,7 @@ def normalize_output(q, k, o):
     k = k.transpose(-2, -1)
     z = (q * k).sum(-1, keepdim=True)
     return o / (z + 1e-5)
+
 
 @triton.jit
 def fused_recurrent_linear_attn_fwd_kernel(
@@ -262,20 +267,18 @@ class FusedRecurrentLinearAttentionFunction(torch.autograd.Function):
         return dq, dk, dv, None, None
 
 
-
-def fused_recurrent_linear_attn(q: torch.Tensor,
-                              k: torch.Tensor,
-                              v: torch.Tensor,
-                              initial_state: torch.Tensor = None,
-                              output_final_state: bool = False,
-                              normalize: bool = False):
+def fused_recurrent_linear_attn(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = False,
+    normalize: bool = False
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
         initial_state = initial_state.detach()
     o, final_state = FusedRecurrentLinearAttentionFunction.apply(
         q, k, v, initial_state, output_final_state)
     if normalize:
         o = normalize_output(q, k, o)
-    if output_final_state:
-        return o, final_state
-    else:
-        return o
+    return o, final_state

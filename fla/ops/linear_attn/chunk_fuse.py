@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023, Yu Zhang, Songlin Yang
 
+from typing import Tuple
+
 import torch
 import triton
 import triton.language as tl
-from fla.ops.utils import contiguous
 from packaging import version
 from torch.cuda.amp import custom_bwd, custom_fwd
 
+from fla.ops.utils import contiguous
+
 # on-the-fly computation without materializing hidden statets into HBMs
+
 
 @torch.jit.script
 def normalize_output(q, k, o):
@@ -152,8 +156,8 @@ def fused_chunk_linear_attn_bwd_kernel(
         # [DV, BT]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BT, DV]
-        b_do = tl.load(p_do, boundary_check=(0, 1)) 
-        
+        b_do = tl.load(p_do, boundary_check=(0, 1))
+
         # [BT, BT]
         b_ds = tl.dot(b_do, b_v, allow_tf32=False)
         b_ds = tl.where(m_s, b_ds, 0)
@@ -189,14 +193,14 @@ def fused_chunk_linear_attn_bwd_kernel(
         # [BT, DV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_do = tl.load(p_do, boundary_check=(0, 1))
-        
+
         # b_dd = (b_do]).to(b_do.dtype)
 
         # [BT, BT]
         b_ds = tl.dot(b_v, tl.trans(b_do), allow_tf32=False)
         b_ds = tl.where(m_s, b_ds, 0).to(b_q.dtype)
         # [BT, BT]
-        b_s = tl.dot(b_k, b_q, allow_tf32=False) * scale 
+        b_s = tl.dot(b_k, b_q, allow_tf32=False) * scale
         b_s = tl.where(m_s, b_s, 0).to(b_q.dtype)
         # [BT, DK]
         b_dk = tl.dot(b_ds, tl.trans(b_q), allow_tf32=False)
@@ -213,7 +217,7 @@ def fused_chunk_linear_attn_bwd_kernel(
 
         tl.store(p_dk, (b_dk * scale).to(p_dk.dtype.element_ty), boundary_check=(0, 1))
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
-        
+
 
 class FusedChunkLinearAttentionFunction(torch.autograd.Function):
     @staticmethod
@@ -309,7 +313,7 @@ def fused_chunk_linear_attn(
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
     normalize: bool = True
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
         initial_state = initial_state.detach()
     if scale == -1:
@@ -317,7 +321,4 @@ def fused_chunk_linear_attn(
     o, final_state = FusedChunkLinearAttentionFunction.apply(q, k, v, scale, initial_state, output_final_state)
     if normalize:
         o = normalize_output(q * scale, k, o)
-    if output_final_state:
-        return o, final_state
-    else:
-        return o
+    return o, final_state

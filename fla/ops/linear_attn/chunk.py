@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023, Yu Zhang, Songlin Yang
 
+from typing import Tuple
+
 import torch
 import triton
 import triton.language as tl
-from fla.ops.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.utils import contiguous
 
 
 @torch.jit.script
@@ -15,6 +18,7 @@ def normalize_output(q, k, o):
     k = k.transpose(-2, -1)
     z = (q * k).sum(-1, keepdim=True)
     return o / (z + 1e-5)
+
 
 @triton.jit
 def chunk_linear_attn_fwd_kernel_h(
@@ -195,7 +199,7 @@ def chunk_linear_attn_bwd_kernel_dqkv(
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     n_bh = tl.num_programs(2)
     o_i = tl.arange(0, BT)
-    
+
     p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
     p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
 
@@ -342,7 +346,7 @@ def chunk_linear_attn(
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
     normalize: bool = True
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if scale == -1:
         scale = q.shape[-1] ** -0.5
     if initial_state is not None:
@@ -351,8 +355,5 @@ def chunk_linear_attn(
 
     if normalize:
         o = normalize_output(q * scale, k, o)
-        
-    if output_final_state:
-        return o, final_state
-    else:
-        return o
+
+    return o, final_state

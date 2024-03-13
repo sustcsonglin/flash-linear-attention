@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023, Yu Zhang, Songlin Yang
 
+from typing import Tuple
+
 import torch
 import triton
 import triton.language as tl
@@ -15,13 +17,13 @@ def fused_recurrent_fwd_kernel(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
     q,  # query [B, H, L, D_head_K]
     k,  # key [B, H, L, D_head_V]
-    v,  # value [B, H, L, D_head_V]. 
-    beta, # beta [B, H, L]
+    v,  # value [B, H, L, D_head_V].
+    beta,  # beta [B, H, L]
     o,  # output [B, H, L, D_head_V]
     initial_state,
     final_state,  # final hidden state [B, H, D_head_K, D_head_V]
 
-    
+
     s_qk_h,  # stride size: L * D_head_K
     s_qk_t,  # stride size: D_head_K
     s_qk_d,  # stride size: 1
@@ -41,14 +43,14 @@ def fused_recurrent_fwd_kernel(
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
     STORE_FINAL_STATE: tl.constexpr,  # whether to store final state
 ):
-    
+
     # indices
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
-    p_beta = beta + i_bh * T 
+    p_beta = beta + i_bh * T
     p_o = o + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV)
 
     mask_bk = (i_k * BK + tl.arange(0, BK)) < DK
@@ -99,13 +101,13 @@ def fused_recurrent_bwd_kernel(
     q,  # query [B, H, L, D_head_K]
     k,  # key [B, H, L, D_head_V]
     v,  # value [B, H, L, D_head_V]
-    beta, # beta [B, H, L]
+    beta,  # beta [B, H, L]
 
     do,  # gradient of output [B, H, L, D_head_V]
     dq,  # gradient of query [NV, B, H, L, D_head_K]
     dk,  # gradient of key [NV, B, H, L, D_head_K]
     dv,  # gradient of value [NK, B, H, L, D_head_V]
-    dbeta, # gradient of beta [B, H, L]
+    dbeta,  # gradient of beta [B, H, L]
 
     # initial hidden state initialization [B, H, D_head_K, D_head_V]
     initial_state,
@@ -136,8 +138,8 @@ def fused_recurrent_bwd_kernel(
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
     p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
-    p_beta = beta + i_bh * T + T - 1 
-    p_dbeta = dbeta + (i_bh + i_v * B * H) * T + T - 1 
+    p_beta = beta + i_bh * T + T - 1
+    p_dbeta = dbeta + (i_bh + i_v * B * H) * T + T - 1
 
     p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * \
         BK + tl.arange(0, BK) + (T - 1) * DK
@@ -154,7 +156,7 @@ def fused_recurrent_bwd_kernel(
         d_h += _q[:, None] * _do[None, :]
         d_k = tl.sum(d_h * _v[None, :] * _beta, axis=1)
         d_v = tl.sum(d_h * _k[:, None], axis=0)
-        
+
         d_beta = tl.sum(d_v * _v)
         d_v = d_v * _beta
 
@@ -183,9 +185,9 @@ def fused_recurrent_bwd_kernel(
     p_beta = beta + i_bh * T
     p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     p_dq = dq + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK)
-    p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV) + DV  
+    p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV) + DV
     p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK) + DK
-    
+
     if USE_INITIAL_STATE:
         mask_kv = mask_bk[:, None] & mask_bv[None, :]
         p_init_s = initial_state + i_bh * DK * DV + \
@@ -210,7 +212,7 @@ def fused_recurrent_bwd_kernel(
             d_v = tl.load(p_dv, mask=mask_bv, other=0).to(tl.float32)
             d_k -= tl.sum(d_v[None, :] * h, axis=1)
             tl.store(p_dk, d_k.to(p_dk.dtype.element_ty), mask=mask_bk)
-        
+
         p_k += DK
         p_do += DV
         p_v += DV
@@ -257,7 +259,6 @@ class FusedRecurrentFunction(torch.autograd.Function):
         ctx.save_for_backward(q, k, v, beta, initial_state)
         return o, final_state
 
-
     @staticmethod
     @contiguous
     def backward(ctx, do, d_final_state=None):
@@ -267,7 +268,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
         scale = d_head_qk ** -0.5
         BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
-        assert NK == 1, "NK > 1 is not supported yet"        
+        assert NK == 1, "NK > 1 is not supported yet"
         num_stages = 1
         num_warps = 2
 
@@ -294,22 +295,18 @@ class FusedRecurrentFunction(torch.autograd.Function):
         return dq.to(q), dk.to(k), dv.to(v), dbeta.to(beta), None, None
 
 
-
-def fused_recurrent_linear_attn_delta_rule(q: torch.Tensor,
-                              k: torch.Tensor,
-                              v: torch.Tensor,
-                              beta: torch.Tensor = None,
-                              initial_state: torch.Tensor = None,
-                              output_final_state: bool = False,
-                              normalize: bool = False):
+def fused_recurrent_linear_attn_delta_rule(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    beta: torch.Tensor = None,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = False,
+    normalize: bool = False
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
         initial_state = initial_state.detach()
     if beta is None:
         beta = torch.ones_like(q[..., 0])
-    o, final_state = FusedRecurrentFunction.apply(
-        q, k, v, beta, initial_state, output_final_state)
-    if output_final_state:
-        return o, final_state
-    else:
-        return o
-
+    o, final_state = FusedRecurrentFunction.apply(q, k, v, beta, initial_state, output_final_state)
+    return o, final_state

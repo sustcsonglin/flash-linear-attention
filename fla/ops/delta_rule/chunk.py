@@ -1,17 +1,21 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023, Yu Zhang, Songlin Yang
 
+from typing import Tuple
+
 import torch
 import triton
 import triton.language as tl
-from fla.ops.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.utils import contiguous
+
 
 @triton.jit
 def chunk_delta_rule_fwd_kernel_h(
     k,
     v,
-    d, 
+    d,
     v_new,
     h,
     initial_state,  # initial state of the chunk [B, H, D_head_K, D_head_V]
@@ -62,8 +66,7 @@ def chunk_delta_rule_fwd_kernel_h(
         # [BK, BV]
         b_h += tl.dot(b_k, b_v.to(b_k.dtype), allow_tf32=False)
         tl.store(p_v_new, b_v.to(p_v_new.dtype.element_ty), boundary_check=(0, 1))
-        
-        
+
     if STORE_FINAL_STATE:
         p_ht = tl.make_block_ptr(final_state + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
@@ -166,7 +169,7 @@ def chunk_delta_rule_bwd_kernel_dhv(
         b_q = (b_q * scale).to(b_q.dtype)
         # [BT, BK]
         b_k = tl.load(p_k, boundary_check=(0, 1))
-        b_d = tl.load(p_d, boundary_check=(0, 1))        
+        b_d = tl.load(p_d, boundary_check=(0, 1))
         # [BT, V]
         b_do = tl.load(p_do, boundary_check=(0, 1))
 
@@ -176,9 +179,8 @@ def chunk_delta_rule_bwd_kernel_dhv(
         b_dv = tl.dot(b_s.to(b_do.dtype), b_do, allow_tf32=False) + tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False)
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
         # [BK, BV]
-        b_dh += tl.dot(b_q, b_do.to(b_q.dtype), allow_tf32=False) 
+        b_dh += tl.dot(b_q, b_do.to(b_q.dtype), allow_tf32=False)
         b_dh -= tl.dot(b_d, b_dv.to(b_q.dtype), allow_tf32=False)
-        
 
 
 @triton.jit
@@ -186,7 +188,7 @@ def chunk_delta_rule_bwd_kernel_dqkd(
     q,
     k,
     v,
-    d, 
+    d,
     h,
     do,
     dh,
@@ -215,7 +217,7 @@ def chunk_delta_rule_bwd_kernel_dqkd(
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     n_bh = tl.num_programs(2)
     o_i = tl.arange(0, BT)
-    
+
     p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
     p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
 
@@ -249,8 +251,6 @@ def chunk_delta_rule_bwd_kernel_dqkd(
 
         b_dv = tl.load(p_dv, boundary_check=(0, 1))
         b_dd += tl.dot(b_dv.to(b_k.dtype), b_h.to(b_k.dtype), allow_tf32=False)
-        
-        
 
     # [BT, BT]
     b_ds = tl.where(o_i[:, None] >= o_i[None, :], b_ds * scale, 0).to(b_q.dtype)
@@ -341,8 +341,8 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
         assert NK == 1, 'NK > 1 is not supported because it involves time-consuming synchronization'
 
         num_stages = 1
-        num_warps = 4 
-        
+        num_warps = 4
+
         scale = ctx.scale
 
         dh = q.new_empty(B, H, NT * K, V)
@@ -387,11 +387,8 @@ def chunk_delta_rule(
     BT: int,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
         initial_state = initial_state.detach()
     o, final_state = ChunkDeltaRuleFunction.apply(q, k, v, d, BT,  initial_state, output_final_state)
-    if output_final_state:
-        return o, final_state
-    else:
-        return o
+    return o, final_state

@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023, Yu Zhang, Songlin Yang
 
+from typing import Tuple
+
 import torch
 import triton
 import triton.language as tl
-from fla.ops.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.ops.utils import contiguous
 
 
 @torch.jit.script
@@ -77,7 +80,6 @@ def chunk_simple_gla_fwd_kernel_h(
         p_ht = tl.make_block_ptr(
             final_state + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
-
 
 
 @triton.jit
@@ -313,8 +315,7 @@ class SimpleGLAFunction(torch.autograd.Function):
 
         final_state = None
         if output_final_state:
-            final_state = q.new_empty(
-                B, H, K, V, dtype=torch.float32, requires_grad=False)
+            final_state = q.new_empty(B, H, K, V, dtype=torch.float32, requires_grad=False)
 
         h = q.new_empty(B, H, NT * K, V)
         grid = (NK, NV, B * H)
@@ -406,16 +407,9 @@ def chunk_simple_gla(
     g: torch.Tensor,  # log decay
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
         initial_state = initial_state.detach()
     g = g.float()
-    B, H, T = g.shape
-
-    o, final_state = SimpleGLAFunction.apply(
-        q, k, v, g, initial_state, output_final_state)
-
-    if output_final_state:
-        return o, final_state
-    else:
-        return o
+    o, final_state = SimpleGLAFunction.apply(q, k, v, g, initial_state, output_final_state)
+    return o, final_state

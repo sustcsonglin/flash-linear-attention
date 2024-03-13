@@ -49,7 +49,4 @@ def naive_recurrent_abc(
         hv = hv * g_i[..., :, None] + (k_i - z_i).exp()[..., None] * v_i[..., None, :]
         ov[:, :, i] = (q_i[..., None] * hv).sum(-2)
 
-    if output_final_state:
-        return ov.to(dtype), hv
-    else:
-        return ov.to(dtype)
+    return ov.to(dtype), hv

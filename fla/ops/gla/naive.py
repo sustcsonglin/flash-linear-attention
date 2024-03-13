@@ -41,10 +41,7 @@ def naive_recurrent_gla(
         o[:, :, i] = o_i
 
     if causal:
-        if output_final_state:
-            return o.to(orig_dtype), h
-        else:
-            return o.to(orig_dtype)
+        return o.to(orig_dtype), h
     else:
         o_reverse = torch.zeros_like(v)
         h = torch.zeros(batch_size, n_heads, d_head_k, d_head_v, dtype=torch.float32, device=q.device)

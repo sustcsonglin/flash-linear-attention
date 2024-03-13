@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023, Yu Zhang, Songlin Yang
 
+from typing import Tuple
+
 import torch
 import triton
 import triton.language as tl
@@ -266,16 +268,14 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
 
 # fused_recurrent_retention = FusedRecurrentRetentionFunction.apply
 
-def fused_recurrent_retention(q: torch.Tensor,
-                              k: torch.Tensor,
-                              v: torch.Tensor,
-                              initial_state: torch.Tensor = None,
-                              output_final_state: bool = False):
+def fused_recurrent_retention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = False
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
         initial_state = initial_state.detach()
-    o, final_state = FusedRecurrentRetentionFunction.apply(
-        q, k, v, initial_state, output_final_state)
-    if output_final_state:
-        return o, final_state
-    else:
-        return o
+    o, final_state = FusedRecurrentRetentionFunction.apply(q, k, v, initial_state, output_final_state)
+    return o, final_state

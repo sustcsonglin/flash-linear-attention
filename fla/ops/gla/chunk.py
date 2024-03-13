@@ -3,15 +3,18 @@
 # Copyright (c) 2023, Songlin Yang
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
 
+from typing import Tuple
+
 import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
 from einops import rearrange
+from torch.cuda.amp import custom_bwd, custom_fwd
+
 from fla.ops.gla.chunk_util import (bwd_decay_global_cumsum, fwd_decay_cumsum,
                                     prepare_qg_kg)
 from fla.ops.utils import contiguous
-from torch.cuda.amp import custom_bwd, custom_fwd
 
 inv_ln2 = 1.44269504
 
@@ -379,8 +382,7 @@ class ChunkGLAFunction(torch.autograd.Function):
         )
 
         if output_final_state:
-            final_state = q.new_empty(
-                B, H, DK, DV, dtype=torch.float32, requires_grad=False)
+            final_state = q.new_empty(B, H, DK, DV, dtype=torch.float32, requires_grad=False)
         else:
             final_state = None
 
@@ -564,7 +566,7 @@ def chunk_gla(
     scale: int = -1,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if scale == -1:
         scale = q.shape[-1] ** -0.5
     if initial_state is not None:
@@ -575,6 +577,4 @@ def chunk_gla(
     o, final_state = ChunkGLAFunction.apply(
         q, k, v, g, scale, initial_state, output_final_state)
     o = o[..., :seq_len, :d_head_v]
-    if output_final_state:
-        return o, final_state
-    return o
+    return o, final_state

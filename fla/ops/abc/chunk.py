@@ -3,7 +3,7 @@
 # Copyright (c) 2023-2024, Yu Zhang, Songlin Yang
 
 import warnings
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import triton
@@ -1188,11 +1188,11 @@ def chunk_abc(
     s: torch.Tensor,
     initial_state: Optional[torch.Tensor] = None,
     output_final_state: Optional[bool] = False
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
         initial_state = initial_state.detach()
     if output_final_state:
         output_final_state = False
         warnings.warn("output_final_state is not supported in ABC, setting it to `False`.")
-    ov, _ = ChunkABCFunction.apply(q, k, v, s, initial_state, output_final_state)
-    return ov
+    ov, final_state = ChunkABCFunction.apply(q, k, v, s, initial_state, output_final_state)
+    return ov, final_state

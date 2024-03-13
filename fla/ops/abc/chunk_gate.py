@@ -3,7 +3,7 @@
 # Copyright (c) 2023-2024, Yu Zhang, Songlin Yang
 
 import warnings
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import triton
@@ -1177,7 +1177,7 @@ def gated_chunk_abc(
     s: torch.Tensor,
     initial_state: Optional[torch.Tensor] = None,
     output_final_state: Optional[bool] = False
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
         initial_state = initial_state.detach()
     if output_final_state:
@@ -1187,5 +1187,5 @@ def gated_chunk_abc(
     z = s.float().logcumsumexp(2)
     g = torch.cat((z[:, :, :1], z[:, :, :-1]), 2) - z
     s = torch.exp(s - z).to(k.dtype)
-    ov, _ = ChunkABCFunction.apply(q, k, v, s, g, initial_state, output_final_state)
-    return ov
+    ov, final_state = ChunkABCFunction.apply(q, k, v, s, g, initial_state, output_final_state)
+    return ov, final_state
