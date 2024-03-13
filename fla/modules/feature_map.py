@@ -28,10 +28,18 @@ def flatten_diag_outer_product_off1(x, y):
     indicies = torch.triu_indices(N, N, 1)
     indices2 = torch.arange(0, N)
     return z[..., indicies[0], indicies[1]], z[..., indices2, indices2]
-# https://arxiv.org/abs/2402.04347
+
+
+def is_power_of_2(n):
+    return (n & (n - 1) == 0) and n != 0
 
 
 class HedgehogFeatureMap(nn.Module):
+
+    r"""
+    Hedgehog feature map as introduced in
+    `The Hedgehog & the Porcupine: Expressive Linear Attentions with Softmax Mimicry <https://arxiv.org/abs/2402.04347>`_
+    """
 
     def __init__(
         self,
@@ -54,8 +62,13 @@ class HedgehogFeatureMap(nn.Module):
         return torch.cat([2*x, -2*x], dim=-1).softmax(-1)
 
 
-# https://arxiv.org/abs/2103.13076
 class T2RFeatureMap(nn.Module):
+
+    r"""
+    Simple linear mapping feature map as in
+    `Finetuning Pretrained Transformers into RNNs <https://arxiv.org/abs/2103.13076>`_
+    """
+
     def __init__(
         self,
         head_dim: int,
@@ -70,10 +83,13 @@ class T2RFeatureMap(nn.Module):
     def forward(self, x: torch.Tensor):
         return self.layer(x).relu()
 
-# https://arxiv.org/abs/2102.11174
-
 
 class DPFPFeatureMap(nn.Module):
+
+    r"""
+    Deterministic Parameter-Free Projection (DPFP) feature map in
+    `Linear Transformers Are Secretly Fast Weight Programmers <https://arxiv.org/abs/2102.11174>`_
+    """
 
     def __init__(
         self,
@@ -118,6 +134,47 @@ class LearnableOuterProductFeatureMap(nn.Module):
 
     def forward(self, x: torch.Tensor):
         return flatten_diag_outer_product(self.layer1(x), self.layer2(x))
+
+
+class LearnablePolySketchNonNegativeFeatureMap(nn.Module):
+
+    def __init__(
+        self,
+        head_dim: int,
+        sketch_size: Optional[int] = None,
+        degree: Optional[int] = 2
+    ) -> LearnablePolySketchNonNegativeFeatureMap:
+        super().__init__()
+
+        assert is_power_of_2(degree) and degree >= 2, f"The degree {degree} must be a power of 2"
+
+        self.head_dim = head_dim
+        self.sketch_size = sketch_size if sketch_size is not None else head_dim
+        self.degree = degree
+
+        self.gamma = nn.Parameter(torch.ones(head_dim))
+        self.beta = nn.Parameter(torch.zeros(head_dim))
+        # NOTE: the sketch layers defined here are quite different from the original paper
+        # currently we simply use linear layers without any non-linear activations
+        self.sketches1 = nn.ModuleList([
+            nn.Linear(head_dim, sketch_size, bias=False),
+            *[nn.Linear(sketch_size, sketch_size, bias=False) for _ in range(int(math.log2(self.degree)) - 2)]
+        ])
+        self.sketches2 = nn.ModuleList([
+            nn.Linear(head_dim, sketch_size, bias=False),
+            *[nn.Linear(sketch_size, sketch_size, bias=False) for _ in range(int(math.log2(self.degree)) - 2)]
+        ])
+
+    def forward(self, x: torch.Tensor):
+        # Section 2.1
+        x = layer_norm_fn(x, self.gamma, self.beta)
+        # first map the input to sketch size with learnable parameters
+        x = self.sketches1[0](x) * self.sketches2[0](x) * self.head_dim ** -0.5
+        for i in range(1, int(math.log2(self.degree)) - 1):
+            x = self.sketches1[i](x) * self.sketches2[i](x) * self.head_dim ** -0.5
+        # do sketch mapping for log2(p) - 1 times in total
+        # do p=2 mapping to ensure non-negativity
+        return flatten_diag_outer_product(x, x)
 
 
 class TaylorFeatureMap(nn.Module):
