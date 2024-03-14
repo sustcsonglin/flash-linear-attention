@@ -15,21 +15,11 @@ def chunk_linear_attn_delta_rule(q, k, v, beta=None, chunk_size=32, fused_chunk=
     assert q.shape[-1] == k.shape[-1] == v.shape[-1], "q, k and v should have the same dimension."
     d_v = v.shape[-1]
     q = q * (d_k ** -0.5)
-    v = v * beta[..., None]
-    q, k, v = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c = chunk_size), (q, k, v))
-    beta = rearrange(beta, 'b h (n c) -> b h n c', c = chunk_size)
-    mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=q.device), diagonal=0)
-    k_beta = k * beta[..., None]
-    attn = (k_beta @ k.transpose(-1, -2)).masked_fill_(mask, 0)
-    x = attn @ v
-    k_cumsum, k_cumdecay = prepare_wy_repr(attn, x, k_beta)
-    # can fuse.
-    v_new = v - k_cumsum
-    q, k, v_new, k_cumdecay = map(lambda x: rearrange(x, 'b h n c d -> b h (n c) d'), (q, k, v_new, k_cumdecay))
+    k_cumdecay, v_new = prepare_wy_repr(k, v, beta, chunk_size)
     if fused_chunk:
-        o = fused_chunk_delta_rule(q, k, v_new, k_cumdecay, chunk_size)
+        o, _ = fused_chunk_delta_rule(q, k, v_new, k_cumdecay, chunk_size)
     else:
-        o = chunk_delta_rule(q, k, v_new, k_cumdecay, chunk_size)
+        o, _ = chunk_delta_rule(q, k, v_new, k_cumdecay, chunk_size)
     return o 
 
 def delta_rule_recurrence(q, k, v, beta):
