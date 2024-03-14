@@ -85,7 +85,8 @@ class MultiScaleRetention(nn.Module):
         output_attentions: Optional[bool] = False,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        mode = self.mode
+        # launching the triton kernel for just one token will actually be slower
+        mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
         q1 = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
         k1 = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
 
