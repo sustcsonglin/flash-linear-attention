@@ -84,7 +84,7 @@ class MultiScaleRetention(nn.Module):
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
         **kwargs
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
         q1 = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
@@ -99,13 +99,13 @@ class MultiScaleRetention(nn.Module):
 
         last_state = past_key_values[self.layer_idx] if use_cache else None
         if mode == 'chunk':
-            o, last_state = chunk_retention(q, k, v, last_state, use_cache)
+            o, last_state = chunk_retention(q, k, v, initial_state=last_state, output_final_state=use_cache)
         elif mode == 'fused_chunk':
-            o, last_state = fused_chunk_retention(q, k, v, last_state, use_cache)
+            o, last_state = fused_chunk_retention(q, k, v, initial_state=last_state, output_final_state=use_cache)
         elif mode == 'parallel':
-            o, last_state = parallel_retention(q, k, v, last_state, use_cache)
+            o, last_state = parallel_retention(q, k, v, initial_state=last_state, output_final_state=use_cache)
         elif mode == 'fused_recurrent':
-            o, last_state = fused_recurrent_retention(q, k, v, last_state, use_cache)
+            o, last_state = fused_recurrent_retention(q, k, v, initial_state=last_state, output_final_state=use_cache)
         else:
             raise NotImplementedError
         if past_key_values is not None and last_state is not None:
