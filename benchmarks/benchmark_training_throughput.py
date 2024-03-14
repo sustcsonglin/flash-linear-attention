@@ -23,7 +23,6 @@ configs = {
     'retnet': RetNetConfig,
 }
 
-
 def sizeof_fmt(num, suffix='B'):
     for unit in ('', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi', 'Ei', 'Zi'):
         if abs(num) < 1024.0:
@@ -31,6 +30,9 @@ def sizeof_fmt(num, suffix='B'):
         num /= 1024.0
     return f'{num:.1f}Yi{suffix}'
 
+def param_size(model):
+    n_params = sum(p.numel() for p in model.parameters())
+    return sizeof_fmt(n_params)
 
 def profile_throughput(name: str, batch_size: int = 8, seq_len: int = 2048, warmup_steps: int = 16, steps: int = 32):
     device = torch.device('cuda')
@@ -39,6 +41,7 @@ def profile_throughput(name: str, batch_size: int = 8, seq_len: int = 2048, warm
     print(f"Initializing {name} model from the config")
     print(config)
     print(model)
+    print(f"Total parameters: {param_size(model)}")
     print(f"Allocated memory after initialization: {sizeof_fmt(memory_allocated(device))}")
 
     optimizer = AdamW(model.parameters())
@@ -68,6 +71,7 @@ def profile_throughput(name: str, batch_size: int = 8, seq_len: int = 2048, warm
         optimizer.zero_grad()
 
         total_tokens += batch_size * seq_len
+        torch.cuda.synchronize(device)
         duration = time.time() - start
         bar.set_description_str(f"Thoughput: {total_tokens / duration:8.2f} tokens/s")
 
@@ -75,9 +79,10 @@ def profile_throughput(name: str, batch_size: int = 8, seq_len: int = 2048, warm
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", default='retnet')
-    parser.add_argument("--batch_size", default=4, type=int)
+    parser.add_argument("--batch_size", default=16, type=int)
     parser.add_argument("--seq_len", default=2048, type=int)
     parser.add_argument("--warmup_steps", default=16, type=int)
     parser.add_argument("--steps", default=32, type=int)
     args = parser.parse_args()
     profile_throughput(args.name, args.batch_size, args.seq_len, args.warmup_steps, args.steps)
+

@@ -16,7 +16,7 @@ class DeltaNetConfig(PretrainedConfig):
         hidden_size: int = 2048,
         expand_k: int = 1,
         expand_v: int = 1,
-        hidden_ratio: Optional[int] = 2,
+        hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
         num_heads: int = 16,
