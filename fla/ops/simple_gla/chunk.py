@@ -273,7 +273,7 @@ def chunk_simple_gla_bwd_kernel_dqkv(
         b_dq += tl.dot(b_do, b_h, allow_tf32=False) * scale
         b_dk += tl.dot(b_v, tl.trans(b_dh), allow_tf32=False)
         # [BT, BV]
-        b_dv = tl.dot(b_k, b_dh, allow_tf32=False) + \
+        b_dv = tl.dot(b_k, b_dh, allow_tf32=False) * tl.math.exp2(-b_g + b_g_last)[:, None] + \
             tl.dot(b_s.to(b_q.dtype), b_do, allow_tf32=False)
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
