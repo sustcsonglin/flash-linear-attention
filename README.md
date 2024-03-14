@@ -139,6 +139,18 @@ GLAModel(
   (norm): RMSNorm()
 )
 
+# examples for generation with pretrained flash linear models
+>>> from transformers import AutoModelForCausalLM, AutoTokenizer
+>>> from transformers import MaxLengthCriteria, StoppingCriteriaList
+>>> path = <PATH-TO-PRETRAINED>  # specify the path to your pretrained model
+>>> tokenizer = AutoTokenizer.from_pretrained(path)
+>>> model = AutoModelForCausalLM.from_pretrained(path).cuda()
+>>> model.generation_config.pad_token_id = model.generation_config.eos_token_id
+>>> input_prompt = "Power goes with permanence. Impermanence is impotence. And rotation is castration."
+>>> input_ids = tokenizer(input_prompt, return_tensors="pt").input_ids.cuda()
+>>> stopping_criteria = StoppingCriteriaList([MaxLengthCriteria(max_length=64)])
+>>> outputs = model.greedy_search(input_ids, stopping_criteria=stopping_criteria)
+>>> tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 ```
 
 # Evaluations
