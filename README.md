@@ -81,6 +81,7 @@ Here's an example of how to initialize a GLA model from the default configs in `
 ```py
 >>> from fla.models import GLAConfig
 >>> from transformers import AutoModel
+>>> config = GLAConfig()
 >>> config
 GLAConfig {
   "attn_mode": "fused_chunk",
@@ -139,6 +140,27 @@ GLAModel(
 )
 
 ```
+
+# Evaluations
+
+The [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) library allows you to easily perform (zero-shot) model evaluations. 
+Follow the steps below to use this library:
+
+1. Install `lm_eval` following [their instructions](https://github.com/EleutherAI/lm-evaluation-harness/blob/main/README.md). 
+
+2. Run evaluation with:
+```sh
+$ PATH=<PATH-TO-PRETRAINED>
+$ python -m evals.harness --model hf \
+    --model_args pretrained=$PATH,dtype=bfloat16 \
+    --tasks wikitext,lambada_openai,piqa,hellaswag,winogrande,arc_easy,arc_challenge,boolq,sciq,copa,openbookqa \
+    --batch_size 64 \
+    --num_fewshot 0 \
+    --device cuda \
+    --show_config                  
+```
+We've made `fla` compatible with hf-style evaluations, you can simply call [evals.harness](evals/harness.py) to finish the evaluations.
+Running the command above will provide the task results reported in the GLA paper.
 
 # Benchmarks
 
