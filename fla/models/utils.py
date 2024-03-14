@@ -57,15 +57,14 @@ class RecurrentCache(Cache):
         Return:
             The updated state.
         """
-        # Update the number of seen tokens
-        if layer_idx == 0:
-            self.seen_tokens += 1
 
-        # Update the cache
         if len(self.states) <= layer_idx:
             self.states.append(state)
         else:
             self.states[layer_idx] = state
+            # update the number of seen tokens once we achieve the last layer
+            if layer_idx == len(self) - 1:
+                self.seen_tokens += 1
 
         return state
 
@@ -97,7 +96,6 @@ class RecurrentCache(Cache):
         """Converts a cache in the legacy cache format into an equivalent `RecurrentCache`."""
 
         cache = cls(seen_tokens)
-
         if past_key_values is not None:
             for layer_idx in range(len(past_key_values)):
                 cache.update(past_key_values[layer_idx], layer_idx)
