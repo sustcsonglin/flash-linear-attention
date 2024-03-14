@@ -4,24 +4,18 @@
 
 from __future__ import annotations
 
+from typing import Optional, Tuple
+
+import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from einops import rearrange
 from transformers.activations import ACT2FN
+from transformers.cache_utils import Cache
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm
 from fla.modules.rotary import RotaryEmbedding
 from fla.ops.retention import (chunk_retention, fused_chunk_retention,
                                fused_recurrent_retention, parallel_retention)
-
-
-def get_activation_fn(activation):
-    if activation == 'swish':
-        return F.silu
-    elif activation == 'gelu':
-        return F.gelu
-    else:
-        raise NotImplementedError
 
 
 class MultiScaleRetention(nn.Module):
@@ -35,6 +29,7 @@ class MultiScaleRetention(nn.Module):
         layernorm_eps: float = 1e-5,
         mode: str = 'chunk',
         fuse_norm: bool = True,
+        layer_idx: int = None,
         *args,
         **kwargs
     ) -> MultiScaleRetention:
@@ -45,6 +40,7 @@ class MultiScaleRetention(nn.Module):
         self.key_dim = int(d_model * expand_k)
         self.value_dim = int(d_model * expand_v)
         self.num_heads = num_heads
+        self.layer_idx = layer_idx
 
         assert mode in ['chunk', 'fused_chunk', 'parallel', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
@@ -81,26 +77,41 @@ class MultiScaleRetention(nn.Module):
         nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
         nn.init.xavier_uniform_(self.o_proj.weight, gain=2 ** -2.5)
 
-    def forward(self, x):
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        past_key_values: Optional[Cache] = None,
+        use_cache: Optional[bool] = False,
+        output_attentions: Optional[bool] = False,
+        **kwargs
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         mode = self.mode
-        q1 = rearrange(self.q_proj(x), '... (h d) -> ... h d', h=self.num_heads)
-        k1 = rearrange(self.k_proj(x), '... (h d) -> ... h d', h=self.num_heads)
-        q, k = self.rotary(q1, k1)
+        q1 = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
+        k1 = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
+
+        seqlen_offset = 0
+        if past_key_values is not None:
+            seqlen_offset = past_key_values.get_seq_length()
+        q, k = self.rotary(q1, k1, seqlen_offset)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
-        v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
+        v = rearrange(self.v_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
+
+        last_state = past_key_values[self.layer_idx] if use_cache else None
         if mode == 'chunk':
-            o = chunk_retention(q, k, v)
+            o, last_state = chunk_retention(q, k, v, last_state, use_cache)
         elif mode == 'fused_chunk':
-            o = fused_chunk_retention(q, k, v)
+            o, last_state = fused_chunk_retention(q, k, v, last_state, use_cache)
         elif mode == 'parallel':
-            o = parallel_retention(q, k, v)
+            o, last_state = parallel_retention(q, k, v, last_state, use_cache)
         elif mode == 'fused_recurrent':
-            o = fused_recurrent_retention(q, k, v)
+            o, last_state = fused_recurrent_retention(q, k, v, last_state, use_cache)
         else:
             raise NotImplementedError
+        if past_key_values is not None and last_state is not None:
+            past_key_values.update(last_state, self.layer_idx)
 
         o = rearrange(o, 'b h l d -> b l h d')
-        g = self.g_proj(x)
+        g = self.g_proj(hidden_states)
         if self.fuse_norm_and_gate:
             g = rearrange(g, 'b l (h d) -> b l h d', h=self.num_heads)
             o = self.g_norm_swish_gate(o, g)
@@ -111,19 +122,5 @@ class MultiScaleRetention(nn.Module):
             o = rearrange(o, 'b l h d -> b l (h d)')
             o = o * self.gate_fn(g)
         o = self.o_proj(o)
-        return o
 
-
-if __name__ == '__main__':
-    import torch
-    batch = 4
-    seq_len = 1024
-    d_model = 1024
-    x = torch.randn(batch, seq_len, d_model).to(
-        torch.bfloat16).cuda().requires_grad_(True)
-    model = MultiScaleRetention().to(torch.bfloat16).cuda()
-    y = model(x)
-    print(y.shape)
-    y.sum().backward()
-    print(x.grad.shape)
-    print(x.grad.shape)
+        return o, None, past_key_values
