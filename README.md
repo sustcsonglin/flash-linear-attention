@@ -52,7 +52,7 @@ After careful optimization, this version generally delivers high performance in 
 # Usage
 
 We provide "token mixing" linear attention layers in `fla.layers` for you to use. 
-You can replace the standard multihead attention layer in your transformer with the other linear attention layers. 
+You can replace the standard multihead attention layer in your model with other linear attention layers. 
 Example usage is as follows: 
 ```py
 from fla.layers import MultiScaleRetention, GatedLinearAttention, BasedLinearAttention 
@@ -85,24 +85,25 @@ Here's an example of how to initialize a GLA model from the default configs in `
 >>> config
 GLAConfig {
   "attn_mode": "fused_chunk",
-  "bos_token_id": 0,
+  "bos_token_id": 1,
   "clamp_min": null,
-  "eos_token_id": 0,
+  "eos_token_id": 2,
   "expand_k": 0.5,
   "expand_v": 1,
   "fuse_cross_entropy": true,
   "fuse_norm": true,
   "hidden_act": "swish",
+  "hidden_ratio": 4,
   "hidden_size": 2048,
+  "initializer_range": 0.02,
   "intermediate_size": null,
   "max_position_embeddings": 2048,
   "model_type": "gla",
-  "num_attention_heads": 8,
+  "num_heads": 4,
   "num_hidden_layers": 24,
-  "num_key_value_heads": 8,
   "rms_norm_eps": 1e-06,
   "tie_word_embeddings": false,
-  "transformers_version": "4.37.2",
+  "transformers_version": "4.38.2",
   "use_cache": true,
   "use_gk": true,
   "use_gv": false,
@@ -139,17 +140,18 @@ GLAModel(
   (norm): RMSNorm()
 )
 
-# examples for generation with pretrained flash linear models
+```
+
+Upon successfully pretraining a model, it becomes accessible for generating text using the 🤗 text generation APIs.
+In the following, we give a generation example by the pretrained model with `name=<PATH-TO-PRETRAINED>`:
+```py
 >>> from transformers import AutoModelForCausalLM, AutoTokenizer
->>> from transformers import MaxLengthCriteria, StoppingCriteriaList
->>> path = <PATH-TO-PRETRAINED>  # specify the path to your pretrained model
->>> tokenizer = AutoTokenizer.from_pretrained(path)
->>> model = AutoModelForCausalLM.from_pretrained(path).cuda()
+>>> tokenizer = AutoTokenizer.from_pretrained(name)
+>>> model = AutoModelForCausalLM.from_pretrained(name).cuda()
 >>> model.generation_config.pad_token_id = model.generation_config.eos_token_id
 >>> input_prompt = "Power goes with permanence. Impermanence is impotence. And rotation is castration."
 >>> input_ids = tokenizer(input_prompt, return_tensors="pt").input_ids.cuda()
->>> stopping_criteria = StoppingCriteriaList([MaxLengthCriteria(max_length=64)])
->>> outputs = model.greedy_search(input_ids, stopping_criteria=stopping_criteria)
+>>> outputs = model.generate(input_ids, max_length=64)
 >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 ```
 
