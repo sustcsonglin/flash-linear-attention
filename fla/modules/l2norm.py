@@ -96,8 +96,14 @@ def _l2_norm_bwd_kernel(
     tl.store(DX + cols, dx, mask=mask)
 
 def _l2_norm_fwd(
-    x, eps
+    x, eps=1e-6
 ):
+    x_shape_og = x.shape
+    x = x.reshape(-1, x.shape[-1])
+    if x.stride(-1) != 1:
+        x = x.contiguous()
+        M, N = x.shape
+    assert x.stride(-1) == 1 
     # allocate output
     y = torch.empty_like(x)
     assert y.stride(-1) == 1
@@ -124,11 +130,17 @@ def _l2_norm_fwd(
             # residual_out is not None,
             # bias is not None,
         )
-    return y
+    return y.reshape(x_shape_og)
 
 def _l2_norm_bwd(
-    x, dy, eps
+    x, dy, eps=1e-5,
 ):
+    x_shape_og = x.shape
+    x = x.reshape(-1, dy.shape[-1])
+    dy = dy.reshape(-1, dy.shape[-1])
+    if dy.stride(-1) != 1:
+        dy = dy.contiguous()
+    assert dy.shape == x.shape
     # allocate output
     dx = torch.empty_like(x)
     N = x.shape[-1]
@@ -153,7 +165,8 @@ def _l2_norm_bwd(
             eps,
             BLOCK_N,
         )
-    return dx
+    return dx.reshape(x_shape_og)
+
 
 class L2NormFN(torch.autograd.Function):
     @staticmethod
@@ -162,35 +175,24 @@ class L2NormFN(torch.autograd.Function):
         x,
         eps=1e-6,
     ):
-        x_shape_og = x.shape
         # reshape input data into 2D tensor
-        x = x.reshape(-1, x.shape[-1])
-        if x.stride(-1) != 1:
-            x = x.contiguous()
-            M, N = x.shape
-        assert x.stride(-1) == 1 
         y = _l2_norm_fwd(x, eps)
         ctx.x_shape_og = x_shape_og
         ctx.eps = eps
         ctx.x_dtype = x.dtype
-        y = y.reshape(x_shape_og)
         ctx.save_for_backward(x)
         return y 
 
     @staticmethod
     def backward(ctx, dy, *args):
         x, = ctx.saved_tensors
-        dy = dy.reshape(-1, dy.shape[-1])
-        if dy.stride(-1) != 1:
-            dy = dy.contiguous()
-        assert dy.shape == x.shape
         dx = _l2_norm_bwd(
             x,
             dy,
             ctx.eps,
         )
         return (
-            dx.reshape(ctx.x_shape_og),
+            dx,
             None
         )
 
