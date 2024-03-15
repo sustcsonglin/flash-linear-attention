@@ -7,11 +7,24 @@ import triton
 import triton.language as tl
 from packaging import version
 from torch.cuda.amp import custom_bwd, custom_fwd
+from fla.ops.delta_rule.triton_fn import fwd_prepare_wy_repr, bwd_prepare_wy_repr
+from fla.modules.l2norm import _l2_norm_fwd, _l2_norm_bwd
 
 from fla.ops.utils import contiguous
 
 
 # on-the-fly computation without materializing hidden statets into HBMs
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=1),
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=16),
+        triton.Config({}, num_warps=32),
+    ],
+    key=["BT", "BK"],
+)
 @triton.jit
 def fused_chunk_delta_rule_fwd_kernel(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
@@ -103,6 +116,17 @@ def fused_chunk_delta_rule_fwd_kernel(
 
 
 # Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=1),
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=16),
+        triton.Config({}, num_warps=32),
+    ],
+    key=["BT", "BK"],
+)
 @triton.jit
 def fused_chunk_delta_rule_bwd_kernel(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
@@ -231,114 +255,173 @@ def fused_chunk_delta_rule_bwd_kernel(
             tl.store(p_dd, -b_dd.to(p_dd.dtype.element_ty), boundary_check=(0, 1))
 
 
+def fused_chunk_delta_rule_fwd(q, k, v, d, BT, initial_state, output_final_state):
+    batch_size, n_heads, seq_len, d_head_qk = q.shape
+    d_head_v = v.shape[-1]
+    scale = 1
+    BT = BT
+    # ctx.BT = BT
+    BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
+    NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
+    assert NK == 1, 'NK should be 1'
+    num_stages = 1
+    num_warps = 4
+    o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
+    if output_final_state:
+        final_state = q.new_empty(batch_size, n_heads, d_head_qk, d_head_v, dtype=torch.float32, requires_grad=False)
+    else:
+        final_state = None
+    CHECK = False
+    if version.parse(triton.__version__) < version.parse('2.2.0'):
+        import warnings
+        warnings.warn(
+            "Triton<2.2.0 detected for running this kernel, "
+            "which is known to have some weird compiler issues (refer to https://github.com/openai/triton/issues/2852) "
+            "that lead to significant precision loss. "
+            "We've add some initial condition checks to resolve this, sadly at the sacrifice of the speed. "
+            "For optimal performance, it is recommended to install Triton>=2.2.0 (if possible)."
+        )
+        CHECK = True
+    grid = (NV, NK, batch_size * n_heads)
+    v_new = torch.empty_like(v)
+    fused_chunk_delta_rule_fwd_kernel[grid](
+        q, k, v, v_new, d, o, initial_state, final_state,
+        q.stride(1), q.stride(2), q.stride(3),
+        v.stride(1), v.stride(2), v.stride(3),
+        batch_size, n_heads, seq_len, scale,
+        BT=BT, DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
+        USE_INITIAL_STATE=initial_state is not None,
+        STORE_FINAL_STATE=output_final_state,
+        CHECK=CHECK,
+        # num_warps=num_warps,
+        # num_stages=num_stages
+    )
+    o = o.sum(0)
+    return o, v_new, CHECK, final_state
+
+def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
+    batch_size, n_heads,  seq_len, d_head_qk = q.shape
+    d_head_v = v.shape[-1]
+    scale = 1
+    BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
+    NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
+    assert NK == 1
+    num_stages = 1
+    num_warps = 2
+    dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
+    dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
+    dd = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
+    dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
+    grid = (NV, NK, batch_size * n_heads)
+    fused_chunk_delta_rule_bwd_kernel[grid](
+        q, k, v, d, do, dq, dk, dv, dd, initial_state,
+        q.stride(1), q.stride(2), q.stride(3),
+        v.stride(1), v.stride(2), v.stride(3),
+        batch_size, n_heads, seq_len, scale,
+        BT=BT, DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
+        USE_INITIAL_STATE=initial_state is not None,
+        CHECK=CHECK,
+        # num_warps=num_warps,
+        # num_stages=num_stages
+    )
+    dq = dq.sum(0)
+    dk = dk.sum(0)
+    dv = dv.sum(0)
+    dd = dd.sum(0)
+    dd[:, :, 0:BT] = 0
+    return dq, dk, dv, dd
+
+
 class FusedChunkDeltaRuleFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @custom_fwd
-    def forward(ctx, q, k, v, d, BT, initial_state, output_final_state):
+    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
-        d_head_v = v.shape[-1]
-        scale = 1
-        ctx.scale = 1
-        BT = BT
-        ctx.BT = BT
-        BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
-        NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
-        assert NK == 1, 'NK should be 1'
-        num_stages = 1
-        num_warps = 4
-        o = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
-        if output_final_state:
-            final_state = q.new_empty(batch_size, n_heads, d_head_qk, d_head_v, dtype=torch.float32, requires_grad=False)
-        else:
-            final_state = None
-        CHECK = False
-        if version.parse(triton.__version__) < version.parse('2.2.0'):
-            import warnings
-            warnings.warn(
-                "Triton<2.2.0 detected for running this kernel, "
-                "which is known to have some weird compiler issues (refer to https://github.com/openai/triton/issues/2852) "
-                "that lead to significant precision loss. "
-                "We've add some initial condition checks to resolve this, sadly at the sacrifice of the speed. "
-                "For optimal performance, it is recommended to install Triton>=2.2.0 (if possible)."
-            )
-            CHECK = True
-
-        grid = (NV, NK, batch_size * n_heads)
-        v_new = torch.empty_like(v)
-        fused_chunk_delta_rule_fwd_kernel[grid](
-            q, k, v, v_new, d, o, initial_state, final_state,
-            q.stride(1), q.stride(2), q.stride(3),
-            v.stride(1), v.stride(2), v.stride(3),
-            batch_size, n_heads, seq_len, scale,
-            BT=BT, DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
-            USE_INITIAL_STATE=initial_state is not None,
-            STORE_FINAL_STATE=output_final_state,
-            CHECK=CHECK,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        o = o.sum(0)
-        ctx.save_for_backward(q, k, v_new, d, initial_state)
+        k_origin = k
+        k = _l2_norm_fwd(k_origin)
+        q = q * (d_head_qk ** -0.5)
+        d, v_new = fwd_prepare_wy_repr(k, v, beta, BT)
+        o, v_new2, CHECK, final_state = fused_chunk_delta_rule_fwd(q, k, v_new, d, BT, initial_state, output_final_state)
+        ctx.save_for_backward(q, k_origin, v, v_new, v_new2, d, beta, initial_state)
         ctx.CHECK = CHECK
+        ctx.chunk_size = BT
         return o.to(q.dtype), final_state
 
     @staticmethod
     @custom_bwd
     @contiguous
     def backward(ctx, do, d_final_state=None):
-        q, k, v, d, initial_state = ctx.saved_tensors
-        batch_size, n_heads, seq_len, d_head_qk = q.shape
-        d_head_v = v.shape[-1]
-        scale = ctx.scale
-
-        BT = ctx.BT
-        BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
-
-        # triton.next_power_of_2(d_head_v)
-
-        #  min(triton.next_power_of_2(d_head_v), 32)
-        NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
-        assert NK == 1
-        num_stages = 1
-        num_warps = 2
-
-        dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-        dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-        dd = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-        dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
-        grid = (NV, NK, batch_size * n_heads)
-
-        fused_chunk_delta_rule_bwd_kernel[grid](
-            q, k, v, d, do, dq, dk, dv, dd, initial_state,
-            q.stride(1), q.stride(2), q.stride(3),
-            v.stride(1), v.stride(2), v.stride(3),
-            batch_size, n_heads, seq_len, scale,
-            BT=BT, DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
-            USE_INITIAL_STATE=initial_state is not None,
-            CHECK=ctx.CHECK,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        dq = dq.sum(0)
-        dk = dk.sum(0)
-        dv = dv.sum(0)
-        dd = dd.sum(0)
-        dd[:, :, 0:BT] = 0
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dd.to(d.dtype), None, None, None
+        q, k_origin, v, v_new, v_new2, d, beta, initial_state = ctx.saved_tensors
+        chunk_size = ctx.chunk_size
+        k = _l2_norm_fwd(k_origin)
+        dq, dk, dv, dd = fused_chunk_delta_rule_bwd(q, k, v_new2, d, do, chunk_size, ctx.CHECK, initial_state)
+        dk2, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, d, v_new, dd, dv, chunk_size)
+        dk.add_(dk2)
+        dk = _l2_norm_bwd(k_origin, dk)   
+        dq *= q.shape[-1] ** -0.5 
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dbeta.to(d.dtype), None, None, None
 
 
 def fused_chunk_delta_rule(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    d: torch.Tensor,
+    beta: torch.Tensor,
     BT: int,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
-    normalize: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
         initial_state = initial_state.detach()
-    o, final_state = FusedChunkDeltaRuleFunction.apply(q, k, v, d, BT, initial_state, output_final_state)
+    o, final_state = FusedChunkDeltaRuleFunction.apply(q, k, v, beta, BT, initial_state, output_final_state)
     return o, final_state
+
+
+
+def delta_rule_recurrence(q, k, v, beta):
+    b, h, l, d_k = q.shape
+    d_v = v.shape[-1]
+    o = torch.zeros_like(v)
+    S = torch.zeros(b, h, d_k, d_v).to(v)
+    q = q * (d_k ** -0.5)
+    k = torch.nn.functional.normalize(k, p=2, dim=-1)
+    for i in range(l):
+        _k = k[:, :, i]
+        _q = q[:, :, i]
+        _v = v[:, :, i].clone()
+        beta_i = beta[:, :, i]
+        _v = _v - (S.clone() * _k[..., None]).sum(-2)
+        _v = _v * beta_i[..., None]
+        S = S.clone() + _k.unsqueeze(-1) * _v.unsqueeze(-2)
+        o[:, :, i] = torch.einsum('bhd,bhdm->bhm', _q, S)
+    return o
+
+
+if __name__ == "__main__":
+    seq_len = 128
+    b = 2
+    h = 4
+    k = torch.randn(b, h, seq_len, 64) 
+    v = torch.randn(b, h, seq_len, 64)  
+    q = torch.randn(b, h, seq_len, 64)
+    beta = torch.rand(b, h, seq_len).sigmoid()
+    q, k, v, beta = map(lambda x: x.cuda().requires_grad_(True), (q, k, v, beta))
+    do = torch.rand_like(v)
+    o2 = delta_rule_recurrence(q, k, v.clone(), beta)
+    o2.backward(do, retain_graph=True)
+    q_grad2, k_grad2, v_grad2, beta_grad2 = q.grad, k.grad, v.grad, beta.grad
+    q.grad = k.grad = v.grad = beta.grad = None
+    o, _ = fused_chunk_delta_rule(q, k, v, beta, 32)
+    o.backward(do, retain_graph=True)
+    q_grad, k_grad, v_grad, beta_grad = q.grad, k.grad, v.grad, beta.grad
+    q.grad = k.grad = v.grad = beta.grad = None
+    print((o- o2).abs().max())
+    assert (o- o2).abs().max() < 1e-5
+    print((q_grad - q_grad2).abs().max())
+    print((k_grad - k_grad2).abs().max())
+    print((v_grad - v_grad2).abs().max())
+    print((beta_grad - beta_grad2).abs().max())
+    breakpoint()
+    breakpoint()
+

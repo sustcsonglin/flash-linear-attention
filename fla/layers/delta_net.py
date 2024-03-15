@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from fla.modules import RMSNorm
-from fla.ops.delta_rule import fused_recurrent_linear_attn_delta_rule, chunk_linear_attn_delta_rule
+from fla.ops.delta_rule import fused_recurrent_linear_attn_delta_rule, fused_chunk_delta_rule
 
 
 @torch.jit.script
@@ -42,7 +42,7 @@ class DeltaNet(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.mode = mode 
-        assert mode in ['fused_chunk', 'fused_recurrent', 'chunk'], f"Not suppoerted mode `{mode}`."
+        assert mode in ['fused_chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
         self.chunk_size = chunk_size
         self.value_dim = int(d_model * expand_v)
         self.key_dim = int(d_model * expand_k)
@@ -65,17 +65,13 @@ class DeltaNet(nn.Module):
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
-        # q = l2_norm(elu_p1(q))
-        # k = l2_norm(elu_p1(k))
-        q = l2_norm(q)
-        k = l2_norm(k)
         beta = rearrange(self.beta_proj(x), 'b n h -> b h n').sigmoid()
         if self.mode == 'fused_recurrent':
             o = fused_recurrent_linear_attn_delta_rule(q, k, v, beta)
         elif self.mode == 'fused_chunk':
-            o = chunk_linear_attn_delta_rule(q, k, v, beta, self.chunk_size, fused_chunk=True)
-        elif self.mode == 'chunk':
-            o = chunk_linear_attn_delta_rule(q, k, v, beta, self.chunk_size, fused_chunk=False)
+            o, final_state = fused_chunk_delta_rule(q, k, v, beta, self.chunk_size)
+        # elif self.mode == 'chunk':
+        #     o = chunk_linear_attn_delta_rule(q, k, v, beta, self.chunk_size, fused_chunk=False)
         else:
             raise NotImplementedError(f"Not supported mode `{self.mode}`.")
 

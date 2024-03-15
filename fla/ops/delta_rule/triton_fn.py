@@ -5,12 +5,24 @@ from einops import rearrange
 from fla.ops.utils import contiguous
 from packaging import version
 from torch.cuda.amp import custom_bwd, custom_fwd
+from fla.modules.l2norm import _l2_norm_fwd, _l2_norm_bwd
 
 # Inspired by "THE WY REPRESENTATION FOR PRODUCTS OF HOUSEHOLDER MATRICES" https://epubs.siam.org/doi/pdf/10.1137/0908009
 # o: cumprod
 # o2: cumprodsum
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=1),
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=16),
+        triton.Config({}, num_warps=32),
+    ],
+    key=["BT", "BK"],
+)
 @triton.jit
-def fwd_prepare_wy_repr(k, v, beta, o, o2,
+def fwd_prepare_wy_repr_kernel(k, v, beta, o, o2,
                         NT, DK, 
                         BT: tl.constexpr,
                         BK: tl.constexpr):
@@ -44,8 +56,19 @@ def fwd_prepare_wy_repr(k, v, beta, o, o2,
     tl.store(p_o2, (b_v - b_o2).to(p_o2.dtype.element_ty))
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=1),
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=16),
+        triton.Config({}, num_warps=32),
+    ],
+    key=["BT", "BK"],
+)
 @triton.jit
-def bwd_prepare_wy_repr(k, v, beta, 
+def bwd_prepare_wy_repr_kernel(k, v, beta, 
                         o, o2, do, do2,
                         dk, dv, dbeta,
                         NT, DK,
@@ -58,6 +81,7 @@ def bwd_prepare_wy_repr(k, v, beta,
 
     p_beta = beta + i_bh * NT * BT + i_t * BT + tl.arange(0, BT)
     b_k, b_beta = tl.load(p_k), tl.load(p_beta)
+    
     b_beta = b_beta.to(tl.float32)
     A = tl.dot(b_k, tl.trans(b_k), allow_tf32=False) * b_beta[:, None]
     A = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], A, 0)
@@ -82,7 +106,6 @@ def bwd_prepare_wy_repr(k, v, beta,
     b_dk += b_do * b_beta[:, None] 
     b_dbeta = tl.sum(b_do * b_k, axis=1)
     
-    # compute dv
 
     b_dv += tl.dot(tl.trans(A.to(b_k.dtype)), b_do2.to(b_k.dtype), allow_tf32=False)
     b_dbeta += tl.sum(b_dv * b_v, axis=1)
@@ -103,41 +126,63 @@ def bwd_prepare_wy_repr(k, v, beta,
         tl.dot(b_do2.to(b_v.dtype), tl.trans(b_v), allow_tf32=False) - dA, 
         0
     )
-
     b_dbeta += tl.sum(dA * tl.dot(b_k, tl.trans(b_k), allow_tf32=False), axis=1)
-    
     dA = dA * b_beta[:, None]
-    
     b_dk += tl.dot(tl.trans(dA.to(b_k.dtype)), b_k, allow_tf32=False)
-    
     b_dk += tl.dot(dA.to(b_k.dtype), b_k, allow_tf32=False)
-
     p_dk = dk + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :] + i_k * BK
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty))    
-
     p_dbeta = dbeta + i_bh * NT * BT + i_t * BT + tl.arange(0, BT)
     tl.store(p_dbeta, b_dbeta.to(p_dbeta.dtype.element_ty))
+
+
+def fwd_prepare_wy_repr(k, v, beta, chunk_size):
+    c = chunk_size
+    b, h, l, d_k = k.shape
+    # b, h, n, c, d_k = x.shape 
+    v_new = torch.empty_like(k)
+    o_cumdecay = torch.empty_like(k)
+    BT = c
+    BK = d_k
+    NT = l // c
+    NK = triton.cdiv(d_k, BK)
+    assert NK == 1
+    fwd_prepare_wy_repr_kernel[(NK, NT, b*h)](
+        k, v, beta, o_cumdecay, v_new,
+        NT, d_k, BT, BK
+    )
+    return o_cumdecay, v_new
+
+def bwd_prepare_wy_repr(k, v, beta, o_cumdecay, v_new, do, do2, chunk_size):
+    b, h, l, d_k = do.shape 
+    c = chunk_size
+    BK = d_k
+    NT = l // c
+    NK = triton.cdiv(d_k, BK)
+    assert NK == 1
+    dk = torch.zeros_like(k)
+    dv = torch.zeros_like(v)
+    dbeta = torch.zeros_like(beta)
+    bwd_prepare_wy_repr_kernel[(NK, NT, b*h)](
+        k, v, beta,
+        o_cumdecay, v_new, do, do2,
+        dk, dv, dbeta,
+        NT, d_k, chunk_size, BK
+    )
+    return dk, dv, dbeta
+
+
 
 class WYRepresentationPrepration(torch.autograd.Function):
     @staticmethod
     @contiguous
     @custom_fwd
     def forward(ctx, k, v, beta, chunk_size):
-        c = chunk_size
-        b, h, l, d_k = k.shape
-        # b, h, n, c, d_k = x.shape 
-        v_new = torch.empty_like(k).fill_(float("-inf"))
-        o_cumdecay = torch.empty_like(k).fill_(float("-inf"))
-        BT = ctx.BT = c
-        BK = d_k
-        NT = l // c
-        NK = triton.cdiv(d_k, BK)
-        assert NK == 1
-        fwd_prepare_wy_repr[(NK, NT, b*h)](
-        k, v, beta, o_cumdecay, v_new,
-        NT, d_k, BT, BK, num_warps=2, num_stages=4
-        )
-        ctx.save_for_backward(k, v, beta, o_cumdecay.clone(), v_new.clone())
+        # k_origin = k
+        # k = _l2_norm_fwd(k_origin)
+        o_cumdecay, v_new = fwd_prepare_wy_repr(k, v, beta, chunk_size)
+        ctx.chunk_size = chunk_size
+        ctx.save_for_backward(k_origin, v, beta, o_cumdecay, v_new)
         return o_cumdecay, v_new
     
     @staticmethod
@@ -145,22 +190,9 @@ class WYRepresentationPrepration(torch.autograd.Function):
     @custom_bwd
     def backward(ctx, do, do2):
         k, v, beta, o_cumdecay, v_new = ctx.saved_tensors
-        b, h, l, d_k = do.shape 
-        c = BT = ctx.BT
-        BK = d_k
-        NT = l // c
-        NK = triton.cdiv(d_k, BK)
-        assert NK == 1
-        dk = torch.zeros_like(k)
-        dv = torch.zeros_like(v)
-        dbeta = torch.zeros_like(beta)
-        dA = torch.zeros([BT, BT], dtype=torch.float32)
-        bwd_prepare_wy_repr[(NK, NT, b*h)](
-            k, v, beta,
-            o_cumdecay, v_new, do, do2,
-            dk, dv, dbeta,
-            NT, d_k, BT, BK, num_warps=2, num_stages=2
-        )
+        # k = _l2_norm_fwd(k_origin)
+        dk, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, o_cumdecay, v_new, do, do2, ctx.chunk_size)
+        # dk = _l2_norm_bwd(k_origin, dk)
         return dk, dv, dbeta, None
 
 prepare_wy_repr = WYRepresentationPrepration.apply
@@ -168,6 +200,7 @@ prepare_wy_repr = WYRepresentationPrepration.apply
 
 def naive(k, v, beta, chunk_size):
     k, v = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c = chunk_size), (k, v))
+    k = torch.nn.functional.normalize(k, dim=-1, p=2)
     beta = rearrange(beta, 'b h (n c) -> b h n c', c = chunk_size)
     mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=k.device), diagonal=0)
     k_beta = k * beta[..., None]
@@ -193,13 +226,11 @@ if __name__ == "__main__":
     seq_len = 32
     b = 2
     h = 4
-    k = torch.randn(b, h, seq_len, 64) / 10
+    k = torch.randn(b, h, seq_len, 64) 
     v = torch.randn(b, h, seq_len, 64)  
     beta = torch.rand(b, h, seq_len).sigmoid()
-    # beta = torch.ones(b, h, seq_len)
-    # beta = torch.ones(b, h, seq_len)
     require_grad = True
-    k, v, beta = map(lambda x: x.cuda().to(torch.bfloat16).requires_grad_(require_grad), (k, v, beta))
+    k, v, beta = map(lambda x: x.cuda().requires_grad_(require_grad), (k, v, beta))
     do = torch.rand_like(v)
     do2 = torch.rand_like(v)
 
