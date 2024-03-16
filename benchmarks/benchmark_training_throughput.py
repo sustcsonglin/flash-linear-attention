@@ -7,7 +7,7 @@ import torch
 from torch.cuda import max_memory_allocated, memory_allocated
 from torch.optim import AdamW
 from tqdm import trange
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM
 
 from fla.models.abc import ABCConfig
 from fla.models.delta_net import DeltaNetConfig
@@ -23,6 +23,7 @@ configs = {
     'retnet': RetNetConfig,
 }
 
+
 def sizeof_fmt(num, suffix='B'):
     for unit in ('', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi', 'Ei', 'Zi'):
         if abs(num) < 1024.0:
@@ -30,18 +31,19 @@ def sizeof_fmt(num, suffix='B'):
         num /= 1024.0
     return f'{num:.1f}Yi{suffix}'
 
-def param_size(model):
-    n_params = sum(p.numel() for p in model.parameters())
-    return sizeof_fmt(n_params)
 
-def profile_throughput(name: str, batch_size: int = 8, seq_len: int = 2048, warmup_steps: int = 16, steps: int = 32):
+def profile(
+    name: str,
+    batch_size: int = 8,
+    seq_len: int = 2048,
+    warmup_steps: int = 16,
+    steps: int = 32
+):
     device = torch.device('cuda')
-    config = configs[name]()
+    config = configs[name]() if name in configs else AutoConfig.from_pretrained(name)
     model = AutoModelForCausalLM.from_config(config).cuda().to(torch.bfloat16)
-    print(f"Initializing {name} model from the config")
-    print(config)
-    print(model)
-    print(f"Total parameters: {param_size(model)}")
+    print(f"Initializing {name} model from the config:\n{config}\n{model}")
+    print(f"Number of parameters in total: {sizeof_fmt(model.num_parameters())}")
     print(f"Allocated memory after initialization: {sizeof_fmt(memory_allocated(device))}")
 
     optimizer = AdamW(model.parameters())
@@ -84,5 +86,4 @@ if __name__ == "__main__":
     parser.add_argument("--warmup_steps", default=16, type=int)
     parser.add_argument("--steps", default=32, type=int)
     args = parser.parse_args()
-    profile_throughput(args.name, args.batch_size, args.seq_len, args.warmup_steps, args.steps)
-
+    profile(args.name, args.batch_size, args.seq_len, args.warmup_steps, args.steps)
