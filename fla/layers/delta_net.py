@@ -10,8 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from fla.modules import RMSNorm, FusedRMSNormSwishGate
-from fla.ops.delta_rule import fused_recurrent_linear_attn_delta_rule, fused_chunk_delta_rule
+from fla.modules import FusedRMSNormSwishGate, RMSNorm
+from fla.ops.delta_rule import (fused_chunk_delta_rule,
+                                fused_recurrent_linear_attn_delta_rule)
 
 
 @torch.jit.script
@@ -23,11 +24,14 @@ def elu_p1(x):
 def sum_norm(x):
     return x / x.sum(-1, keepdim=True)
 
+
 @torch.jit.script
 def l2_norm(x):
     return x / x.norm(p=2, dim=-1, keepdim=True)
 
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
+
+
 class DeltaNet(nn.Module):
     def __init__(
         self,
@@ -42,7 +46,7 @@ class DeltaNet(nn.Module):
     ) -> DeltaNet:
         super().__init__()
         self.d_model = d_model
-        self.mode = mode 
+        self.mode = mode
         assert mode in ['fused_chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
         self.chunk_size = chunk_size
         self.value_dim = int(d_model * expand_v)
@@ -57,14 +61,14 @@ class DeltaNet(nn.Module):
         self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
-        self.beta_proj = nn.Linear(d_model, self.num_heads, bias=False)        
+        self.beta_proj = nn.Linear(d_model, self.num_heads, bias=False)
         self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
 
         self.use_gate = use_gate
 
         if use_gate:
             self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
-            self.norm = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
+            self.norm = FusedRMSNormSwishGate(self.head_v_dim)
         else:
             self.norm = RMSNorm(self.head_v_dim)
 
@@ -83,7 +87,7 @@ class DeltaNet(nn.Module):
             raise NotImplementedError(f"Not supported mode `{self.mode}`.")
         if self.use_gate:
             g = rearrange(self.g_proj(x), 'b l (h d) -> b l h d', h=self.num_heads)
-            o = self.norm(o, g)        
+            o = self.norm(o, g)
         else:
             o = self.norm(o)
         o = rearrange(o, 'b h l d -> b l (h d)')

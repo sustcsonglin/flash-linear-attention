@@ -115,21 +115,11 @@ class BasedLinearAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = self.d_model // self.num_key_value_heads
         self.causal = causal
-        feature_map_kwargs = {
-            'input_dim': self.feature_dim,
-            'head_dim_idx': -1,
-            'temp': 1.,
-            'eps': 1e-12
-        }
 
-        self.proj_q = nn.Linear(
-            self.d_model, self.feature_dim * self.num_heads, bias=False)
-        self.proj_k = nn.Linear(
-            self.d_model, self.feature_dim * self.num_heads, bias=False)
-        self.proj_v = nn.Linear(
-            self.d_model, self.num_key_value_heads * self.head_dim, bias=False)
-        self.proj_o = nn.Linear(
-            self.num_heads * self.head_dim, self.d_model, bias=False)
+        self.proj_q = nn.Linear(self.d_model, self.feature_dim * self.num_heads, bias=False)
+        self.proj_k = nn.Linear(self.d_model, self.feature_dim * self.num_heads, bias=False)
+        self.proj_v = nn.Linear(self.d_model, self.num_key_value_heads * self.head_dim, bias=False)
+        self.proj_o = nn.Linear(self.num_heads * self.head_dim, self.d_model, bias=False)
         self.dropout = nn.Identity()
         self.eps = eps
         self.feature_map = TaylorFeatureMap(feature_dim)
@@ -164,14 +154,11 @@ class BasedLinearAttention(nn.Module):
         """
         # hidden_states = hidden_states.transpose(1, 2)
         b, l, _ = hidden_states.size()
-        q, k, v = self.proj_q(hidden_states), self.proj_k(
-            hidden_states), self.proj_v(hidden_states)
+        q, k, v = self.proj_q(hidden_states), self.proj_k(hidden_states), self.proj_v(hidden_states)
 
         q = q.view(b, l, self.num_heads, self.feature_dim).transpose(1, 2)
-        k = k.view(b, l, self.num_key_value_heads,
-                   self.feature_dim).transpose(1, 2)
-        v = v.view(b, l, self.num_key_value_heads,
-                   self.head_dim).transpose(1, 2)
+        k = k.view(b, l, self.num_key_value_heads, self.feature_dim).transpose(1, 2)
+        v = v.view(b, l, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         # Linear attention
         q, k = self.feature_map(q), self.feature_map(k)

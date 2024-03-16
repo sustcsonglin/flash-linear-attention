@@ -8,9 +8,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from transformers.activations import ACT2FN
+
 from fla.modules import FusedRMSNormSwishGate, RMSNorm
 from fla.ops.simple_gla import chunk_simple_gla
-from transformers.activations import ACT2FN
 
 
 class SimpleGatedLinearAttention(nn.Module):
@@ -50,7 +51,7 @@ class SimpleGatedLinearAttention(nn.Module):
         self.gk_proj = nn.Linear(d_model, self.num_heads)
         self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
 
-        if (gate_fn == 'swish') and fuse_norm:
+        if gate_fn == 'swish' and fuse_norm:
             self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
             self.fuse_norm_and_gate = True
         else:
@@ -59,15 +60,14 @@ class SimpleGatedLinearAttention(nn.Module):
 
         self.gate_logit_normalizer = gate_logit_normalizer
 
-        self.reset_parameters()
+        self.apply(self._initialize_weights)
 
-    def reset_parameters(self):
-        nn.init.xavier_uniform_(self.q_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.k_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.v_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.o_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.gk_proj.weight, gain=2 ** -2.5)
+    def _initialize_weights(self, module: nn.Module):
+        if getattr(module, "_is_hf_initialized", False):
+            return
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
+        module._is_hf_initialized = True
 
     def forward(self, x):
         mode = self.mode
@@ -108,4 +108,3 @@ if __name__ == '__main__':
     print(y.shape)
     y.sum().backward()
     print(x.grad.shape)
-

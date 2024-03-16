@@ -68,14 +68,14 @@ class MultiScaleRetention(nn.Module):
         assert self.head_qk_dim <= 256, "head_qk_dim must be less than or equal to 256"
         self.rotary = RotaryEmbedding(dim=self.head_qk_dim, interleaved=False)
 
-        self.reset_parameters()
+        self.apply(self._initialize_weights)
 
-    def reset_parameters(self):
-        nn.init.xavier_uniform_(self.q_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.k_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.v_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.o_proj.weight, gain=2 ** -2.5)
+    def _initialize_weights(self, module: nn.Module):
+        if getattr(module, "_is_hf_initialized", False):
+            return
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
+        module._is_hf_initialized = True
 
     def forward(
         self,

@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from einops import rearrange
+from transformers.cache_utils import Cache
 
 from fla.modules import FusedRMSNormSwishGate, RotaryEmbedding
 from fla.ops.abc.chunk import chunk_abc
@@ -70,68 +71,45 @@ class ABCAttention(nn.Module):
 
         self.rotary_emb = RotaryEmbedding(self.head_k_dim)
 
-        self.reset_parameters()
+        self.apply(self._initialize_weights)
 
-    def reset_parameters(self):
-        nn.init.xavier_uniform_(self.q_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.k_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.v_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.g_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.o_proj.weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.s_proj[0].weight, gain=2 ** -2.5)
-        nn.init.xavier_uniform_(self.s_proj[1].weight, gain=2 ** -2.5)
+    def _initialize_weights(self, module: nn.Module):
+        if getattr(module, "_is_hf_initialized", False):
+            return
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
+        module._is_hf_initialized = True
 
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
+        past_key_values: Optional[Cache] = None,
+        use_cache: Optional[bool] = False,
+        output_attentions: Optional[bool] = False,
         **kwargs
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        batch_size, seq_len, _ = hidden_states.shape
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         # [batch_size, seq_len, n_heads * d_head]
         q = self.q_proj(hidden_states)
         k = self.k_proj(hidden_states)
-        v = self.v_proj(hidden_states)
 
-        q = q.view(batch_size, seq_len, self.num_heads, -1)
-        k = k.view(batch_size, seq_len, self.num_heads, -1)
-        v = v.view(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
-
-        kv_seq_len = v.shape[-2]
-        if past_key_value is not None:
-            kv_seq_len += past_key_value[0].shape[-2]
-
-        q, k = self.rotary_emb(q, k)
+        seqlen_offset = 0
+        if past_key_values is not None:
+            seqlen_offset = past_key_values.get_seq_length()
+        q, k = self.rotary(q, k, seqlen_offset)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
-
-        if past_key_value is not None:  # reuse k, v, self_attention
-            k = torch.cat([past_key_value[0], k], dim=2)
-            v = torch.cat([past_key_value[1], v], dim=2)
-
-        past_key_value = (k, v) if use_cache else None
-
-        # cast to half precision
-        input_dtype = q.dtype
-        if input_dtype == torch.float:
-            warnings.warn("The input hidden states seems to be silently casted in float32.")
-            q = q.to(self.config.torch_dtype)
-            k = k.to(self.config.torch_dtype)
-            v = v.to(self.config.torch_dtype)
-
+        v = rearrange(self.v_proj(hidden_states), 'b t (h d) -> b h t d', h=self.num_heads)
         # [batch_size, n_heads, seq_len, num_slots]
         s = rearrange(self.s_proj(hidden_states), 'b t (h m) -> b h t m', h=self.num_heads)
+        s = s.clamp_(self.clamp_min, self.clamp_max)
 
-        o = chunk_abc(q, k, v, s.clamp_(self.clamp_min, self.clamp_max))
+        last_state = past_key_values[self.layer_idx] if use_cache else None
+        o, last_state = chunk_abc(q, k, v, s, initial_state=last_state, output_final_state=use_cache)
+        if past_key_values is not None and last_state is not None:
+            past_key_values.update(last_state, self.layer_idx)
+
         o = rearrange(o, 'b h t d -> b t h d')
         g = rearrange(self.g_proj(hidden_states), 'b t (h d) -> b t h d', h=self.num_heads)
         o = rearrange(self.g_norm(o, g), 'b t h d -> b t (h d)')
         o = self.o_proj(o)
 
-        if not output_attentions:
-            p = None
-
-        return o, p, past_key_value
+        return o, None, past_key_values

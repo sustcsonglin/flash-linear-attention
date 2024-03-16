@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import List, Optional, Tuple, Union
 
@@ -122,16 +123,38 @@ class LinearAttentionPreTrainedModel(PreTrainedModel):
     def __init__(self, *inputs, **kwargs):
         super().__init__(*inputs, **kwargs)
 
-    def _init_weights(self, module):
-        std = self.config.initializer_range
-        if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=std)
+    def _init_weights(
+        self,
+        module: nn.Module,
+        rescale_prenorm_residual: bool = True,
+        num_residuals_per_layer: int = 2,
+    ):
+        if isinstance(module, (nn.Linear, nn.Conv1d)):
+            # Slightly different from the TF version which uses truncated_normal for initialization
+            # cf https://github.com/pytorch/pytorch/pull/5617
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
             if module.bias is not None:
-                module.bias.data.zero_()
+                nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=std)
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
+
+        if rescale_prenorm_residual:
+            # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
+            #   > A modified initialization which accounts for the accumulation on the residual path with model depth. Scale
+            #   > the weights of residual layers at initialization by a factor of 1/√N where N is the # of residual layers.
+            #   >   -- GPT-2 :: https://openai.com/blog/better-language-models/
+            #
+            # Reference (Megatron-LM): https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/gpt_model.py
+            for name, p in module.named_parameters():
+                if name in ["o_proj.weight", "down_proj.weight"]:
+                    # Special Scaled Initialization --> There are 2 Layer Norms per Transformer Block
+                    # Following Pytorch init, except scale by 1/sqrt(2 * n_layer)
+                    # We need to reinit p since this code could be called multiple times
+                    # Having just p *= scale would repeatedly scale it down
+                    with torch.no_grad():
+                        p /= math.sqrt(num_residuals_per_layer * self.config.num_hidden_layers)
 
 
 class LinearAttentionModel(LinearAttentionPreTrainedModel):
@@ -304,6 +327,41 @@ class LinearAttentionForCausalLM(LinearAttentionPreTrainedModel):
 
     def get_decoder(self):
         return self.model
+
+    def generate(self, *args, **kwargs):
+        try:
+            return super().generate(*args, **kwargs)
+        except AttributeError as exc:
+            # Expected exception: "AttributeError: '(object name)' object has no attribute 'past_key_values'"
+            if 'past_key_values' in str(exc):
+                raise AttributeError(
+                    f"You tried to call `generate` with a decoding strategy that manipulates `past_key_values`, "
+                    f"which is not supported for {self.__class__.__name__}. "
+                    f"Try another generation strategy instead. "
+                    f"For the available generation strategies, check this doc: "
+                    f"https://huggingface.co/docs/transformers/en/generation_strategies#decoding-strategies"
+                )
+            else:
+                raise exc
+
+    def prepare_inputs_for_generation(
+        self,
+        input_ids: torch.LongTensor = None,
+        state: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        **kwargs
+    ):
+        # only last token for inputs_ids if the state is passed along.
+        if state is not None:
+            input_ids = input_ids[:, -1].unsqueeze(-1)
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and state is None:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids}
+        model_inputs["state"] = state
+        return model_inputs
 
     def forward(
         self,
