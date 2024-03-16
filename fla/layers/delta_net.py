@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from fla.modules import RMSNorm
+from fla.modules import RMSNorm, FusedRMSNormSwishGate
 from fla.ops.delta_rule import fused_recurrent_linear_attn_delta_rule, fused_chunk_delta_rule
 
 
@@ -32,11 +32,12 @@ class DeltaNet(nn.Module):
     def __init__(
         self,
         d_model: int = 1024,
-        expand_v: float = 1.0,
+        expand_v: float = 0.5,
         expand_k: float = 1.0,
         num_heads: int = 4,
         mode: str = 'fused_chunk',
-        chunk_size: int = 32,
+        chunk_size: int = 16,
+        use_gate: bool = True,
         *args, **kwargs
     ) -> DeltaNet:
         super().__init__()
@@ -56,10 +57,16 @@ class DeltaNet(nn.Module):
         self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
         self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
-        self.beta_proj = nn.Linear(d_model, self.num_heads, bias=False)
-
+        self.beta_proj = nn.Linear(d_model, self.num_heads, bias=False)        
         self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
-        self.norm = RMSNorm(self.head_v_dim)
+
+        self.use_gate = use_gate
+
+        if use_gate:
+            self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
+            self.norm = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
+        else:
+            self.norm = RMSNorm(self.head_v_dim)
 
     def forward(self, x):
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
@@ -74,8 +81,11 @@ class DeltaNet(nn.Module):
         #     o = chunk_linear_attn_delta_rule(q, k, v, beta, self.chunk_size, fused_chunk=False)
         else:
             raise NotImplementedError(f"Not supported mode `{self.mode}`.")
-
-        o = self.norm(o)
+        if self.use_gate:
+            g = rearrange(self.g_proj(x), 'b l (h d) -> b l h d', h=self.num_heads)
+            o = self.norm(o, g)        
+        else:
+            o = self.norm(o)
         o = rearrange(o, 'b h l d -> b l (h d)')
         o = self.o_proj(o)
         return o
