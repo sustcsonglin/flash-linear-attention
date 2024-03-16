@@ -67,6 +67,8 @@ class SimpleGatedLinearAttention(nn.Module):
             return
         if isinstance(module, nn.Linear):
             nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
         module._is_hf_initialized = True
 
     def forward(self, x):

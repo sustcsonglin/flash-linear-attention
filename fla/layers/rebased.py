@@ -51,16 +51,27 @@ class ReBasedLinearAttention(nn.Module):
         self.causal = causal
 
         self.feature_map = RebasedFeatureMap(self.feature_dim, use_gamma, use_beta, normalize)
-        self.proj_q = nn.Linear(self.d_model, self.feature_dim * self.num_heads, bias=False)
-        self.proj_k = nn.Linear(self.d_model, self.feature_dim * self.num_heads, bias=False)
-        self.proj_v = nn.Linear(self.d_model, self.num_key_value_heads * self.head_dim, bias=False)
-        self.proj_o = nn.Linear(self.num_heads * self.head_dim, self.d_model, bias=False)
+        self.q_proj = nn.Linear(self.d_model, self.feature_dim * self.num_heads, bias=False)
+        self.k_proj = nn.Linear(self.d_model, self.feature_dim * self.num_heads, bias=False)
+        self.v_proj = nn.Linear(self.d_model, self.num_key_value_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.d_model, bias=False)
         self.dropout = nn.Identity()
         self.eps = eps
 
+        self.apply(self._initialize_weights)
+
+    def _initialize_weights(self, module: nn.Module):
+        if getattr(module, "_is_hf_initialized", False):
+            return
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        module._is_hf_initialized = True
+
     def forward(self, hidden_states: torch.Tensor, **kwargs):
         mode = self.mode
-        q, k, v = self.proj_q(hidden_states), self.proj_k(hidden_states), self.proj_v(hidden_states)
+        q, k, v = self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
         q, k, v = map(lambda x: rearrange(x, "b l (h d) -> b h l d", h=self.num_heads), [q, k, v])
         q, k = self.feature_map(q, flatten=(mode != 'parallel')), self.feature_map(k, flatten=(mode != 'parallel'))
         if mode == "fused_chunk":
@@ -71,7 +82,7 @@ class ReBasedLinearAttention(nn.Module):
             assert q.shape[-1] <= 128
             o = parallel_rebased(q, k, v, self.eps, True, True)
         o = rearrange(o, "b h l d -> b l (h d)")
-        o = self.proj_o(o)
+        o = self.o_proj(o)
         o = self.dropout(o)
         return o
 
@@ -83,7 +94,7 @@ class ReBasedLinearAttention(nn.Module):
         """
         # hidden_states = hidden_states.transpose(1, 2)
         b, l, _ = hidden_states.size()
-        q, k, v = self.proj_q(hidden_states), self.proj_k(hidden_states), self.proj_v(hidden_states)
+        q, k, v = self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
 
         q = q.view(b, l, self.num_heads, self.feature_dim).transpose(1, 2)
         k = k.view(b, l, self.num_key_value_heads, self.feature_dim).transpose(1, 2)
@@ -99,7 +110,7 @@ class ReBasedLinearAttention(nn.Module):
         else:
             y = ((q * (k * v).sum(2, True)).sum(-1) / ((q * k.sum(2, True)).sum(-1) + self.eps))
         y = rearrange(y, 'b h l d -> b l (h d)')
-        y = self.proj_o(y.to(hidden_states.dtype))
+        y = self.o_proj(y.to(hidden_states.dtype))
         y = self.dropout(y)
         return y.to(hidden_states.dtype)
 

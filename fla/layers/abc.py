@@ -69,7 +69,7 @@ class ABCAttention(nn.Module):
             nn.Linear(self.gate_low_rank_dim, self.num_heads * self.num_slots, bias=True)
         )
 
-        self.rotary_emb = RotaryEmbedding(self.head_k_dim)
+        self.rotary = RotaryEmbedding(self.head_k_dim)
 
         self.apply(self._initialize_weights)
 
@@ -78,6 +78,8 @@ class ABCAttention(nn.Module):
             return
         if isinstance(module, nn.Linear):
             nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
         module._is_hf_initialized = True
 
     def forward(
@@ -88,16 +90,15 @@ class ABCAttention(nn.Module):
         output_attentions: Optional[bool] = False,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
-        # [batch_size, seq_len, n_heads * d_head]
-        q = self.q_proj(hidden_states)
-        k = self.k_proj(hidden_states)
+        q = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
+        k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
 
         seqlen_offset = 0
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length()
         q, k = self.rotary(q, k, seqlen_offset)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
-        v = rearrange(self.v_proj(hidden_states), 'b t (h d) -> b h t d', h=self.num_heads)
+        v = rearrange(self.v_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
         # [batch_size, n_heads, seq_len, num_slots]
         s = rearrange(self.s_proj(hidden_states), 'b t (h m) -> b h t m', h=self.num_heads)
         s = s.clamp_(self.clamp_min, self.clamp_max)

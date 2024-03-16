@@ -72,17 +72,26 @@ class DeltaNet(nn.Module):
         else:
             self.norm = RMSNorm(self.head_v_dim)
 
+        self.apply(self._initialize_weights)
+
+    def _initialize_weights(self, module: nn.Module):
+        if getattr(module, "_is_hf_initialized", False):
+            return
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        module._is_hf_initialized = True
+
     def forward(self, x):
         q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         beta = rearrange(self.beta_proj(x), 'b n h -> b h n').sigmoid()
         if self.mode == 'fused_recurrent':
-            o = fused_recurrent_linear_attn_delta_rule(q, k, v, beta)
+            o, final_state = fused_recurrent_linear_attn_delta_rule(q, k, v, beta)
         elif self.mode == 'fused_chunk':
             o, final_state = fused_chunk_delta_rule(q, k, v, beta, self.chunk_size)
-        # elif self.mode == 'chunk':
-        #     o = chunk_linear_attn_delta_rule(q, k, v, beta, self.chunk_size, fused_chunk=False)
         else:
             raise NotImplementedError(f"Not supported mode `{self.mode}`.")
         if self.use_gate:
