@@ -36,8 +36,8 @@ class DeltaNet(nn.Module):
     def __init__(
         self,
         d_model: int = 1024,
-        expand_v: float = 0.5,
-        expand_k: float = 1.0,
+        expand_v: float = 1.0,
+        expand_k: float = 0.5,
         num_heads: int = 4,
         mode: str = 'fused_chunk',
         chunk_size: int = 16,
@@ -89,6 +89,7 @@ class DeltaNet(nn.Module):
         v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
         beta = rearrange(self.beta_proj(x), 'b n h -> b h n').sigmoid()
         if self.mode == 'fused_recurrent':
+            k = torch.nn.functional.normalize(k, p=2, dim=-1)
             o, final_state = fused_recurrent_linear_attn_delta_rule(q, k, v, beta)
         elif self.mode == 'fused_chunk':
             o, final_state = fused_chunk_delta_rule(q, k, v, beta, self.chunk_size)
