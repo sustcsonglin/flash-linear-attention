@@ -95,12 +95,13 @@ class DeltaNet(nn.Module):
             o, final_state = fused_chunk_delta_rule(q, k, v, beta, self.chunk_size)
         else:
             raise NotImplementedError(f"Not supported mode `{self.mode}`.")
+        o = rearrange(o, 'b h l d -> b l h d')
         if self.use_gate:
             g = rearrange(self.g_proj(x), 'b l (h d) -> b l h d', h=self.num_heads)
             o = self.norm(o, g)
         else:
             o = self.norm(o)
-        o = rearrange(o, 'b h l d -> b l (h d)')
+        o = rearrange(o, 'b l h d -> b l (h d)')
         o = self.o_proj(o)
         return o
 

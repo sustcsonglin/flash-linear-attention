@@ -113,7 +113,7 @@ def bwd_prepare_wy_repr_kernel(k, v, beta,
     
     b_dv += tl.dot(tl.trans(A.to(b_k.dtype)), b_do2.to(b_k.dtype), allow_tf32=False)
     b_dbeta += tl.sum(b_dv * b_v, axis=1)
-    b_v *= b_beta[:, None]
+    b_v = None
     b_dv *= b_beta[:, None]
     p_dv = dv + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
     tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), mask=mask_bv)
@@ -123,13 +123,10 @@ def bwd_prepare_wy_repr_kernel(k, v, beta,
     b_o = tl.load(p_o, mask=mask_bk)
     b_o2 = tl.load(p_o2, mask=mask_bv)
 
-    dA = tl.dot(b_do.to(b_o.dtype), tl.trans(b_o), allow_tf32=False)
-    dA += tl.dot(b_do2.to(b_o2.dtype), tl.trans(b_v - b_o2).to(b_o.dtype), allow_tf32=False)
-    dA = tl.where(
-        tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :],
-        tl.dot(b_do2.to(b_v.dtype), tl.trans(b_v), allow_tf32=False) - dA, 
-        0
-    )
+    dA = -tl.dot(b_do.to(b_o.dtype), tl.trans(b_o), allow_tf32=False)
+    dA += tl.dot(b_do2.to(b_o2.dtype), tl.trans(b_o2).to(b_o.dtype), 
+    allow_tf32=False)
+    dA = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], dA, 0)
     b_dbeta += tl.sum(dA * tl.dot(b_k, tl.trans(b_k), allow_tf32=False), axis=1)
     dA = dA * b_beta[:, None]
     b_dk += tl.dot(tl.trans(dA.to(b_k.dtype)), b_k, allow_tf32=False)
@@ -224,10 +221,10 @@ def naive(k, v, beta, chunk_size):
 
 
 if __name__ == "__main__":
-    seq_len = 32
+    seq_len = 128
     b = 2
     h = 4
-    k = torch.randn(b, h, seq_len, 64) / 10
+    k = torch.nn.functional.normalize(torch.randn(b, h, seq_len, 64), dim=-1, p=2)
     v = torch.randn(b, h, seq_len, 128)   
     beta = torch.rand(b, h, seq_len).sigmoid()
     require_grad = True
