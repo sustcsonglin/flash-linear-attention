@@ -21,9 +21,9 @@ class GatedLinearAttention(nn.Module):
 
     def __init__(
         self,
-        d_model: int = 1024,
-        expand_v: float = 2.0,
+        hidden_size: int = 1024,
         expand_k: float = 1.0,
+        expand_v: float = 2.0,
         num_heads: int = 4,
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
@@ -36,11 +36,11 @@ class GatedLinearAttention(nn.Module):
         *args, **kwargs
     ) -> GatedLinearAttention:
         super().__init__()
-        self.d_model = d_model
+        self.hidden_size = hidden_size
 
         self.mode = mode
-        self.value_dim = int(d_model * expand_v)
-        self.key_dim = int(d_model * expand_k)
+        self.key_dim = int(hidden_size * expand_k)
+        self.value_dim = int(hidden_size * expand_v)
         self.clamp_min = clamp_min
         self.layer_idx = layer_idx
 
@@ -52,14 +52,14 @@ class GatedLinearAttention(nn.Module):
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = ACT2FN[gate_fn]
 
-        self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
-        self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
-        self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
-        self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
+        self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
+        self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
+        self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
 
-        self.gk_proj = nn.Sequential(nn.Linear(d_model, gate_low_rank_dim, bias=False),
+        self.gk_proj = nn.Sequential(nn.Linear(hidden_size, gate_low_rank_dim, bias=False),
                                      nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
-        self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
+        self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if (gate_fn == 'swish') and fuse_norm:
             self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
@@ -132,8 +132,8 @@ if __name__ == '__main__':
     batch = 4
     seq_len = 1024
 
-    d_model = 2048
-    # x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
+    hidden_size = 2048
+    # x = torch.randn(batch, seq_len, hidden_size).to(torch.bfloat16).cuda().requires_grad_(True)
     # model = GatedLinearAttention(use_gk=True, use_gv=True, mode='fused_chunk').to(torch.bfloat16).cuda()
     # y = model(x)
     # print(y.shape)
@@ -141,8 +141,8 @@ if __name__ == '__main__':
     # print(x.grad.shape)
 
     for act in ['swish']:
-        org = GatedLinearAttention(d_model=d_model, gate_fn=act, fuse_norm=False).to(torch.bfloat16).cuda()
-        fused = GatedLinearAttention(d_model=d_model, gate_fn=act, fuse_norm=True).to(torch.bfloat16).cuda()
+        org = GatedLinearAttention(hidden_size=hidden_size, gate_fn=act, fuse_norm=False).to(torch.bfloat16).cuda()
+        fused = GatedLinearAttention(hidden_size=hidden_size, gate_fn=act, fuse_norm=True).to(torch.bfloat16).cuda()
         fused.q_proj.weight.data.copy_(org.q_proj.weight.data)
         fused.k_proj.weight.data.copy_(org.k_proj.weight.data)
         fused.v_proj.weight.data.copy_(org.v_proj.weight.data)
@@ -152,7 +152,7 @@ if __name__ == '__main__':
         fused.gk_proj[1].weight.data.copy_(org.gk_proj[1].weight.data)
         fused.gk_proj[1].bias.data.copy_(org.gk_proj[1].bias.data)
 
-        x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda()
+        x = torch.randn(batch, seq_len, hidden_size).to(torch.bfloat16).cuda()
         org_x = x.clone().requires_grad_(True)
         fused_x = x.clone().requires_grad_(True)
         org_o = org(org_x)

@@ -6,7 +6,6 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from einops import rearrange
 
 
@@ -39,15 +38,15 @@ class ShortConvolution(nn.Module):
 
     def __init__(
         self,
-        d_model: int,
+        hidden_size: int,
         kernel_size: int
     ):
         super().__init__()
         self.conv = nn.Conv1d(
-            in_channels=d_model,
-            out_channels=d_model,
+            in_channels=hidden_size,
+            out_channels=hidden_size,
             kernel_size=kernel_size,
-            groups=d_model,
+            groups=hidden_size,
             padding=kernel_size - 1,
         )
 
@@ -69,26 +68,27 @@ class LongConvolution(nn.Module):
     filter of length l_max.
     The filter is learned during training and is applied using FFT convolution.
     Args:
-        d_model (int): The number of expected features in the input and output.
+        hidden_size (int): The number of expected features in the input and output.
         l_max (int): The maximum sequence length.
     Returns:
         y: (b, l, d) tensor
     """
+
     def __init__(
         self,
-        d_model: int,
+        hidden_size: int,
         l_max: int,
         **kwargs,
     ):
         """
         Initializes the LongConvolution module.
         Args:
-            d_model (int): The number of expected features in the input and output.
+            hidden_size (int): The number of expected features in the input and output.
             l_max (int): The maximum sequence length.
         """
         super().__init__()
-        self.d_model = d_model
-        self.filter = nn.Parameter(torch.randn(self.d_model, l_max), requires_grad=True)
+        self.hidden_size = hidden_size
+        self.filter = nn.Parameter(torch.randn(self.hidden_size, l_max), requires_grad=True)
 
     def forward(self, x: torch.Tensor, *args, **kwargs):
         """
@@ -127,12 +127,13 @@ class PositionalEmbedding(nn.Module):
     def forward(self, L):
         return self.z[:, :L]
 
+
 class ImplicitLongConvolution(nn.Module):
     """
     Long convolution with implicit filter parameterized by an MLP.
 
     Args:
-        d_model (int): The number of expected features in the input and output.
+        hidden_size (int): The number of expected features in the input and output.
         l_max (int): The maximum sequence length.
         d_emb (int, optional): The dimension of the positional embeddings. Must be odd and greater or equal to 3 (time, sine and cosine). Defaults to 3.
         d_hidden (int, optional): The number of features in the hidden layer of the MLP. Defaults to 16.
@@ -143,12 +144,11 @@ class ImplicitLongConvolution(nn.Module):
 
     """
 
-
     def __init__(
         self,
-        d_model: int,
+        hidden_size: int,
         l_max: int,
-        d_emb: int=3,
+        d_emb: int = 3,
         d_hidden: int = 16,
         **kwargs,
     ):
@@ -158,9 +158,8 @@ class ImplicitLongConvolution(nn.Module):
 
         """
         super().__init__()
-        self.d_model = d_model
+        self.hidden_size = hidden_size
         self.d_emb = d_emb
-
 
         assert (
             d_emb % 2 != 0 and d_emb >= 3
@@ -171,9 +170,8 @@ class ImplicitLongConvolution(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(d_emb, d_hidden),
             torch.nn.ReLU(),
-            nn.Linear(d_hidden, d_model),
+            nn.Linear(d_hidden, hidden_size),
         )
-
 
     def filter(self, l: int, *args, **kwargs):
         k = self.mlp(self.pos_emb(l))

@@ -57,17 +57,17 @@ Example usage is as follows:
 ```py
 from fla.layers import MultiScaleRetention, GatedLinearAttention, BasedLinearAttention 
 
-d_model = 1024
+hidden_size = 1024
 num_head = 4
 device = "cuda:0"
 dtype = torch.bfloat16
 
-retnet = MultiScaleRetention(d_model=d_model, num_heads=num_head).to(device).to(dtype)
-gla = GatedLinearAttention(d_model=d_model, num_heads=num_head).to(device).to(dtype)
-based = BasedLinearAttention(d_model=d_model, num_heads=num_head).to(device).to(dtype)
+retnet = MultiScaleRetention(hidden_size=hidden_size, num_heads=num_head).to(device).to(dtype)
+gla = GatedLinearAttention(hidden_size=hidden_size, num_heads=num_head).to(device).to(dtype)
+based = BasedLinearAttention(hidden_size=hidden_size, num_heads=num_head).to(device).to(dtype)
 
-bsz, seq_len, d_model = 32, 2048, 1024
-x = torch.randn(bsz, seq_len, d_model).to(device).to(dtype)
+bsz, seq_len, hidden_size = 32, 2048, 1024
+x = torch.randn(bsz, seq_len, hidden_size).to(device).to(dtype)
 y1 = retnet(x)
 y2 = gla(x)
 y3 = based(x)

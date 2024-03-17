@@ -18,9 +18,9 @@ class SimpleGatedLinearAttention(nn.Module):
 
     def __init__(
         self,
-        d_model: int = 1024,
-        expand_v: float = 2.0,
+        hidden_size: int = 1024,
         expand_k: float = 1.0,
+        expand_v: float = 2.0,
         num_heads: int = 4,
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
@@ -30,11 +30,11 @@ class SimpleGatedLinearAttention(nn.Module):
         *args, **kwargs
     ) -> SimpleGatedLinearAttention:
         super().__init__()
-        self.d_model = d_model
+        self.hidden_size = hidden_size
 
         self.mode = mode
-        self.value_dim = int(d_model * expand_v)
-        self.key_dim = int(d_model * expand_k)
+        self.key_dim = int(hidden_size * expand_k)
+        self.value_dim = int(hidden_size * expand_v)
         assert mode in ['chunk'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
@@ -43,13 +43,13 @@ class SimpleGatedLinearAttention(nn.Module):
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = ACT2FN[gate_fn]
 
-        self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
-        self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
-        self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
-        self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
+        self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
+        self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
+        self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
 
-        self.gk_proj = nn.Linear(d_model, self.num_heads)
-        self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
+        self.gk_proj = nn.Linear(hidden_size, self.num_heads)
+        self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if gate_fn == 'swish' and fuse_norm:
             self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
@@ -103,9 +103,9 @@ if __name__ == '__main__':
     batch = 4
     seq_len = 1024
 
-    d_model = 2048
-    x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
-    model = SimpleGatedLinearAttention(d_model=d_model, mode='chunk').to(torch.bfloat16).cuda()
+    hidden_size = 2048
+    x = torch.randn(batch, seq_len, hidden_size).to(torch.bfloat16).cuda().requires_grad_(True)
+    model = SimpleGatedLinearAttention(hidden_size=hidden_size, mode='chunk').to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)
     y.sum().backward()

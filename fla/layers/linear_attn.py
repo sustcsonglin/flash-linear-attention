@@ -14,7 +14,7 @@ from fla.ops.linear_attn import (chunk_linear_attn, fused_chunk_linear_attn,
 class LinearAttention(nn.Module):
     def __init__(
         self,
-        d_model: str = 1024,
+        hidden_size: str = 1024,
         expand_k: int = 1.0,
         expand_v: int = 1.0,
         num_heads: int = 8,
@@ -35,10 +35,10 @@ class LinearAttention(nn.Module):
 
         assert output_norm in ['rmsnorm', 'identity'], f"Not supported output norm `{output_norm}`."
 
-        self.d_model = d_model
+        self.hidden_size
         self.mode = mode
-        self.key_dim = int(d_model * expand_k)
-        self.value_dim = int(d_model * expand_v)
+        self.key_dim = int(hidden_size * expand_k)
+        self.value_dim = int(hidden_size * expand_v)
         self.num_heads = num_heads
 
         assert mode in ['chunk', 'fused_chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
@@ -97,10 +97,10 @@ class LinearAttention(nn.Module):
         else:
             raise NotImplementedError
 
-        self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
-        self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
-        self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
-        self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
+        self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
+        self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
+        self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         self.norm_q = norm_q
         self.norm_k = norm_k
@@ -146,9 +146,9 @@ if __name__ == '__main__':
     import torch
     batch = 4
     seq_len = 1024
-    d_model = 1024
-    x = torch.randn(batch, seq_len, d_model).to(torch.bfloat16).cuda().requires_grad_(True)
-    model = LinearAttention(d_model=d_model, feature_map='dplp').to(torch.bfloat16).cuda()
+    hidden_size = 1024
+    x = torch.randn(batch, seq_len, hidden_size).to(torch.bfloat16).cuda().requires_grad_(True)
+    model = LinearAttention(hidden_size, feature_map='dplp').to(torch.bfloat16).cuda()
     y = model(x)
     print(y.shape)
     y.sum().backward()

@@ -17,7 +17,7 @@ from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn
 class BasedLinearAttention(nn.Module):
     def __init__(
         self,
-        d_model: int,
+        hidden_size: int,
         l_max: int = 2048,
         feature_dim: int = 16,
         num_key_value_heads: int = 12,
@@ -28,7 +28,7 @@ class BasedLinearAttention(nn.Module):
         mode: str = "parallel",
     ):
         super().__init__()
-        self.d_model = d_model
+        self.hidden_size
         self.l_max = l_max
         self.mode = mode
         assert self.mode in ["fused_chunk", "parallel", 'chunk']
@@ -38,13 +38,13 @@ class BasedLinearAttention(nn.Module):
         self.feature_dim = feature_dim
         self.num_key_value_heads = num_key_value_heads
         self.num_heads = num_heads
-        self.head_dim = self.d_model // self.num_key_value_heads
+        self.head_dim = self.hidden_size // self.num_key_value_heads
         self.causal = causal
 
-        self.q_proj = nn.Linear(self.d_model, self.feature_dim * self.num_heads, bias=False)
-        self.k_proj = nn.Linear(self.d_model, self.feature_dim * self.num_heads, bias=False)
-        self.v_proj = nn.Linear(self.d_model, self.num_key_value_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.d_model, bias=False)
+        self.q_proj = nn.Linear(self.hidden_size, self.feature_dim * self.num_heads, bias=False)
+        self.k_proj = nn.Linear(self.hidden_size, self.feature_dim * self.num_heads, bias=False)
+        self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
         self.dropout = nn.Identity()
         self.feature_map = TaylorFeatureMap(feature_dim)
         self.eps = eps
@@ -111,11 +111,11 @@ class BasedLinearAttention(nn.Module):
 if __name__ == '__main__':
     batch = 4
     seq_len = 1024
-    d_model = 1024
+    hidden_size = 1024
     dtype = torch.float32
-    x = torch.randn(batch, seq_len, d_model).to(dtype).cuda().requires_grad_(True)
-    dy = torch.randn(batch, seq_len, d_model).to(dtype).cuda()
-    model = BasedLinearAttention(d_model=d_model, mode='chunk').to(dtype).cuda()
+    x = torch.randn(batch, seq_len, hidden_size).to(dtype).cuda().requires_grad_(True)
+    dy = torch.randn(batch, seq_len, hidden_size).to(dtype).cuda()
+    model = BasedLinearAttention(hidden_size, mode='chunk').to(dtype).cuda()
     y = model(x)
     y.backward(dy, retain_graph=True)
     x_grad, x.grad = x.grad, None

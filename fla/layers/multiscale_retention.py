@@ -21,7 +21,7 @@ from fla.ops.retention import (chunk_retention, fused_chunk_retention,
 class MultiScaleRetention(nn.Module):
     def __init__(
         self,
-        d_model: str = 1024,
+        hidden_size: str = 1024,
         expand_k: str = 1,
         expand_v: str = 2,
         num_heads: str = 4,
@@ -35,10 +35,10 @@ class MultiScaleRetention(nn.Module):
     ) -> MultiScaleRetention:
         super().__init__()
 
-        self.d_model = d_model
+        self.hidden_size = hidden_size
         self.mode = mode
-        self.key_dim = int(d_model * expand_k)
-        self.value_dim = int(d_model * expand_v)
+        self.key_dim = int(hidden_size * expand_k)
+        self.value_dim = int(hidden_size * expand_v)
         self.num_heads = num_heads
         self.layer_idx = layer_idx
 
@@ -49,11 +49,11 @@ class MultiScaleRetention(nn.Module):
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = ACT2FN[gate_fn]
-        self.q_proj = nn.Linear(d_model, self.key_dim, bias=False)
-        self.k_proj = nn.Linear(d_model, self.key_dim, bias=False)
-        self.v_proj = nn.Linear(d_model, self.value_dim, bias=False)
-        self.g_proj = nn.Linear(d_model, self.value_dim, bias=False)
-        self.o_proj = nn.Linear(self.value_dim, d_model, bias=False)
+        self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
+        self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
+        self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
+        self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if (gate_fn == 'swish') and fuse_norm:
             self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
