@@ -65,6 +65,7 @@ class DeltaNetConfig(PretrainedConfig):
         self.fuse_cross_entropy = fuse_cross_entropy
         self.use_gate = use_gate
         self.use_short_conv = use_short_conv
+        self.conv_size = conv_size
 
         super().__init__(
             pad_token_id=pad_token_id,
