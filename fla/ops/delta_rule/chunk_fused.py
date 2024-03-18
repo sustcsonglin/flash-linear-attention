@@ -329,12 +329,16 @@ class FusedChunkDeltaRuleFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @custom_fwd
-    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state):
+    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_lvl=1):
+        # lvl=1 will recompute ``fwd_prepare_wy_repr`` for saving memory.
+        assert checkpoint_lvl in [0, 1]
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         k_origin = k
         k = _l2_norm_fwd(k_origin)
         d, v_new = fwd_prepare_wy_repr(k, v, beta, BT)
         o, v_new2, CHECK, final_state = fused_chunk_delta_rule_fwd(q, k, v_new, d, BT, initial_state, output_final_state)
+        if checkpoint_lvl == 1:
+            d, v_new = None, None
         ctx.save_for_backward(q, k_origin, v, v_new, v_new2, d, beta, initial_state)
         ctx.CHECK = CHECK
         ctx.chunk_size = BT
@@ -347,11 +351,12 @@ class FusedChunkDeltaRuleFunction(torch.autograd.Function):
         q, k_origin, v, v_new, v_new2, d, beta, initial_state = ctx.saved_tensors
         chunk_size = ctx.chunk_size
         k = _l2_norm_fwd(k_origin)
+        if d is None:
+            d, v_new = fwd_prepare_wy_repr(k, v, beta, chunk_size)
         dq, dk, dv, dd = fused_chunk_delta_rule_bwd(q, k, v_new2, d, do, chunk_size, ctx.CHECK, initial_state)
         dk2, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, d, v_new, dd, dv, chunk_size)
         dk.add_(dk2)
         dk = _l2_norm_bwd(k_origin, dk)   
-        # dq *= q.shape[-1] ** -0.5 
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dbeta.to(d.dtype), None, None, None
 
 
@@ -414,5 +419,3 @@ if __name__ == "__main__":
     print((v_grad - v_grad2).abs().max())
     print((beta_grad - beta_grad2).abs().max())
     breakpoint()
-    breakpoint()
-
