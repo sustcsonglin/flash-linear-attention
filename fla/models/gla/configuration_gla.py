@@ -21,6 +21,8 @@ class GLAConfig(PretrainedConfig):
         num_hidden_layers: int = 24,
         num_heads: int = 4,
         attn_mode: str = "fused_chunk",
+        use_short_conv: bool = False,
+        conv_size: int = 4,
         clamp_min: Optional[float] = None,
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
@@ -56,6 +58,8 @@ class GLAConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.fuse_norm = fuse_norm
         self.fuse_cross_entropy = fuse_cross_entropy
+        self.use_short_conv = use_short_conv
+        self.conv_size = conv_size
 
         super().__init__(
             pad_token_id=pad_token_id,

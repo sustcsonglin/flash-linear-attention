@@ -14,13 +14,18 @@ class DeltaNetConfig(PretrainedConfig):
         self,
         vocab_size: int = 32000,
         hidden_size: int = 2048,
-        expand_k: int = 1,
+        expand_k: int = 0.5,
         expand_v: int = 1,
+        use_gate: bool = True,
+        use_short_conv: bool = False,
+        conv_size: int = 4,
+
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
-        num_heads: int = 16,
+        num_heads: int = 4,
         attn_mode: str = "fused_chunk",
+        chunk_size: int = 16,
         feature_map: str = "elementwise_product",
         tie_feature_map_qk: bool = False,
         norm_q: bool = False,
@@ -58,6 +63,8 @@ class DeltaNetConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         self.fuse_cross_entropy = fuse_cross_entropy
+        self.use_gate = use_gate
+        self.use_short_conv = use_short_conv
 
         super().__init__(
             pad_token_id=pad_token_id,

@@ -16,6 +16,17 @@ from transformers.cache_utils import Cache
 from fla.modules import FusedRMSNormSwishGate, RMSNorm
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
+from transformers.utils import logging
+import warnings
+logger = logging.get_logger(__name__)
+try:
+    from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+except:
+    causal_conv1d_fn = None
+    causal_conv1d_update = None
+    logger.warning_once("causal_conv1d_fn is not available")
+from fla.layers.utils import proj_then_conv1d, make_conv1d_module
+
 
 class GatedLinearAttention(nn.Module):
 
@@ -25,10 +36,16 @@ class GatedLinearAttention(nn.Module):
         expand_k: float = 1.0,
         expand_v: float = 2.0,
         num_heads: int = 4,
+
+        use_short_conv: bool = False,
+        conv_size: int = 4,
+        conv_bias: bool = False,
+
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
         gate_logit_normalizer: int = 16,
         gate_low_rank_dim: int = 16,
+
         mode: str = 'fused_chunk',
         clamp_min: Optional[float] = None,
         fuse_norm: bool = True,
@@ -56,6 +73,14 @@ class GatedLinearAttention(nn.Module):
         self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
+
+        self.use_short_conv = use_short_conv
+        if use_short_conv:
+            self.conv_size = conv_size
+            assert causal_conv1d_fn is not None, "causal_conv1d_fn is not available, Please install via `pip install causal-conv1d>=1.2.0`."
+            self.q_conv1d = make_conv1d_module(self.key_dim, conv_size, conv_bias)
+            self.k_conv1d = make_conv1d_module(self.key_dim, conv_size, conv_bias)
+            self.v_conv1d = make_conv1d_module(self.value_dim, conv_size, conv_bias)
 
         self.gk_proj = nn.Sequential(nn.Linear(hidden_size, gate_low_rank_dim, bias=False),
                                      nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
@@ -92,9 +117,21 @@ class GatedLinearAttention(nn.Module):
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
-        q = rearrange(self.q_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
-        k = rearrange(self.k_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
-        v = rearrange(self.v_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
+        if self.use_short_conv:
+            assert past_key_values is None,  "use_short_conv is not supported yet for inference."
+            q = proj_then_conv1d(hidden_states, self.q_proj.weight, 
+            self.q_conv1d.weight, self.q_conv1d.bias)
+            k = proj_then_conv1d(hidden_states, self.k_proj.weight,
+            self.k_conv1d.weight, self.k_conv1d.bias)
+            v = proj_then_conv1d(hidden_states, self.v_proj.weight,
+            self.v_conv1d.weight, self.v_conv1d.bias)
+            q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
+            
+        else:
+            q = rearrange(self.q_proj(hidden_states), 'b l (h d) -> b h l d', h=self.num_heads)
+            k = rearrange(self.k_proj(hidden_states), 'b l (h d) -> b h l d', h=self.num_heads)
+            v = rearrange(self.v_proj(hidden_states), 'b l (h d) -> b h l d', h=self.num_heads)
+
         gk = rearrange(self.gk_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
         gk = F.logsigmoid(gk) / self.gate_logit_normalizer
 

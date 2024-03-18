@@ -68,12 +68,15 @@ class DeltaNetBlock(nn.Module):
             expand_v=config.expand_v,
             num_heads=config.num_heads,
             mode=config.attn_mode,
+            use_gate=config.use_gate,
+            use_short_conv=config.use_short_conv,
+            conv_size=config.conv_size,
             feature_map=config.feature_map,
             tie_feature_map_qk=config.tie_feature_map_qk,
             norm_q=config.norm_q,
             norm_k=config.norm_k,
             do_feature_map_norm=config.norm_feature_map,
-            layer_idx=layer_idx
+            layer_idx=layer_idx            
         )
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = DeltaNetMLP(
