@@ -25,7 +25,7 @@ except:
     causal_conv1d_fn = None
     causal_conv1d_update = None
     logger.warning_once("causal_conv1d_fn is not available")
-from fla.layers.utils import proj_then_conv1d, make_conv1d_module
+from fla.layers.utils import proj_then_shortconv, make_conv1d_module
 
 
 class GatedLinearAttention(nn.Module):
@@ -40,6 +40,7 @@ class GatedLinearAttention(nn.Module):
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
+        share_conv_kernel: bool = True,
 
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
@@ -78,9 +79,12 @@ class GatedLinearAttention(nn.Module):
         if use_short_conv:
             self.conv_size = conv_size
             assert causal_conv1d_fn is not None, "causal_conv1d_fn is not available, Please install via `pip install causal-conv1d>=1.2.0`."
-            self.q_conv1d = make_conv1d_module(self.key_dim, conv_size, conv_bias)
-            self.k_conv1d = make_conv1d_module(self.key_dim, conv_size, conv_bias)
-            self.v_conv1d = make_conv1d_module(self.value_dim, conv_size, conv_bias)
+            if share_conv_kernel:
+                self.h_conv1d = make_conv1d_module(self.hidden_size, conv_size, conv_bias)
+            else:
+                self.q_conv1d = make_conv1d_module(self.key_dim, conv_size, conv_bias)
+                self.k_conv1d = make_conv1d_module(self.key_dim, conv_size, conv_bias)
+                self.v_conv1d = make_conv1d_module(self.value_dim, conv_size, conv_bias)
 
         self.gk_proj = nn.Sequential(nn.Linear(hidden_size, gate_low_rank_dim, bias=False),
                                      nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
@@ -94,7 +98,6 @@ class GatedLinearAttention(nn.Module):
             self.g_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
 
         self.gate_logit_normalizer = gate_logit_normalizer
-
         self.apply(self._initialize_weights)
 
     def _initialize_weights(self, module: nn.Module):
@@ -119,19 +122,25 @@ class GatedLinearAttention(nn.Module):
 
         if self.use_short_conv:
             assert past_key_values is None,  "use_short_conv is not supported yet for inference."
-            q = proj_then_conv1d(hidden_states, self.q_proj.weight, 
-            self.q_conv1d.weight, self.q_conv1d.bias)
-            k = proj_then_conv1d(hidden_states, self.k_proj.weight,
-            self.k_conv1d.weight, self.k_conv1d.bias)
-            v = proj_then_conv1d(hidden_states, self.v_proj.weight,
-            self.v_conv1d.weight, self.v_conv1d.bias)
-            q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
+            if self.share_conv_kernel:
+                hidden_states = shortconv(hidden_states, self.h_conv1d.weight, self.h_conv1d.bias)
+                q = self.q_proj(hidden_states)
+                k = self.k_proj(hidden_states)
+                v = self.v_proj(hidden_states)
+            else:
+                q = proj_then_shortconv(hidden_states, self.q_proj.weight, 
+                self.q_conv1d.weight, self.q_conv1d.bias)
+                k = proj_then_shortconv(hidden_states, self.k_proj.weight,
+                self.k_conv1d.weight, self.k_conv1d.bias)
+                v = proj_then_shortconv(hidden_states, self.v_proj.weight,
+                self.v_conv1d.weight, self.v_conv1d.bias)
             
         else:
-            q = rearrange(self.q_proj(hidden_states), 'b l (h d) -> b h l d', h=self.num_heads)
-            k = rearrange(self.k_proj(hidden_states), 'b l (h d) -> b h l d', h=self.num_heads)
-            v = rearrange(self.v_proj(hidden_states), 'b l (h d) -> b h l d', h=self.num_heads)
+            q = self.q_proj(hidden_states)
+            k = self.k_proj(hidden_states)
+            v = self.v_proj(hidden_states)
 
+        q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
         gk = rearrange(self.gk_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
         gk = F.logsigmoid(gk) / self.gate_logit_normalizer
 

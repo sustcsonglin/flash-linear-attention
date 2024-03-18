@@ -19,6 +19,7 @@ class DeltaNetConfig(PretrainedConfig):
         use_gate: bool = True,
         use_short_conv: bool = False,
         conv_size: int = 4,
+        share_conv_kernel: bool = True,
 
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
@@ -66,6 +67,7 @@ class DeltaNetConfig(PretrainedConfig):
         self.use_gate = use_gate
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
+        self.share_conv_kernel = share_conv_kernel
 
         super().__init__(
             pad_token_id=pad_token_id,

@@ -69,6 +69,7 @@ class GLABlock(nn.Module):
             num_heads=config.num_heads,
             use_short_conv=config.use_short_conv,
             conv_size=config.conv_size,
+            share_conv_kernel=config.share_conv_kernel,
             gate_fn=config.hidden_act,
             layernorm_eps=config.rms_norm_eps,
             mode=config.attn_mode,
