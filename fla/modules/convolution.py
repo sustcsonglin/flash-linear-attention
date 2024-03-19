@@ -1,12 +1,22 @@
 # -*- coding: utf-8 -*-
 
 # from https://github.com/HazyResearch/zoology/blob/main/zoology/mixers/convolution.py
+
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+
+from fla.modules.activations import ACT2FN
+
+try:
+    from causal_conv1d import causal_conv1d_fn
+except ImportError:
+    causal_conv1d_fn = None
+    causal_conv1d_update = None
 
 
 def fft_conv(u, k, dropout_mask, gelu=True, k_rev=None):
@@ -33,15 +43,17 @@ def fft_conv(u, k, dropout_mask, gelu=True, k_rev=None):
 
 class ShortConvolution(nn.Module):
     """
-    Simple wrapper around nn.Conv1d that accepts dimension last.
+    Simple wrapper around `nn.Conv1d` that accepts dimension last.
     """
 
     def __init__(
         self,
         hidden_size: int,
-        kernel_size: int
+        kernel_size: int,
+        activation: Optional[str] = None
     ):
         super().__init__()
+
         self.conv = nn.Conv1d(
             in_channels=hidden_size,
             out_channels=hidden_size,
@@ -50,16 +62,34 @@ class ShortConvolution(nn.Module):
             padding=kernel_size - 1,
         )
 
-    def forward(self, x: torch.Tensor):
+        self.activation = None
+        if activation is not None:
+            assert activation in ['silu', 'swish'], f"Activation `{activation}` not supported yet."
+            self.activation = activation
+
+    def forward(
+        self, x: torch.Tensor
+    ) -> torch.Tensor:
         """
         Args:
-            x: (b, l, d) tensor
+            x: tensor of shape `[batch_size, seq_len, hidden_size]`
         Returns:
-            y: (b, l, d) tensor
+            Tensor of shape `[batch_size, seq_len, hidden_size]`
         """
-        l = x.size(1)
-        y = self.conv(x.transpose(1, 2))[..., :l].transpose(1, 2)
-        return y
+        seq_len = x.size(1)
+        x = rearrange(x, "b l d -> b d l")
+        if causal_conv1d_fn is not None:
+            x = causal_conv1d_fn(
+                x=x,
+                weight=rearrange(self.conv.weight, "d 1 w -> d w"),
+                bias=self.conv.bias,
+                activation=self.activation,
+            )
+        else:
+            x = self.conv(x)[..., :seq_len]
+            if self.activation is not None:
+                x = ACT2FN[self.activation](x)
+        return rearrange(x, "b d l -> b l d")
 
 
 class LongConvolution(nn.Module):
@@ -133,14 +163,19 @@ class ImplicitLongConvolution(nn.Module):
     Long convolution with implicit filter parameterized by an MLP.
 
     Args:
-        hidden_size (int): The number of expected features in the input and output.
-        l_max (int): The maximum sequence length.
-        d_emb (int, optional): The dimension of the positional embeddings. Must be odd and greater or equal to 3 (time, sine and cosine). Defaults to 3.
-        d_hidden (int, optional): The number of features in the hidden layer of the MLP. Defaults to 16.
+        hidden_size (int):
+            The number of expected features in the input and output.
+        l_max (int):
+            The maximum sequence length.
+        d_emb (Optional[int]):
+            The dimension of the positional embeddings. Must be odd and greater or equal to 3 (time, sine and cosine).
+            Defaults to 3.
+        d_hidden (Optional[int]):
+            The number of features in the hidden layer of the MLP. Defaults to 16.
 
     Attributes:
-        pos_emb (PositionalEmbedding): The positional embedding layer.
-        mlp (nn.Sequential): The MLP that parameterizes the implicit filter.
+        pos_emb (`PositionalEmbedding`): The positional embedding layer.
+        mlp (`nn.Sequential`): The MLP that parameterizes the implicit filter.
 
     """
 
@@ -173,8 +208,8 @@ class ImplicitLongConvolution(nn.Module):
             nn.Linear(d_hidden, hidden_size),
         )
 
-    def filter(self, l: int, *args, **kwargs):
-        k = self.mlp(self.pos_emb(l))
+    def filter(self, seq_len: int, *args, **kwargs):
+        k = self.mlp(self.pos_emb(seq_len))
 
         return k.transpose(1, 2)
 
