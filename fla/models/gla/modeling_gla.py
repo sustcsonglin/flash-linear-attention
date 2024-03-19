@@ -63,6 +63,7 @@ class GLABlock(nn.Module):
 
         self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
         self.attn = GatedLinearAttention(
+            mode=config.attn_mode,
             hidden_size=config.hidden_size,
             expand_k=config.expand_k,
             expand_v=config.expand_v,
@@ -72,7 +73,6 @@ class GLABlock(nn.Module):
             share_conv_kernel=config.share_conv_kernel,
             gate_fn=config.hidden_act,
             layernorm_eps=config.rms_norm_eps,
-            mode=config.attn_mode,
             clamp_min=config.clamp_min,
             fuse_norm=config.fuse_norm,
             layer_idx=layer_idx
@@ -220,7 +220,7 @@ class GLAModel(GLAPreTrainedModel):
                 num_layers = self.config.num_hidden_layers
                 batch_size = hidden_states.shape[0]
                 key_dim = int(self.config.hidden_size * self.config.expand_k)
-                value_dim = int(self.config.hidden_size * self.config.expand_v)
+                value_dim = int(self.config.hidden_size * self.config.expand_v // self.config.num_heads)
                 past_key_values = hidden_states.new_zeros(num_layers, batch_size, key_dim, value_dim)
             if not isinstance(past_key_values, RecurrentCache):
                 past_key_values = RecurrentCache.from_legacy_cache(past_key_values, seq_length)

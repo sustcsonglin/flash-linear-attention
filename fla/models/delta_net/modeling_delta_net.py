@@ -63,11 +63,11 @@ class DeltaNetBlock(nn.Module):
 
         self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
         self.attn = DeltaNet(
+            mode=config.attn_mode,
             hidden_size=config.hidden_size,
             expand_k=config.expand_k,
             expand_v=config.expand_v,
             num_heads=config.num_heads,
-            mode=config.attn_mode,
             use_gate=config.use_gate,
             use_short_conv=config.use_short_conv,
             conv_size=config.conv_size,
@@ -77,7 +77,7 @@ class DeltaNetBlock(nn.Module):
             norm_q=config.norm_q,
             norm_k=config.norm_k,
             do_feature_map_norm=config.norm_feature_map,
-            layer_idx=layer_idx            
+            layer_idx=layer_idx
         )
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = DeltaNetMLP(
@@ -222,7 +222,7 @@ class DeltaNetModel(DeltaNetPreTrainedModel):
                 num_layers = self.config.num_hidden_layers
                 batch_size = hidden_states.shape[0]
                 key_dim = int(self.config.hidden_size * self.config.expand_k)
-                value_dim = int(self.config.hidden_size * self.config.expand_v)
+                value_dim = int(self.config.hidden_size * self.config.expand_v // self.config.num_heads)
                 past_key_values = hidden_states.new_zeros(num_layers, batch_size, key_dim, value_dim)
             if not isinstance(past_key_values, RecurrentCache):
                 past_key_values = RecurrentCache.from_legacy_cache(past_key_values, seq_length)
