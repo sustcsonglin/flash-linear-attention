@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Optional, Tuple
 
 import torch
@@ -14,16 +13,9 @@ from einops import rearrange
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 
-from fla.layers.utils import make_conv1d_module, proj_then_conv1d
-from fla.modules import FusedRMSNormSwishGate, RMSNorm
+from fla.layers.utils import proj_then_conv1d
+from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
-
-try:
-    from causal_conv1d import causal_conv1d_fn
-except ImportError:
-    causal_conv1d_fn = None
-    causal_conv1d_update = None
-    warnings.warn("causal_conv1d_fn is not available")
 
 
 class GatedLinearAttention(nn.Module):
@@ -36,7 +28,7 @@ class GatedLinearAttention(nn.Module):
         expand_v: float = 2.0,
         num_heads: int = 4,
 
-        use_short_conv: bool = True,
+        use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
@@ -55,6 +47,15 @@ class GatedLinearAttention(nn.Module):
 
         self.mode = mode
         self.hidden_size = hidden_size
+        self.expand_k = expand_k
+        self.expand_v = expand_v
+        self.num_heads = num_heads
+
+        self.use_short_conv = use_short_conv
+        self.conv_size = conv_size
+        self.conv_bias = conv_bias
+        self.share_conv_kernel = share_conv_kernel
+
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
         self.clamp_min = clamp_min
@@ -63,7 +64,7 @@ class GatedLinearAttention(nn.Module):
         assert mode in ['chunk', 'fused_recurrent', 'fused_chunk'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
-        self.num_heads = num_heads
+
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
         self.gate_fn = ACT2FN[gate_fn]
@@ -73,23 +74,20 @@ class GatedLinearAttention(nn.Module):
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
 
-        self.use_short_conv = use_short_conv
         if use_short_conv:
             self.conv_size = conv_size
-            if causal_conv1d_fn is None:
-                raise ImportError("causal_conv1d_fn is not available, Please install via `pip install causal-conv1d>=1.2.0`.")
             if share_conv_kernel:
-                self.h_conv1d = make_conv1d_module(self.hidden_size, conv_size, conv_bias)
+                self.h_conv1d = ShortConvolution(hidden_size, conv_size, activation='silu')
             else:
-                self.q_conv1d = make_conv1d_module(self.key_dim, conv_size, conv_bias)
-                self.k_conv1d = make_conv1d_module(self.key_dim, conv_size, conv_bias)
-                self.v_conv1d = make_conv1d_module(self.value_dim, conv_size, conv_bias)
+                self.q_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
+                self.k_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
+                self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
 
         self.gk_proj = nn.Sequential(nn.Linear(hidden_size, gate_low_rank_dim, bias=False),
                                      nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
-        if (gate_fn == 'swish') and fuse_norm:
+        if gate_fn == 'swish' and fuse_norm:
             self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
             self.fuse_norm_and_gate = True
         else:
@@ -97,6 +95,7 @@ class GatedLinearAttention(nn.Module):
             self.g_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
 
         self.gate_logit_normalizer = gate_logit_normalizer
+
         self.apply(self._initialize_weights)
 
     def _initialize_weights(self, module: nn.Module):
@@ -120,9 +119,9 @@ class GatedLinearAttention(nn.Module):
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
         if self.use_short_conv:
-            assert past_key_values is None,  "use_short_conv is not supported yet for inference."
+            assert past_key_values is None, "`use_short_conv` is not supported yet for inference."
             if self.share_conv_kernel:
-                hidden_states = shortconv(hidden_states, self.h_conv1d.weight, self.h_conv1d.bias)
+                hidden_states = self.h_conv1d(hidden_states)
                 q = self.q_proj(hidden_states)
                 k = self.k_proj(hidden_states)
                 v = self.v_proj(hidden_states)
