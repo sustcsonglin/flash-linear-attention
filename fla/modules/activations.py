@@ -5,6 +5,11 @@
 import torch
 import torch.nn.functional as F
 
+
+@torch.jit.script
+def swish(x):
+    return F.silu(x)
+
 # 1/sqrt(2*pi)-> 0.3989423
 # 1/sqrt(2)   -> 0.70710678
 # sqrt(2/pi)  -> 0.79788456
@@ -23,7 +28,7 @@ def bias_gelu(y, bias):
 # gradient of actual gelu is:
 # 0.5 * (1. + torch.erf(x * 0.70710678)) + 0.3989423 * x * torch.exp(-0.5 * x * x)
 @torch.jit.script
-def bias_gelu_back(g, y, bias):
+def bias_gelu_bwd(g, y, bias):
     """Assume that y has shape (B, D) and bias has shape (D)"""
     x = bias + y
     tanh_out = torch.tanh(0.79788456 * x * (1 + 0.044715 * x * x))
@@ -36,6 +41,7 @@ def bias_gelu_back(g, y, bias):
 
 
 class GeLUFunction(torch.autograd.Function):
+
     @staticmethod
     # bias is an optional argument
     def forward(ctx, input, bias):
@@ -45,7 +51,7 @@ class GeLUFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         input, bias = ctx.saved_tensors
-        tmp = bias_gelu_back(grad_output, input, bias)
+        tmp = bias_gelu_bwd(grad_output, input, bias)
         return tmp, tmp
 
 
@@ -172,3 +178,10 @@ class SwiGLULinearFunction(torch.autograd.Function):
 swiglu = SwiGLUFunction.apply
 
 swiglu_linear = SwiGLULinearFunction.apply
+
+ACT2FN = {
+    'silu': swish,
+    'swish': swish,
+    'gelu': fast_gelu_impl,
+    'bias_gelu': bias_gelu_impl,
+}
