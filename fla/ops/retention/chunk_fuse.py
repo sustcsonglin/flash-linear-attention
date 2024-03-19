@@ -247,7 +247,9 @@ class FusedChunkRetentionFunction(torch.autograd.Function):
             final_state = q.new_empty(batch_size, n_heads, d_head_qk, d_head_v, dtype=torch.float32, requires_grad=False)
         else:
             final_state = None
-        CHECK = False
+        # the bug still exists even for Triton 2.2 on H100 GPUs
+        # so we always enable initial checks
+        CHECK = True
         if version.parse(triton.__version__) < version.parse('2.2.0'):
             import warnings
             warnings.warn(
