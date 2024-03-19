@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Optional, Tuple
 
 import torch
@@ -13,31 +14,29 @@ from einops import rearrange
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 
+from fla.layers.utils import make_conv1d_module, proj_then_conv1d
 from fla.modules import FusedRMSNormSwishGate, RMSNorm
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
-from transformers.utils import logging
-import warnings
-logger = logging.get_logger(__name__)
 try:
-    from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
-except:
+    from causal_conv1d import causal_conv1d_fn
+except ImportError:
     causal_conv1d_fn = None
     causal_conv1d_update = None
-    logger.warning_once("causal_conv1d_fn is not available")
-from fla.layers.utils import proj_then_shortconv, make_conv1d_module
+    warnings.warn("causal_conv1d_fn is not available")
 
 
 class GatedLinearAttention(nn.Module):
 
     def __init__(
         self,
+        mode: str = 'fused_chunk',
         hidden_size: int = 1024,
         expand_k: float = 1.0,
         expand_v: float = 2.0,
         num_heads: int = 4,
 
-        use_short_conv: bool = False,
+        use_short_conv: bool = True,
         conv_size: int = 4,
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
@@ -47,16 +46,15 @@ class GatedLinearAttention(nn.Module):
         gate_logit_normalizer: int = 16,
         gate_low_rank_dim: int = 16,
 
-        mode: str = 'fused_chunk',
         clamp_min: Optional[float] = None,
         fuse_norm: bool = True,
         layer_idx: int = None,
-        *args, **kwargs
+        **kwargs
     ) -> GatedLinearAttention:
         super().__init__()
-        self.hidden_size = hidden_size
 
         self.mode = mode
+        self.hidden_size = hidden_size
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
         self.clamp_min = clamp_min
@@ -78,7 +76,8 @@ class GatedLinearAttention(nn.Module):
         self.use_short_conv = use_short_conv
         if use_short_conv:
             self.conv_size = conv_size
-            assert causal_conv1d_fn is not None, "causal_conv1d_fn is not available, Please install via `pip install causal-conv1d>=1.2.0`."
+            if causal_conv1d_fn is None:
+                raise ImportError("causal_conv1d_fn is not available, Please install via `pip install causal-conv1d>=1.2.0`.")
             if share_conv_kernel:
                 self.h_conv1d = make_conv1d_module(self.hidden_size, conv_size, conv_bias)
             else:
@@ -128,13 +127,9 @@ class GatedLinearAttention(nn.Module):
                 k = self.k_proj(hidden_states)
                 v = self.v_proj(hidden_states)
             else:
-                q = proj_then_shortconv(hidden_states, self.q_proj.weight, 
-                self.q_conv1d.weight, self.q_conv1d.bias)
-                k = proj_then_shortconv(hidden_states, self.k_proj.weight,
-                self.k_conv1d.weight, self.k_conv1d.bias)
-                v = proj_then_shortconv(hidden_states, self.v_proj.weight,
-                self.v_conv1d.weight, self.v_conv1d.bias)
-            
+                q = proj_then_conv1d(hidden_states, self.q_proj.weight, self.q_conv1d.weight, self.q_conv1d.bias)
+                k = proj_then_conv1d(hidden_states, self.k_proj.weight, self.k_conv1d.weight, self.k_conv1d.bias)
+                v = proj_then_conv1d(hidden_states, self.v_proj.weight, self.v_conv1d.weight, self.v_conv1d.bias)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
