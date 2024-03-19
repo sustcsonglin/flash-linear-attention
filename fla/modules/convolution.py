@@ -41,7 +41,7 @@ def fft_conv(u, k, dropout_mask, gelu=True, k_rev=None):
         return out.to(dtype=u.dtype)
 
 
-class ShortConvolution(nn.Module):
+class ShortConvolution(nn.Conv1d):
     """
     Simple wrapper around `nn.Conv1d` that accepts dimension last.
     """
@@ -52,20 +52,35 @@ class ShortConvolution(nn.Module):
         kernel_size: int,
         activation: Optional[str] = None
     ):
-        super().__init__()
-
-        self.conv = nn.Conv1d(
-            in_channels=hidden_size,
-            out_channels=hidden_size,
-            kernel_size=kernel_size,
-            groups=hidden_size,
-            padding=kernel_size - 1,
-        )
+        super().__init__(in_channels=hidden_size,
+                         out_channels=hidden_size,
+                         kernel_size=kernel_size,
+                         groups=hidden_size,
+                         padding=kernel_size - 1)
 
         self.activation = None
         if activation is not None:
             assert activation in ['silu', 'swish'], f"Activation `{activation}` not supported yet."
             self.activation = activation
+
+    def extra_repr(self):
+        s = ('{in_channels}, {out_channels}, kernel_size={kernel_size}'
+             ', stride={stride}')
+        if self.padding != (0,) * len(self.padding):
+            s += ', padding={padding}'
+        if self.dilation != (1,) * len(self.dilation):
+            s += ', dilation={dilation}'
+        if self.output_padding != (0,) * len(self.output_padding):
+            s += ', output_padding={output_padding}'
+        if self.groups != 1:
+            s += ', groups={groups}'
+        if self.bias is None:
+            s += ', bias=False'
+        if self.padding_mode != 'zeros':
+            s += ', padding_mode={padding_mode}'
+        if self.activation is not None:
+            s += ', activation={activation}'
+        return s.format(**self.__dict__)
 
     def forward(
         self, x: torch.Tensor
@@ -81,12 +96,12 @@ class ShortConvolution(nn.Module):
         if causal_conv1d_fn is not None:
             x = causal_conv1d_fn(
                 x=x,
-                weight=rearrange(self.conv.weight, "d 1 w -> d w"),
-                bias=self.conv.bias,
+                weight=rearrange(self.weight, "d 1 w -> d w"),
+                bias=self.bias,
                 activation=self.activation,
             )
         else:
-            x = self.conv(x)[..., :seq_len]
+            x = self._conv_forward(x, self.weight, self.bias)[..., :seq_len]
             if self.activation is not None:
                 x = ACT2FN[self.activation](x)
         return rearrange(x, "b d l -> b l d")
