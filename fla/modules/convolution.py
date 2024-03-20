@@ -50,12 +50,14 @@ class ShortConvolution(nn.Conv1d):
         self,
         hidden_size: int,
         kernel_size: int,
+        bias: bool = False,
         activation: Optional[str] = None
     ):
         super().__init__(in_channels=hidden_size,
                          out_channels=hidden_size,
                          kernel_size=kernel_size,
                          groups=hidden_size,
+                         bias=bias,
                          padding=kernel_size - 1)
 
         self.activation = None
