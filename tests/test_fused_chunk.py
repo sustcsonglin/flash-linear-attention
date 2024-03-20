@@ -89,6 +89,14 @@ class AttentionFunction(torch.autograd.Function):
         return o
 
 
+def sizeof_fmt(num, suffix='B'):
+    for unit in ('', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi', 'Ei', 'Zi'):
+        if abs(num) < 1024.0:
+            return f'{num:3.1f}{unit}{suffix}'
+        num /= 1024.0
+    return f'{num:.1f}Yi{suffix}'
+
+
 if __name__ == '__main__':
     B, H, T, D = 2, 8, 1024, 128
     dtype = torch.float
@@ -99,10 +107,19 @@ if __name__ == '__main__':
     v = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
 
     ref = AttentionFunction.apply(q, k, v)
-    print("DTYPE\t\tSTORE\tIFCOND\tDIFF")
+    infos = torch.cuda.get_device_properties(q)
+
+    def fmt(x):
+        if isinstance(x, (float, torch.Tensor)):
+            return f"{x:>16.2f}"
+        return f"{str(x):>16}"
+    print(f'{fmt("GPU Type")}{fmt("Memory")}{fmt("Cores")}\n'
+          f"{fmt(infos.name)}{fmt(sizeof_fmt(infos.total_memory))}{fmt(infos.multi_processor_count)}")
+    print(f'{"DTYPE":>16}{"STORE":>16}{"INIT CHECK":>16}{"DIFF":>16}{"PASSED":>16}')
     for dtype in (torch.float, torch.bfloat16):
         q, k, v = q.clone().to(dtype), k.clone().to(dtype), v.clone().to(dtype)
         for store in [False, True]:
-            for ifcond in [False, True]:
-                tri = AttentionFunction.apply(q, k, v, store, ifcond)
-                print(f"{q.dtype}\t{store}\t{ifcond}\t{(ref - tri).abs().max()}")
+            for check in [False, True]:
+                tri = AttentionFunction.apply(q, k, v, store, check)
+                diff = (ref - tri).abs().max()
+                print(f"{fmt(q.dtype)}{fmt(store)}{fmt(check)}{fmt(diff)}{fmt(bool(diff < 1))}")
