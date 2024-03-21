@@ -60,6 +60,7 @@ class ShortConvolution(nn.Conv1d):
                          bias=bias,
                          padding=kernel_size - 1)
 
+        self.hidden_size = hidden_size
         self.activation = None
         if activation is not None:
             assert activation in ['silu', 'swish'], f"Activation `{activation}` not supported yet."
@@ -107,6 +108,10 @@ class ShortConvolution(nn.Conv1d):
             if self.activation is not None:
                 x = ACT2FN[self.activation](x)
         return rearrange(x, "b d l -> b l d")
+
+    @property
+    def state_size(self) -> int:
+        return self.hidden_size * self.kernel_size
 
 
 class LongConvolution(nn.Module):
