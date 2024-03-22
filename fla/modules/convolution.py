@@ -3,6 +3,7 @@
 # from https://github.com/HazyResearch/zoology/blob/main/zoology/mixers/convolution.py
 
 import math
+import warnings
 from typing import Optional
 
 import torch
@@ -13,7 +14,7 @@ from einops import rearrange
 from fla.modules.activations import ACT2FN
 
 try:
-    from causal_conv1d import causal_conv1d_fn
+    from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
 except ImportError:
     causal_conv1d_fn = None
     causal_conv1d_update = None
@@ -51,7 +52,8 @@ class ShortConvolution(nn.Conv1d):
         hidden_size: int,
         kernel_size: int,
         bias: bool = False,
-        activation: Optional[str] = None
+        activation: Optional[str] = 'silu',
+        use_causal_conv: Optional[bool] = True
     ):
         super().__init__(in_channels=hidden_size,
                          out_channels=hidden_size,
@@ -65,6 +67,12 @@ class ShortConvolution(nn.Conv1d):
         if activation is not None:
             assert activation in ['silu', 'swish'], f"Activation `{activation}` not supported yet."
             self.activation = activation
+
+        if use_causal_conv:
+            if causal_conv1d_fn is None:
+                warnings.warn("Please install `causal-conv1d` to use causal convolutions, setting `use_causal_conv` to False.")
+                use_causal_conv = False
+        self.use_causal_conv = use_causal_conv
 
     def extra_repr(self):
         s = ('{in_channels}, {out_channels}, kernel_size={kernel_size}'
@@ -83,20 +91,33 @@ class ShortConvolution(nn.Conv1d):
             s += ', padding_mode={padding_mode}'
         if self.activation is not None:
             s += ', activation={activation}'
+        if not self.use_causal_conv:
+            s += ', use_causal_conv={use_causal_conv}'
         return s.format(**self.__dict__)
 
     def forward(
-        self, x: torch.Tensor
+        self,
+        x: torch.Tensor,
+        cache: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Args:
-            x: tensor of shape `[batch_size, seq_len, hidden_size]`
+            x:
+                Tensor of shape `[batch_size, seq_len, hidden_size]`
+            cache:
+                Previous cache tensor of shape `[batch_size, hidden_size, kernel_size]`
         Returns:
-            Tensor of shape `[batch_size, seq_len, hidden_size]`
+            Tensor of shape `[batch_size, seq_len, hidden_size]`.
+            If `cache` is provided, returns a tuple of the output tensor (`[batch_size, hidden_size]`) and the updated cache.
         """
-        seq_len = x.size(1)
+
+        if not next(self.parameters()).is_cuda:
+            warnings.warn("CUDA is required for using causal convolutions, setting `use_causal_conv` to False.")
+            self.use_causal_conv = False
+        if cache is not None:
+            return self.step(x, cache)
         x = rearrange(x, "b l d -> b d l")
-        if causal_conv1d_fn is not None:
+        if self.use_causal_conv:
             x = causal_conv1d_fn(
                 x=x,
                 weight=rearrange(self.weight, "d 1 w -> d w"),
@@ -104,10 +125,37 @@ class ShortConvolution(nn.Conv1d):
                 activation=self.activation,
             )
         else:
-            x = self._conv_forward(x, self.weight, self.bias)[..., :seq_len]
+            x = self._conv_forward(x, self.weight, self.bias)[..., :x.shape[-1]]
             if self.activation is not None:
                 x = ACT2FN[self.activation](x)
         return rearrange(x, "b d l -> b l d")
+
+    def step(
+        self,
+        x: torch.Tensor,
+        cache: torch.Tensor
+    ):
+        assert x.shape[1] == 1, "Only support decoding with 1 token at a time for now"
+
+        x = x.squeeze(1)
+        if self.use_causal_conv:
+            x = causal_conv1d_update(
+                x=x,
+                conv_state=cache,
+                weight=rearrange(self.weight, "d 1 w -> d w"),
+                bias=self.bias,
+                activation=self.activation,
+            )
+        else:
+            dtype = x.dtype
+            cache.copy_(torch.roll(cache, shifts=-1, dims=-1))
+            cache[:, :, -1] = x
+            x = torch.sum(cache * rearrange(self.weight, "d 1 w -> d w"), dim=-1)
+            if self.bias is not None:
+                x = x + self.bias
+            if self.activation is not None:
+                x = ACT2FN[self.activation](x).to(dtype=dtype)
+        return x, cache
 
     @property
     def state_size(self) -> int:
