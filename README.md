@@ -155,6 +155,20 @@ In the following, we give a generation example by the pretrained model with `nam
 >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 ```
 
+We also provide a simple script [here](benchmarks/benchmark_generation.py) for benchmarking the generation speed.
+Simply run it by:
+```sh
+$ python -m benchmarks.benchmark_generation --path <PATH-TO-PRETRAINED> --repetition_penalty 2. --prompt="Hello everyone, I'm Songlin Yang"
+Prompt:
+Hello everyone, I'm Songlin Yang
+Generated:
+Hello everyone, I'm Songlin Yang.
+I am a 20 year old girl from China who is currently studying in the United States of America for my Master degree and also working as an English teacher at school here on campus since last summer (1st semester). My main goal to be able do well with this course so that we can have
+
+Prompt length: 10, generation length: 64
+Total prompt processing + decoding time: 4722ms
+```
+
 # Evaluations
 
 The [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) library allows you to easily perform (zero-shot) model evaluations. 
