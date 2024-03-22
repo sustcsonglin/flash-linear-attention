@@ -39,15 +39,15 @@ class RecurrentCache(Cache):
 
     def update(
         self,
-        state: torch.Tensor,
+        state: Tuple[torch.Tensor],
         layer_idx: int,
         cache_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor]:
         """
         Updates the cache with the new `state` for the layer `layer_idx`.
 
         Parameters:
-            state (`torch.Tensor`):
+            state (`Tuple[torch.Tensor]`):
                 The new state to cache.
             layer_idx (`int`):
                 The index of the layer to cache the states for.
@@ -58,10 +58,13 @@ class RecurrentCache(Cache):
             The updated state.
         """
 
+        if isinstance(state, torch.Tensor):
+            state = (state,)
         if len(self.states) <= layer_idx:
             self.states.append(state)
         else:
-            self.states[layer_idx] = state
+            for i, s in enumerate(state):
+                self.states[layer_idx][i].copy_(s)
             # update the number of seen tokens once we achieve the last layer
             if layer_idx == len(self) - 1:
                 self.seen_tokens += 1
