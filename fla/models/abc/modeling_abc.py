@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 
-
 from __future__ import annotations
 
 import math
@@ -11,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast)
 from transformers.modeling_utils import PreTrainedModel
@@ -19,6 +17,7 @@ from transformers.utils import logging
 
 from fla.layers.abc import ABCAttention
 from fla.models.abc.configuration_abc import ABCConfig
+from fla.models.utils import RecurrentCache
 from fla.modules import FusedCrossEntropyLoss, RMSNorm
 from fla.modules.activations import swiglu_linear
 
@@ -26,6 +25,7 @@ logger = logging.get_logger(__name__)
 
 
 class ABCMLP(nn.Module):
+
     def __init__(
         self,
         hidden_size: int,
@@ -45,6 +45,7 @@ class ABCMLP(nn.Module):
             intermediate_size = 256 * ((intermediate_size + 256 - 1) // 256)
         self.hidden_ratio = hidden_ratio
         self.intermediate_size = intermediate_size
+
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
@@ -61,52 +62,60 @@ class ABCBlock(nn.Module):
         self.hidden_size = config.hidden_size
 
         self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
-        self.attn = ABCAttention(hidden_size=config.hidden_size,
-                                 expand_k=config.expand_k,
-                                 expand_v=config.expand_v,
-                                 num_heads=config.num_heads,
-                                 num_slots=config.num_slots,
-                                 layernorm_eps=config.rms_norm_eps,
-                                 gate_low_rank_dim=config.gate_low_rank_dim,
-                                 clamp_min=config.clamp_min,
-                                 clamp_max=config.clamp_max,
-                                 layer_idx=layer_idx)
+        self.attn = ABCAttention(
+            mode=config.attn_mode,
+            hidden_size=config.hidden_size,
+            expand_k=config.expand_k,
+            expand_v=config.expand_v,
+            num_heads=config.num_heads,
+            num_slots=config.num_slots,
+            use_short_conv=config.use_short_conv,
+            conv_size=config.conv_size,
+            share_conv_kernel=config.share_conv_kernel,
+            gate_fn=config.hidden_act,
+            layernorm_eps=config.rms_norm_eps,
+            clamp_min=config.clamp_min,
+            clamp_max=config.clamp_max,
+            fuse_norm=config.fuse_norm,
+            layer_idx=layer_idx
+        )
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
-        self.mlp = ABCMLP(hidden_size=config.hidden_size,
-                          hidden_ratio=config.hidden_ratio,
-                          intermediate_size=config.intermediate_size,
-                          hidden_act=config.hidden_act)
+        self.mlp = ABCMLP(
+            hidden_size=config.hidden_size,
+            hidden_ratio=config.hidden_ratio,
+            intermediate_size=config.intermediate_size,
+            hidden_act=config.hidden_act
+        )
 
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        output_attentions: Optional[bool] = False,
+        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         use_cache: Optional[bool] = False,
+        output_attentions: Optional[bool] = False,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
         residual = hidden_states
+
         hidden_states = self.attn_norm(hidden_states)
-        hidden_states, attn_weights, present_key_value = self.attn(hidden_states)
+        hidden_states, attentions, past_key_values = self.attn(
+            hidden_states=hidden_states,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            output_attentions=output_attentions
+        )
         hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
+        outputs = (hidden_states, attentions, past_key_values)
 
         return outputs
 
 
 class ABCPreTrainedModel(PreTrainedModel):
+
     config_class = ABCConfig
     supports_gradient_checkpointing = True
     _no_split_modules = ['ABCBlock']
@@ -155,10 +164,8 @@ class ABCModel(ABCPreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.layers = nn.ModuleList(
-            [ABCBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
-        )
+        self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.layers = nn.ModuleList([ABCBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
@@ -166,32 +173,27 @@ class ABCModel(ABCPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        return self.embed_tokens
+        return self.embeddings
 
     def set_input_embeddings(self, value):
-        self.embed_tokens = value
+        self.embeddings = value
 
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,  # noqa
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
+        return_dict: Optional[bool] = None
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         if output_attentions:
-            warnings.warn(
-                "`ABCModel` does not support output attention weights now, so `output_attentions` is set to `False`."
-            )
+            warnings.warn("`ABCModel` does not `output_attentions` now, setting it to `False`.")
             output_attentions = False
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
+        output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         use_cache = use_cache if use_cache is not None else (self.config.use_cache if not self.training else False)
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -199,31 +201,21 @@ class ABCModel(ABCPreTrainedModel):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
-            _, seq_length = input_ids.shape[:2]
+            batch_size, seq_len = input_ids.shape[:2]
         elif inputs_embeds is not None:
-            _, seq_length = inputs_embeds.shape[:2]
+            batch_size, seq_len = inputs_embeds.shape[:2]
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
-        past_key_values_length = 0
-        if use_cache:
-            use_legacy_cache = not isinstance(past_key_values, Cache)
-            if use_legacy_cache:
-                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            past_key_values_length = past_key_values.get_usable_length(seq_length)
-
-        if position_ids is None:
-            device = input_ids.device if input_ids is not None else inputs_embeds.device
-            position_ids = torch.arange(
-                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
-            )
-            position_ids = position_ids.unsqueeze(0)
-
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
-
-        # embed positions
+            inputs_embeds = self.embeddings(input_ids)
         hidden_states = inputs_embeds
+
+        if use_cache:
+            if past_key_values is None:
+                past_key_values = [layer.attn.init_state(batch_size) for layer in self.layers]
+            if not isinstance(past_key_values, RecurrentCache):
+                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, seq_len)
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
@@ -232,42 +224,30 @@ class ABCModel(ABCPreTrainedModel):
                 )
                 use_cache = False
 
-        # decoder layers
         all_hidden_states = () if output_hidden_states else None
-        all_self_attns = () if output_attentions else None
-        next_decoder_cache = None
-
-        for decoder_layer in self.layers:
+        all_attns = () if output_attentions else None
+        for layer in self.layers:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
             if self.gradient_checkpointing and self.training:
-                layer_outputs = self._gradient_checkpointing_func(
-                    decoder_layer.__call__,
+                hidden_states, attentions, past_key_values = self._gradient_checkpointing_func(
+                    layer.__call__,
                     hidden_states,
-                    attention_mask,
-                    position_ids,
                     past_key_values,
-                    output_attentions,
                     use_cache,
+                    output_attentions
                 )
             else:
-                layer_outputs = decoder_layer(
+                hidden_states, attentions, past_key_values = layer(
                     hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_value=past_key_values,
-                    output_attentions=output_attentions,
+                    past_key_values=past_key_values,
                     use_cache=use_cache,
+                    output_attentions=output_attentions
                 )
 
-            hidden_states = layer_outputs[0]
-
-            if use_cache:
-                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
-
             if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+                all_attns += (attentions,)
 
         hidden_states = self.norm(hidden_states)
 
@@ -277,14 +257,14 @@ class ABCModel(ABCPreTrainedModel):
 
         next_cache = None
         if use_cache:
-            next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
+            next_cache = past_key_values.to_legacy_cache()
         if not return_dict:
-            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+            return tuple(x for x in [hidden_states, next_cache, all_hidden_states, all_attns] if x is not None)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
-            attentions=all_self_attns,
+            attentions=all_attns
         )
 
 
@@ -301,10 +281,10 @@ class ABCForCausalLM(ABCPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        return self.model.embed_tokens
+        return self.model.embeddings
 
     def set_input_embeddings(self, value):
-        self.model.embed_tokens = value
+        self.model.embeddings = value
 
     def get_output_embeddings(self):
         return self.lm_head
@@ -321,9 +301,8 @@ class ABCForCausalLM(ABCPreTrainedModel):
     def generate(self, *args, **kwargs):
         try:
             return super().generate(*args, **kwargs)
-        except AttributeError as exc:
-            # Expected exception: "AttributeError: '(object name)' object has no attribute 'past_key_values'"
-            if 'past_key_values' in str(exc):
+        except AttributeError as exception:
+            if 'past_key_values' in str(exception):
                 raise AttributeError(
                     f"You tried to call `generate` with a decoding strategy that manipulates `past_key_values`, "
                     f"which is not supported for {self.__class__.__name__}. "
@@ -332,34 +311,35 @@ class ABCForCausalLM(ABCPreTrainedModel):
                     f"https://huggingface.co/docs/transformers/en/generation_strategies#decoding-strategies"
                 )
             else:
-                raise exc
+                raise exception
 
     def prepare_inputs_for_generation(
         self,
         input_ids: torch.LongTensor = None,
-        state: Optional[torch.Tensor] = None,
+        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         **kwargs
     ):
-        # only last token for inputs_ids if the state is passed along.
-        if state is not None:
-            input_ids = input_ids[:, -1].unsqueeze(-1)
+        # only last token for `inputs_ids` if the `past_key_values` is passed along.
+        if past_key_values is not None:
+            if not isinstance(past_key_values, RecurrentCache):
+                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, input_ids.shape[1])
+            input_ids = input_ids[:, -1:]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and state is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
+        if inputs_embeds is not None and past_key_values is None:
+            model_inputs = {'inputs_embeds': inputs_embeds}
         else:
-            model_inputs = {"input_ids": input_ids}
-        model_inputs["state"] = state
+            model_inputs = {'input_ids': input_ids}
+        model_inputs['past_key_values'] = past_key_values
         return model_inputs
 
     def forward(
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -372,17 +352,15 @@ class ABCForCausalLM(ABCPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
+            past_key_values=past_key_values,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            return_dict=return_dict
         )
 
         hidden_states = outputs[0]

@@ -144,14 +144,10 @@ class DeltaNet(nn.Module):
 
         return o, None, past_key_values
 
-
-if __name__ == '__main__':
-    batch = 4
-    seq_len = 1024
-    hidden_size = 1024
-    x = torch.randn(batch, seq_len, hidden_size).to(torch.bfloat16).cuda().requires_grad_(True)
-    model = DeltaNet(hidden_size=hidden_size).to(torch.bfloat16).cuda()
-    y = model(x)
-    print(y.shape)
-    y.sum().backward()
-    print(x.grad.shape)
+    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
+        param = next(self.parameters())
+        state = tuple()
+        if self.use_short_conv:
+            state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
+        state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
+        return state

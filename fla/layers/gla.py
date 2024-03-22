@@ -27,17 +27,14 @@ class GatedLinearAttention(nn.Module):
         expand_k: float = 1.0,
         expand_v: float = 2.0,
         num_heads: int = 4,
-
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
-
         gate_fn: str = 'swish',
         layernorm_eps: float = 1e-5,
         gate_logit_normalizer: int = 16,
         gate_low_rank_dim: int = 16,
-
         clamp_min: Optional[float] = None,
         fuse_norm: bool = True,
         layer_idx: int = None,
@@ -67,7 +64,6 @@ class GatedLinearAttention(nn.Module):
 
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
-        self.gate_fn = ACT2FN[gate_fn]
 
         self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
@@ -93,6 +89,7 @@ class GatedLinearAttention(nn.Module):
         else:
             self.fuse_norm_and_gate = False
             self.g_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
+            self.gate_fn = ACT2FN[gate_fn]
 
         self.gate_logit_normalizer = gate_logit_normalizer
 
@@ -118,10 +115,12 @@ class GatedLinearAttention(nn.Module):
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
+        last_state = past_key_values[self.layer_idx] if use_cache else None
         if self.use_short_conv:
-            assert past_key_values is None, "`use_short_conv` is not supported yet for inference."
+            conv_state = last_state[0] if use_cache else None
             if self.share_conv_kernel:
-                hidden_states = self.h_conv1d(hidden_states)
+                # conv state is updated inplace
+                hidden_states = self.h_conv1d(hidden_states, conv_state)
                 q = self.q_proj(hidden_states)
                 k = self.k_proj(hidden_states)
                 v = self.v_proj(hidden_states)
@@ -141,16 +140,17 @@ class GatedLinearAttention(nn.Module):
         if self.clamp_min is not None:
             gk = torch.clamp_min(gk, self.clamp_min)
 
-        last_state = past_key_values[self.layer_idx] if use_cache else None
+        attn_state = last_state[-1] if use_cache else None
         if mode == 'fused_recurrent':
-            o, last_state = fused_recurrent_gla(q, k, v, gk, initial_state=last_state, output_final_state=use_cache)
+            o, attn_state = fused_recurrent_gla(q, k, v, gk, initial_state=attn_state, output_final_state=use_cache)
         elif mode == 'fused_chunk':
-            o, last_state = fused_chunk_gla(q, k, v, gk, initial_state=last_state, output_final_state=use_cache)
+            o, attn_state = fused_chunk_gla(q, k, v, gk, initial_state=attn_state, output_final_state=use_cache)
         elif mode == 'chunk':
-            o, last_state = chunk_gla(q, k, v, gk, initial_state=last_state, output_final_state=use_cache)
+            o, attn_state = chunk_gla(q, k, v, gk, initial_state=attn_state, output_final_state=use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
-        if past_key_values is not None and last_state is not None:
+        if past_key_values is not None:
+            last_state = (conv_state, attn_state)
             past_key_values.update(last_state, self.layer_idx)
 
         o = rearrange(o, 'b h l d -> b l h d')
@@ -167,38 +167,17 @@ class GatedLinearAttention(nn.Module):
 
         return o, None, past_key_values
 
+    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
+        param = next(self.parameters())
+        state = tuple()
+        if self.use_short_conv:
+            state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
+        state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
+        return state
 
-if __name__ == '__main__':
-    batch = 4
-    seq_len = 1024
-
-    hidden_size = 2048
-    # x = torch.randn(batch, seq_len, hidden_size).to(torch.bfloat16).cuda().requires_grad_(True)
-    # model = GatedLinearAttention(use_gk=True, use_gv=True, mode='fused_chunk').to(torch.bfloat16).cuda()
-    # y = model(x)
-    # print(y.shape)
-    # y.sum().backward()
-    # print(x.grad.shape)
-
-    for act in ['swish']:
-        org = GatedLinearAttention(hidden_size=hidden_size, gate_fn=act, fuse_norm=False).to(torch.bfloat16).cuda()
-        fused = GatedLinearAttention(hidden_size=hidden_size, gate_fn=act, fuse_norm=True).to(torch.bfloat16).cuda()
-        fused.q_proj.weight.data.copy_(org.q_proj.weight.data)
-        fused.k_proj.weight.data.copy_(org.k_proj.weight.data)
-        fused.v_proj.weight.data.copy_(org.v_proj.weight.data)
-        fused.g_proj.weight.data.copy_(org.g_proj.weight.data)
-        fused.o_proj.weight.data.copy_(org.o_proj.weight.data)
-        fused.gk_proj[0].weight.data.copy_(org.gk_proj[0].weight.data)
-        fused.gk_proj[1].weight.data.copy_(org.gk_proj[1].weight.data)
-        fused.gk_proj[1].bias.data.copy_(org.gk_proj[1].bias.data)
-
-        x = torch.randn(batch, seq_len, hidden_size).to(torch.bfloat16).cuda()
-        org_x = x.clone().requires_grad_(True)
-        fused_x = x.clone().requires_grad_(True)
-        org_o = org(org_x)
-        fused_o = fused(fused_x)
-        org_o.sum().backward()
-        fused_o.sum().backward()
-        breakpoint()
-        assert org_o.allclose(fused_o, 0, 1e-2), "output not equal"
-        assert org_x.grad.allclose(fused_x.grad, 0, 1e-2), "grad not equal"
+    def state_size(self, **kwargs) -> int:
+        state_size = self.key_dim * self.head_v_dim
+        for module in self.children():
+            if isinstance(module, ShortConvolution):
+                state_size += module.state_size
+        return state_size

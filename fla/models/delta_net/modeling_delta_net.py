@@ -90,7 +90,7 @@ class DeltaNetBlock(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
         **kwargs,
@@ -165,9 +165,7 @@ class DeltaNetModel(DeltaNetPreTrainedModel):
         self.vocab_size = config.vocab_size
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.layers = nn.ModuleList(
-            [DeltaNetBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
-        )
+        self.layers = nn.ModuleList([DeltaNetBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
@@ -185,21 +183,17 @@ class DeltaNetModel(DeltaNetPreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,  # noqa
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         if output_attentions:
-            warnings.warn(
-                "`DeltaNetModel` does not support output attention weights now, so `output_attentions` is set to `False`."
-            )
+            warnings.warn("`DeltaNetModel` does not `output_attentions` now, setting it to `False`.")
             output_attentions = False
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
+        output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         use_cache = use_cache if use_cache is not None else (self.config.use_cache if not self.training else False)
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -207,9 +201,9 @@ class DeltaNetModel(DeltaNetPreTrainedModel):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
-            _, seq_length = input_ids.shape[:2]
+            batch_size, seq_len = input_ids.shape[:2]
         elif inputs_embeds is not None:
-            _, seq_length = inputs_embeds.shape[:2]
+            batch_size, seq_len = inputs_embeds.shape[:2]
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
@@ -219,13 +213,9 @@ class DeltaNetModel(DeltaNetPreTrainedModel):
 
         if use_cache:
             if past_key_values is None:
-                num_layers = self.config.num_hidden_layers
-                batch_size = hidden_states.shape[0]
-                key_dim = int(self.config.hidden_size * self.config.expand_k)
-                value_dim = int(self.config.hidden_size * self.config.expand_v // self.config.num_heads)
-                past_key_values = hidden_states.new_zeros(num_layers, batch_size, key_dim, value_dim)
+                past_key_values = [layer.attn.init_state(batch_size) for layer in self.layers]
             if not isinstance(past_key_values, RecurrentCache):
-                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, seq_length)
+                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, seq_len)
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
@@ -312,7 +302,6 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
         try:
             return super().generate(*args, **kwargs)
         except AttributeError as exception:
-            # Expected exception: "AttributeError: '(object name)' object has no attribute 'past_key_values'"
             if 'past_key_values' in str(exception):
                 raise AttributeError(
                     f"You tried to call `generate` with a decoding strategy that manipulates `past_key_values`, "
@@ -327,7 +316,7 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
     def prepare_inputs_for_generation(
         self,
         input_ids: torch.LongTensor = None,
-        past_key_values: Optional[torch.Tensor] = None,
+        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         **kwargs
     ):
@@ -349,8 +338,8 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -363,7 +352,6 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,

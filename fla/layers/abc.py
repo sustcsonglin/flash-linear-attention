@@ -42,6 +42,12 @@ class ABCAttention(nn.Module):
         self.expand_k = expand_k
         self.expand_v = expand_v
         self.num_heads = num_heads
+
+        self.use_short_conv = use_short_conv
+        self.conv_size = conv_size
+        self.conv_bias = conv_bias
+        self.share_conv_kernel = share_conv_kernel
+
         self.key_dim = int(self.hidden_size * self.expand_k)
         self.value_dim = int(self.hidden_size * self.expand_v)
         self.head_k_dim = self.key_dim // self.num_heads
@@ -146,3 +152,11 @@ class ABCAttention(nn.Module):
         o = self.o_proj(o)
 
         return o, None, past_key_values
+
+    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
+        param = next(self.parameters())
+        state = tuple()
+        if self.use_short_conv:
+            state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
+        state += (param.new_zeros(batch_size, self.num_heads, self.head_k_dim, self.head_v_dim),)
+        return state
