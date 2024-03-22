@@ -108,13 +108,13 @@ class ShortConvolution(nn.Conv1d):
                 Previous cache tensor of shape `[batch_size, hidden_size, kernel_size]`
         Returns:
             Tensor of shape `[batch_size, seq_len, hidden_size]`.
-            If `cache` is provided, returns a tuple of the output tensor (`[batch_size, hidden_size]`) and the updated cache.
+            The `cache` (if provided) is updated inplace.
         """
 
         if not next(self.parameters()).is_cuda:
             warnings.warn("CUDA is required for using causal convolutions, setting `use_causal_conv` to False.")
             self.use_causal_conv = False
-        if cache is not None:
+        if cache is not None and x.shape[1] == 1:
             return self.step(x, cache)
         x = rearrange(x, "b l d -> b d l")
         if self.use_causal_conv:
@@ -155,7 +155,7 @@ class ShortConvolution(nn.Conv1d):
                 x = x + self.bias
             if self.activation is not None:
                 x = ACT2FN[self.activation](x).to(dtype=dtype)
-        return x, cache
+        return x.unsqueeze(1)
 
     @property
     def state_size(self) -> int:
