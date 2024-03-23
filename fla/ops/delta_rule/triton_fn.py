@@ -37,24 +37,24 @@ def fwd_prepare_wy_repr_kernel(k, v, beta, o, o2,
     b_k = tl.load(p_k, mask=mask_bk)
     b_v = tl.load(p_v, mask=mask_bv)
     b_beta = tl.load(p_beta).to(tl.float32)
-    b_v = (b_v * b_beta[:, None]).to(b_v.dtype)
+    b_v = (b_v * b_beta[:, None])
     A = tl.dot(b_k, tl.trans(b_k), allow_tf32=False) * b_beta[:, None]
     A = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], A, 0)
     b_o = b_k.to(tl.float32) * b_beta[:, None]
-    b_o2 = tl.dot(A.to(b_k.dtype), b_v, allow_tf32=False)
+
 
     for i in range(BT):
         mask = tl.arange(0, BT) == i
         attn = tl.sum(tl.where(mask[:, None], A, 0), axis=0)
         new_o = tl.sum(attn[:, None] * b_o, axis=0)
-        new_o2 = tl.sum(attn[:, None] * b_o2, axis=0)
+        new_v = tl.sum(attn[:, None] * b_v, axis=0)
         b_o = tl.where(mask[:, None], b_o - new_o[None, :], b_o)
-        b_o2 = tl.where(mask[:, None], b_o2 - new_o2[None, :], b_o2)
+        b_v = tl.where(mask[:, None], b_v - new_v[None, :], b_v)
     
     p_o = o + i_bh * BT * NT * DK + (i_t * BT + tl.arange(0, BT)[:,  None]) * DK + tl.arange(0, BK)[None, :]
     tl.store(p_o, (b_o).to(p_o.dtype.element_ty), mask=mask_bk)
     p_o2 = o2 + i_bh * BT * NT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
-    tl.store(p_o2, (b_v - b_o2).to(p_o2.dtype.element_ty), mask=mask_bv)
+    tl.store(p_o2, b_v.to(p_o2.dtype.element_ty), mask=mask_bv)
 
 
 @triton.autotune(
@@ -91,32 +91,24 @@ def bwd_prepare_wy_repr_kernel(k, v, beta,
     A = tl.dot(b_k, tl.trans(b_k), allow_tf32=False) * b_beta[:, None]
     A = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], A, 0)
     b_do = tl.load(p_do, mask=mask_bk).to(tl.float32)
-    b_do2 = -tl.load(p_do2, mask=mask_bv).to(tl.float32)
+    b_dv = tl.load(p_do2, mask=mask_bv).to(tl.float32)
     dA = tl.zeros([BT, BT], dtype=tl.float32)
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
-    b_dv = tl.zeros([BT, BV], dtype=tl.float32)
-    b_dv -= b_do2 
     for i in range(BT-1, -1, -1):
         mask = tl.arange(0, BT) == i
         attn = tl.sum(tl.where(mask[:, None], A, 0), axis=0)
         do_ = tl.sum(tl.where(mask[:, None], b_do, 0), axis=0)
-        do2_ = tl.sum(tl.where(mask[:, None], b_do2, 0), axis=0)
+        dv_ = tl.sum(tl.where(mask[:, None], b_dv, 0), axis=0)
         mask2 = tl.arange(0, BT) < i
         b_do = b_do - attn[:, None] * do_[None, :]
-        b_do2 = b_do2 - attn[:, None] * do2_[None, :]
+        b_dv = b_dv - attn[:, None] * dv_[None, :]
     tl.debug_barrier()
-
     p_v = v + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
     b_v = tl.load(p_v, mask=mask_bv) 
     b_dk += b_do * b_beta[:, None] 
-    b_dbeta = tl.sum(b_do * b_k, axis=1)
-    
-    b_dv += tl.dot(tl.trans(A.to(b_k.dtype)), b_do2.to(b_k.dtype), allow_tf32=False)
+    b_dbeta = tl.sum(b_do * b_k, axis=1)    
     b_dbeta += tl.sum(b_dv * b_v, axis=1)
     b_v = None
-    b_dv *= b_beta[:, None]
-    p_dv = dv + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
-    tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), mask=mask_bv)
 
     p_o = o + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :] 
     p_o2 = o2 + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
@@ -124,9 +116,13 @@ def bwd_prepare_wy_repr_kernel(k, v, beta,
     b_o2 = tl.load(p_o2, mask=mask_bv)
 
     dA = -tl.dot(b_do.to(b_o.dtype), tl.trans(b_o), allow_tf32=False)
-    dA += tl.dot(b_do2.to(b_o2.dtype), tl.trans(b_o2).to(b_o.dtype), 
+    dA -= tl.dot(b_dv.to(b_o2.dtype), tl.trans(b_o2).to(b_o.dtype), 
     allow_tf32=False)
     dA = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], dA, 0)
+    b_dv *= b_beta[:, None]
+    p_dv = dv + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
+    tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), mask=mask_bv)
+
     b_dbeta += tl.sum(dA * tl.dot(b_k, tl.trans(b_k), allow_tf32=False), axis=1)
     dA = dA * b_beta[:, None]
     b_dk += tl.dot(tl.trans(dA.to(b_k.dtype)), b_k, allow_tf32=False)
@@ -225,7 +221,7 @@ if __name__ == "__main__":
     b = 2
     h = 4
     k = torch.nn.functional.normalize(torch.randn(b, h, seq_len, 64), dim=-1, p=2)
-    v = torch.randn(b, h, seq_len, 128)   
+    v = torch.randn(b, h, seq_len, 128) * 10  
     beta = torch.rand(b, h, seq_len).sigmoid()
     require_grad = True
     k, v, beta = map(lambda x: x.cuda().requires_grad_(require_grad), (k, v, beta))
