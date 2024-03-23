@@ -1,11 +1,24 @@
 # -*- coding: utf-8 -*-
-
 # Copyright (c) 2023-2024, Yu Zhang, Songlin Yang
 
 import triton
 import triton.language as tl
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({'BT': 16}, num_warps=2),
+        triton.Config({'BT': 16}, num_warps=4),
+        triton.Config({'BT': 16}, num_warps=8),
+        triton.Config({'BT': 32}, num_warps=2),
+        triton.Config({'BT': 32}, num_warps=4),
+        triton.Config({'BT': 32}, num_warps=8),
+        triton.Config({'BT': 64}, num_warps=2),
+        triton.Config({'BT': 64}, num_warps=4),
+        triton.Config({'BT': 64}, num_warps=8),
+    ],
+    key=['T', 'S']
+)
 @triton.jit
 def logcumsumexp_fwd_kernel(
     s,
@@ -15,8 +28,7 @@ def logcumsumexp_fwd_kernel(
     s_s_d,
     T: tl.constexpr,
     S: tl.constexpr,
-    BT: tl.constexpr,
-    NT: tl.constexpr
+    BT: tl.constexpr
 ):
     i_bh = tl.program_id(0)
     o_i = tl.arange(0, BT)
@@ -24,7 +36,7 @@ def logcumsumexp_fwd_kernel(
 
     b_mp = tl.full([S,], float('-inf'), dtype=tl.float32)
     b_zp = tl.zeros([S,], dtype=tl.float32)
-    for i_t in range(NT):
+    for i_t in range(tl.cdiv(T, BT)):
         p_s = tl.make_block_ptr(s + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, 0), (BT, S), (1, 0))
         p_z = tl.make_block_ptr(z + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, 0), (BT, S), (1, 0))
 
@@ -49,6 +61,20 @@ def logcumsumexp_fwd_kernel(
         tl.store(p_z, b_z.to(p_z.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({'BT': 16}, num_warps=2),
+        triton.Config({'BT': 16}, num_warps=4),
+        triton.Config({'BT': 16}, num_warps=8),
+        triton.Config({'BT': 32}, num_warps=2),
+        triton.Config({'BT': 32}, num_warps=4),
+        triton.Config({'BT': 32}, num_warps=8),
+        triton.Config({'BT': 64}, num_warps=2),
+        triton.Config({'BT': 64}, num_warps=4),
+        triton.Config({'BT': 64}, num_warps=8),
+    ],
+    key=['T', 'S']
+)
 @triton.jit
 def softmax_fwd_kernel(
     s,
@@ -77,6 +103,20 @@ def softmax_fwd_kernel(
     tl.store(p_p, b_p.to(p_p.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({'BT': 16}, num_warps=2),
+        triton.Config({'BT': 16}, num_warps=4),
+        triton.Config({'BT': 16}, num_warps=8),
+        triton.Config({'BT': 32}, num_warps=2),
+        triton.Config({'BT': 32}, num_warps=4),
+        triton.Config({'BT': 32}, num_warps=8),
+        triton.Config({'BT': 64}, num_warps=2),
+        triton.Config({'BT': 64}, num_warps=4),
+        triton.Config({'BT': 64}, num_warps=8),
+    ],
+    key=['T', 'S']
+)
 @triton.jit
 def softmax_bwd_kernel(
     p,
