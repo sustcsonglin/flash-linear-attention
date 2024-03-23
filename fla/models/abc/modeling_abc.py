@@ -63,7 +63,6 @@ class ABCBlock(nn.Module):
 
         self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
         self.attn = ABCAttention(
-            mode=config.attn_mode,
             hidden_size=config.hidden_size,
             expand_k=config.expand_k,
             expand_v=config.expand_v,
