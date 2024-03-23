@@ -63,15 +63,9 @@ def logcumsumexp_fwd_kernel(
 
 @triton.autotune(
     configs=[
-        triton.Config({'BT': 16}, num_warps=2),
-        triton.Config({'BT': 16}, num_warps=4),
-        triton.Config({'BT': 16}, num_warps=8),
-        triton.Config({'BT': 32}, num_warps=2),
-        triton.Config({'BT': 32}, num_warps=4),
-        triton.Config({'BT': 32}, num_warps=8),
-        triton.Config({'BT': 64}, num_warps=2),
-        triton.Config({'BT': 64}, num_warps=4),
-        triton.Config({'BT': 64}, num_warps=8),
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
     ],
     key=['T', 'S']
 )
@@ -105,15 +99,9 @@ def softmax_fwd_kernel(
 
 @triton.autotune(
     configs=[
-        triton.Config({'BT': 16}, num_warps=2),
-        triton.Config({'BT': 16}, num_warps=4),
-        triton.Config({'BT': 16}, num_warps=8),
-        triton.Config({'BT': 32}, num_warps=2),
-        triton.Config({'BT': 32}, num_warps=4),
-        triton.Config({'BT': 32}, num_warps=8),
-        triton.Config({'BT': 64}, num_warps=2),
-        triton.Config({'BT': 64}, num_warps=4),
-        triton.Config({'BT': 64}, num_warps=8),
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
     ],
     key=['T', 'S']
 )
