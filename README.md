@@ -1,9 +1,15 @@
-# flash-linear-attention
+<div align="center">
 
-This repo aims at providing efficient Triton-based implementations of state-of-the-art linear attention models.
+# Flash Linear Attention
 
-Join [discord](https://discord.gg/vDaJTmKNcS) if you are interested in this project or have any questions!  
+[Hub](https://huggingface.co/fla-hub) | [Discord](https://discord.gg/vDaJTmKNcS)
+</div>
 
+This repo aims at providing a collection of efficient Triton-based implementations for state-of-the-art linear attention models.
+
+<div align="center">
+  <img width="400" alt="image" src="https://github.com/sustcsonglin/flash-linear-attention/assets/18402347/d35a29c8-ada5-49da-8333-34defbb67110">
+</div>
 
 # Models
 
