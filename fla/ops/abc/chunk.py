@@ -438,10 +438,7 @@ def chunk_abc_bwd_kernel_V(
     b_k = tl.load(p_k, boundary_check=(0, 1))
     b_k = tl.exp(b_k - b_zc[None, :]).to(b_k.dtype)
     # [BT, BT]
-    if i_k == 0:
-        b_A = tl.load(p_A, boundary_check=(0, 1))
-    else:
-        b_A = tl.zeros([BT, BT], dtype=b_k.dtype)
+    b_A = tl.load(p_A, boundary_check=(0, 1))
 
     b_dq = tl.zeros([BT, BK], dtype=tl.float32)
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
@@ -463,7 +460,9 @@ def chunk_abc_bwd_kernel_V(
         b_dh = tl.load(p_dh, boundary_check=(0, 1))
 
         # [BT, BV]
-        b_dv = tl.dot(b_k, b_dh, allow_tf32=False) + tl.dot(b_A, b_do, allow_tf32=False)
+        b_dv = tl.dot(b_k, b_dh, allow_tf32=False)
+        if i_k == 0:
+            b_dv += tl.dot(b_A, b_do, allow_tf32=False)
         b_do = (b_do * scale).to(b_do.dtype)
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
         # [BT, BT]
@@ -920,16 +919,14 @@ class ChunkABCFunction(torch.autograd.Function):
         assert not output_final_state
         assert M % 16 == 0, "For efficiency, M must be a multiple of 16."
 
-        def fwd_pre(s, B, H, T, S, BT, NT):
+        def fwd_pre(s, B, H, T, S):
             # keep cummulative normalizer in fp32
             z = torch.empty_like(s, dtype=torch.float)
             grid = (B * H,)
             logcumsumexp_fwd_kernel[grid](
                 s, z,
                 s.stride(1), s.stride(2), s.stride(3),
-                T=T, S=S, BT=BT, NT=NT,
-                num_warps=num_warps,
-                num_stages=num_stages
+                T=T, S=S
             )
             return z
 
@@ -951,7 +948,7 @@ class ChunkABCFunction(torch.autograd.Function):
             )
             return h
 
-        z = fwd_pre(s, B, H, T, M, BT, NT)
+        z = fwd_pre(s, B, H, T, M)
         scale = K ** -0.5
         hk = fwd_inner(
             q=q, k=k, v=s, z=z,
@@ -967,7 +964,7 @@ class ChunkABCFunction(torch.autograd.Function):
             k.stride(1), k.stride(2), k.stride(3),
             s.stride(1), s.stride(2), s.stride(3),
             hk.stride(1), hk.stride(2), hk.stride(3),
-            scale,
+            scale=scale,
             T=T, K=K, V=M, BT=BT, BK=BK, BV=BM,
             num_warps=num_warps,
             num_stages=num_stages
@@ -983,7 +980,7 @@ class ChunkABCFunction(torch.autograd.Function):
         )
         ok = ok0.add_(ok1)
 
-        scale = M ** -0.5
+        scale = 1.
         # equivalent to:
         # p = ok.softmax(-1, torch.float)
         # p is kept in fp32 for safe softmax backward
@@ -992,12 +989,11 @@ class ChunkABCFunction(torch.autograd.Function):
         softmax_fwd_kernel[grid](
             ok, p,
             s.stride(1), s.stride(2), s.stride(3),
-            T=T, S=M, BT=BT,
-            num_warps=num_warps,
-            num_stages=num_stages
+            T=T, S=M, BT=BT
         )
         qv = p.to(q.dtype)
 
+        scale = 1.
         hv = fwd_inner(
             q=qv, k=s, v=v, z=z,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
@@ -1008,7 +1004,7 @@ class ChunkABCFunction(torch.autograd.Function):
         chunk_abc_fwd_kernel_intra_V[grid](
             qv, s, z, Av,
             s.stride(1), s.stride(2), s.stride(3),
-            scale,
+            scale=scale,
             T=T, K=M, BT=BT, BC=BC, BK=BM, NC=NC,
             num_warps=2,
             num_stages=num_stages
@@ -1021,7 +1017,7 @@ class ChunkABCFunction(torch.autograd.Function):
             s.stride(1), s.stride(2), s.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             hv.stride(1), hv.stride(2), hv.stride(3),
-            scale,
+            scale=scale,
             T=T, K=M, V=V, BT=BT, BK=BM, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages
@@ -1053,7 +1049,7 @@ class ChunkABCFunction(torch.autograd.Function):
                 q.stride(1), q.stride(2), q.stride(3),
                 do.stride(1), do.stride(2), do.stride(3),
                 dh.stride(1), dh.stride(2), dh.stride(3),
-                scale,
+                scale=scale,
                 T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
                 NORMK=normk,
                 num_warps=2,
@@ -1081,7 +1077,7 @@ class ChunkABCFunction(torch.autograd.Function):
             )
             return doo
 
-        scale = M ** -0.5
+        scale = 1.
         qv = p.to(q.dtype)
         dhv = bwd_inner(
             qv, z, dov,
@@ -1099,7 +1095,7 @@ class ChunkABCFunction(torch.autograd.Function):
             s.stride(1), s.stride(2), s.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             hv.stride(1), hv.stride(2), hv.stride(3),
-            scale,
+            scale=scale,
             T=T, K=M, V=V, BT=BT, BK=BM, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages
@@ -1125,9 +1121,7 @@ class ChunkABCFunction(torch.autograd.Function):
         softmax_bwd_kernel[grid](
             p, dp, dok,
             s.stride(1), s.stride(2), s.stride(3),
-            T=T, S=M, BT=BT,
-            num_warps=num_warps,
-            num_stages=num_stages
+            T=T, S=M, BT=BT
         )
 
         scale = K ** -0.5
@@ -1142,7 +1136,7 @@ class ChunkABCFunction(torch.autograd.Function):
         chunk_abc_bwd_kernel_intra_K[grid](
             s, z, dok, dAk,
             s.stride(1), s.stride(2), s.stride(3),
-            scale,
+            scale=scale,
             T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
             num_warps=2,
             num_stages=num_stages
@@ -1159,7 +1153,7 @@ class ChunkABCFunction(torch.autograd.Function):
             q.stride(1), q.stride(2), q.stride(3),
             s.stride(1), s.stride(2), s.stride(3),
             hk.stride(1), hk.stride(2), hk.stride(3),
-            scale,
+            scale=scale,
             T=T, K=K, V=M, BT=BT, BK=BK, BV=BM,
             num_warps=num_warps,
             num_stages=num_stages

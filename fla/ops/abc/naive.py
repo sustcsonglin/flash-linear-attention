@@ -39,9 +39,8 @@ def naive_recurrent_abc(
 
     hv = torch.zeros(B, H, M, V, dtype=torch.float, device=q.device)
     ov = torch.zeros_like(v)
-    scale = M ** -0.5
     for i in range(T):
-        q_i = p[:, :, i] * scale
+        q_i = p[:, :, i]
         k_i = s[:, :, i]
         v_i = v[:, :, i]
         z_i = z[:, :, i]

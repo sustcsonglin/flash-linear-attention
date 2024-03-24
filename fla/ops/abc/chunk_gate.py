@@ -462,10 +462,7 @@ def chunk_abc_bwd_kernel_V(
     b_gn = tl.exp(tl.load(p_gn, boundary_check=(0,))[None, :] - b_gk)
     b_k = (b_k * b_gn).to(b_k.dtype)
     # [BT, BT]
-    if i_k == 0:
-        b_A = tl.load(p_A, boundary_check=(0, 1))
-    else:
-        b_A = tl.zeros([BT, BT], dtype=b_k.dtype)
+    b_A = tl.load(p_A, boundary_check=(0, 1))
 
     b_dq = tl.zeros([BT, BK], dtype=tl.float32)
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
@@ -487,7 +484,9 @@ def chunk_abc_bwd_kernel_V(
         b_dh = tl.load(p_dh, boundary_check=(0, 1))
 
         # [BT, BV]
-        b_dv = tl.dot(b_k, b_dh, allow_tf32=False) + tl.dot(b_A, b_do, allow_tf32=False)
+        b_dv = tl.dot(b_k, b_dh, allow_tf32=False)
+        if i_k == 0:
+            b_dv += tl.dot(b_A, b_do, allow_tf32=False)
         b_do = (b_do * scale).to(b_do.dtype)
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
         # [BT, BT]
@@ -966,7 +965,7 @@ class ChunkABCFunction(torch.autograd.Function):
         )
         ok = ok0.add_(ok1)
 
-        scale = M ** -0.5
+        scale = 1.
         # equivalent to:
         # p = ok.softmax(-1, torch.float)
         # p is kept in fp32 for safe softmax backward
@@ -975,9 +974,7 @@ class ChunkABCFunction(torch.autograd.Function):
         softmax_fwd_kernel[grid](
             ok, p,
             s.stride(1), s.stride(2), s.stride(3),
-            T=T, S=M, BT=BT,
-            num_warps=num_warps,
-            num_stages=num_stages
+            T=T, S=M, BT=BT
         )
         qv = p.to(q.dtype)
 
@@ -1066,7 +1063,7 @@ class ChunkABCFunction(torch.autograd.Function):
             )
             return c
 
-        scale = M ** -0.5
+        scale = 1.
         qv = p.to(q.dtype)
         dhv = bwd_inner(
             qv, g, dov,
@@ -1110,9 +1107,7 @@ class ChunkABCFunction(torch.autograd.Function):
         softmax_bwd_kernel[grid](
             p, dp, dok,
             s.stride(1), s.stride(2), s.stride(3),
-            T=T, S=M, BT=BT,
-            num_warps=num_warps,
-            num_stages=num_stages
+            T=T, S=M, BT=BT
         )
 
         scale = K ** -0.5
