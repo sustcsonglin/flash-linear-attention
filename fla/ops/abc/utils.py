@@ -17,7 +17,7 @@ import triton.language as tl
         triton.Config({'BT': 64}, num_warps=4),
         triton.Config({'BT': 64}, num_warps=8),
     ],
-    key=['T', 'S']
+    key=['S']
 )
 @triton.jit
 def logcumsumexp_fwd_kernel(
@@ -67,7 +67,7 @@ def logcumsumexp_fwd_kernel(
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
     ],
-    key=['T', 'S']
+    key=['S']
 )
 @triton.jit
 def softmax_fwd_kernel(
@@ -103,7 +103,7 @@ def softmax_fwd_kernel(
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
     ],
-    key=['T', 'S']
+    key=['S']
 )
 @triton.jit
 def softmax_bwd_kernel(
