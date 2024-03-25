@@ -49,3 +49,31 @@ def naive_recurrent_abc(
         ov[:, :, i] = (q_i[..., None] * hv).sum(-2)
 
     return ov.to(dtype), hv
+
+
+def naive_cumsum_abc(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    s: torch.Tensor
+) -> torch.Tensor:
+    """
+    A simple implementation of vanilla ABC that is more aligned with the descriptions in the paper.
+    This is just for demonstration purposes, with no numerical stabilities gaurenteed.
+    """
+
+    dtype = q.dtype
+    q, k, v, s = map(lambda x: x.float(), (q, k, v, s))
+
+    scale = q.shape[-1] ** -0.5
+    # [batch_size, n_heads, seq_len, n_slots]
+    s = (s - s.max(2, True)[0]).exp()
+    z = s.cumsum(2)
+    # [batch_size, n_heads, seq_len, n_slots, d_head]
+    K = (s.unsqueeze(-1) * k.unsqueeze(-2)).cumsum(2) / z.unsqueeze(-1)
+    V = (s.unsqueeze(-1) * v.unsqueeze(-2)).cumsum(2) / z.unsqueeze(-1)
+    # [batch_size, n_heads, seq_len, n_slots]
+    p = torch.einsum('...d,...md->...m', q * scale, K).softmax(-1)
+    # [batch_size, n_heads, seq_len, d_head]
+    o = torch.einsum('...m,...md->...d', p, V)
+    return o.to(dtype), None
