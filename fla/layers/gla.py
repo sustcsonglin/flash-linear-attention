@@ -150,7 +150,7 @@ class GatedLinearAttention(nn.Module):
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
         if past_key_values is not None:
-            last_state = (conv_state, attn_state)
+            last_state = (conv_state, attn_state) if self.use_short_conv else (attn_state,)
             past_key_values.update(last_state, self.layer_idx)
 
         o = rearrange(o, 'b h l d -> b l h d')
