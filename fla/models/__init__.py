@@ -8,11 +8,14 @@ from fla.models.linear_attn import (LinearAttentionConfig,
                                     LinearAttentionForCausalLM,
                                     LinearAttentionModel)
 from fla.models.retnet import RetNetConfig, RetNetForCausalLM, RetNetModel
+from fla.models.transformer import (TransformerConfig, TransformerForCausalLM,
+                                    TransformerModel)
 
 __all__ = [
     'ABCConfig', 'ABCForCausalLM', 'ABCModel',
     'DeltaNetConfig', 'DeltaNetForCausalLM', 'DeltaNetModel',
     'GLAConfig', 'GLAForCausalLM', 'GLAModel',
     'LinearAttentionConfig', 'LinearAttentionForCausalLM', 'LinearAttentionModel',
-    'RetNetConfig', 'RetNetForCausalLM', 'RetNetModel'
+    'RetNetConfig', 'RetNetForCausalLM', 'RetNetModel',
+    'TransformerConfig', 'TransformerForCausalLM', 'TransformerModel'
 ]
