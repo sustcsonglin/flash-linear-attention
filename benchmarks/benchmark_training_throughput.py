@@ -7,21 +7,12 @@ import torch
 from torch.cuda import max_memory_allocated, memory_allocated
 from torch.optim import AdamW
 from tqdm import trange
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM, PretrainedConfig
 
-from fla.models.abc import ABCConfig
-from fla.models.delta_net import DeltaNetConfig
-from fla.models.gla import GLAConfig
-from fla.models.linear_attn import LinearAttentionConfig
-from fla.models.retnet import RetNetConfig
+import fla
 
-configs = {
-    'abc': ABCConfig,
-    'delta_net': DeltaNetConfig,
-    'gla': GLAConfig,
-    'linear_attn': LinearAttentionConfig,
-    'retnet': RetNetConfig,
-}
+classes = [getattr(fla.models, i) for i in fla.models.__all__]
+configs = {i.model_type: i() for i in classes if issubclass(i, PretrainedConfig)}
 
 
 def sizeof_fmt(num, suffix='B'):
@@ -40,7 +31,7 @@ def profile(
     steps: int = 32
 ):
     device = torch.device('cuda')
-    config = configs[name]() if name in configs else AutoConfig.from_pretrained(name)
+    config = configs[name] if name in configs else AutoConfig.from_pretrained(name)
     model = AutoModelForCausalLM.from_config(config).cuda().to(torch.bfloat16)
     print(f"Initializing {name} model from the config:\n{config}\n{model}")
     print(f"Number of parameters in total: {sizeof_fmt(model.num_parameters())}")
