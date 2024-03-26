@@ -46,14 +46,13 @@ git submodule add https://github.com/sustcsonglin/flash-linear-attention.git 3rd
 ln -s 3rdparty/flash-linear-attention/fla fla
 ```
 
-### ⚠️ Caveats on numerical stability!!
-
-If you're not working with Triton v2.2 or its nightly release, it's important to be aware of potential issues with the `FusedChunk` implementation, detailed in this [issue](https://github.com/openai/triton/issues/2852). 
+> [!CAUTION]
+> If you're not working with Triton v2.2 or its nightly release, it's important to be aware of potential issues with the `FusedChunk` implementation, detailed in this [issue](https://github.com/openai/triton/issues/2852). 
 You can run the test `python tests/test_fused_chunk.py` to check if your version is affected by similar compiler problems. 
 While we offer some fixes for Triton<=2.1, be aware that these may result in reduced performance.
-
-For both Triton 2.2 and earlier versions (up to 2.1), you can reliably use the `Chunk` version (with hidden states materialized into HBMs).
-After careful optimization, this version generally delivers high performance in most scenarios.
+>
+> For both Triton 2.2 and earlier versions (up to 2.1), you can reliably use the `Chunk` version (with hidden states materialized into HBMs).
+> After careful optimization, this version generally delivers high performance in most scenarios.
 
 # Usage
 
@@ -164,7 +163,10 @@ In the following, we give a generation example by the pretrained model with `nam
 We also provide a simple script [here](benchmarks/benchmark_generation.py) for benchmarking the generation speed.
 Simply run it by:
 ```sh
-$ python -m benchmarks.benchmark_generation --path <PATH-TO-PRETRAINED> --repetition_penalty 2. --prompt="Hello everyone, I'm Songlin Yang"
+$ python -m benchmarks.benchmark_generation \
+  --path <PATH-TO-PRETRAINED> \
+  --repetition_penalty 2. \
+  --prompt="Hello everyone, I'm Songlin Yang"
 Prompt:
 Hello everyone, I'm Songlin Yang
 Generated:
@@ -193,8 +195,18 @@ $ python -m evals.harness --model hf \
     --device cuda \
     --show_config                  
 ```
-We've made `fla` compatible with hf-style evaluations, you can simply call [evals.harness](evals/harness.py) to finish the evaluations.
+
+We've made `fla` compatible with hf-style evaluations, you can call [evals.harness](evals/harness.py) to finish the evaluations.
 Running the command above will provide the task results reported in the GLA paper.
+
+You may need to install the [extended harness libriary](https://github.com/HazyResearch/based-evaluation-harness) if you'd like to examine the performance of information retrieval on SWDE and FDA (as reported in Based).
+
+> [!Tip]
+> If you are using `lm-evaluation-harness` as an external library and can't find (almost) any tasks available, before calling `lm_eval.evaluate()` or `lm_eval.simple_evaluate()`, simply run the following to load the library's stock tasks!
+```py
+>>> from lm_eval.tasks import TaskManager; TaskManager().initialize_tasks()
+```
+
 
 # Benchmarks
 
