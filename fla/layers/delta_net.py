@@ -17,7 +17,6 @@ from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.ops.delta_rule import (fused_chunk_delta_rule,
                                 fused_recurrent_linear_attn_delta_rule)
 
-
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
 class DeltaNet(nn.Module):
     def __init__(
@@ -65,7 +64,7 @@ class DeltaNet(nn.Module):
         self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
-        self.beta_proj = nn.Linear(hidden_size, self.num_heads, bias=False)
+        self.b_proj = nn.Linear(hidden_size, self.num_heads, bias=False)
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if use_short_conv:
@@ -102,17 +101,24 @@ class DeltaNet(nn.Module):
         output_attentions: Optional[bool] = False,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
+        # change to inference mode.
+        mode = 'fused_recurrent' if use_cache is not None else self.mode
+        last_state = past_key_values[self.layer_idx] if use_cache else None
+
         if self.use_short_conv:
-            assert past_key_values is None, "use_short_conv is not supported yet for inference."
             if self.share_conv_kernel:
-                hidden_states = self.h_conv1d(hidden_states)
+                conv_state = last_state[0] if use_cache else None
+                hidden_states = self.h_conv1d(hidden_states, conv_state)
                 q = self.q_proj(hidden_states)
                 k = self.k_proj(hidden_states)
                 v = self.v_proj(hidden_states)
             else:
-                q = proj_then_conv1d(hidden_states, self.q_proj.weight, self.q_conv1d.weight, self.q_conv1d.bias)
-                k = proj_then_conv1d(hidden_states, self.k_proj.weight, self.k_conv1d.weight, self.k_conv1d.bias)
-                v = proj_then_conv1d(hidden_states, self.v_proj.weight, self.v_conv1d.weight, self.v_conv1d.bias)
+                conv_state_q = last_state[0] if use_cache else None
+                conv_state_k = last_state[1] if use_cache else None
+                conv_state_v = last_state[2] if use_cache else None
+                q = self.q_conv1d(self.q_proj(hidden_states), conv_state_q)
+                k = self.k_conv1d(self.k_proj(hidden_states), conv_state_k)
+                v = self.v_conv1d(self.v_proj(hidden_states), conv_state_v)
 
         else:
             q = self.q_proj(hidden_states)
@@ -120,18 +126,25 @@ class DeltaNet(nn.Module):
             v = self.v_proj(hidden_states)
 
         q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
-        beta = rearrange(self.beta_proj(hidden_states), 'b l h -> b h l').sigmoid()
-
-        last_state = past_key_values[self.layer_idx] if use_cache else None
-        if self.mode == 'fused_recurrent':
+        beta = rearrange(self.b_proj(hidden_states), 'b l h -> b h l').sigmoid()
+        recurrent_state = past_key_values[self.layer_idx][-1] if use_cache else None
+        if mode == 'fused_recurrent':
             k = torch.nn.functional.normalize(k, p=2, dim=-1)
-            o, last_state = fused_recurrent_linear_attn_delta_rule(q, k, v, beta)
-        elif self.mode == 'fused_chunk':
-            o, last_state = fused_chunk_delta_rule(q, k, v, beta, self.chunk_size)
+            o, recurrent_state = fused_recurrent_linear_attn_delta_rule(q, k, v, beta, recurrent_state, output_final_state=use_cache)
+        elif mode == 'fused_chunk':
+            o, recurrent_state = fused_chunk_delta_rule(q, k, v, beta, self.chunk_size, recurrent_state, output_final_state=use_cache)
         else:
-            raise NotImplementedError(f"Not supported mode `{self.mode}`.")
-        if past_key_values is not None and last_state is not None:
-            past_key_values.update(last_state, self.layer_idx)
+            raise NotImplementedError(f"Not supported mode `{mode}`.")
+
+        if past_key_values is not None:
+            if self.use_short_conv:
+                if self.share_conv_kernel:
+                    state = (conv_state, recurrent_state)
+                else:
+                    state = (conv_state_q, conv_state_k, conv_state_v, recurrent_state)
+            else:
+                state = (recurrent_state,)
+            past_key_values.update(state, self.layer_idx)
 
         o = rearrange(o, 'b h l d -> b l h d')
         if self.use_gate:
@@ -148,6 +161,10 @@ class DeltaNet(nn.Module):
         param = next(self.parameters())
         state = tuple()
         if self.use_short_conv:
-            state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
+            if self.share_conv_kernel:
+                state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
+            else:
+                # for q/k/v each
+                state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),param.new_zeros(batch_size, self.key_dim, self.conv_size),param.new_zeros(batch_size, self.value_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
         return state

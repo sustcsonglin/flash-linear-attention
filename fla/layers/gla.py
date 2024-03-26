@@ -125,9 +125,12 @@ class GatedLinearAttention(nn.Module):
                 k = self.k_proj(hidden_states)
                 v = self.v_proj(hidden_states)
             else:
-                q = proj_then_conv1d(hidden_states, self.q_proj.weight, self.q_conv1d.weight, self.q_conv1d.bias)
-                k = proj_then_conv1d(hidden_states, self.k_proj.weight, self.k_conv1d.weight, self.k_conv1d.bias)
-                v = proj_then_conv1d(hidden_states, self.v_proj.weight, self.v_conv1d.weight, self.v_conv1d.bias)
+                conv_state_q = last_state[0] if use_cache else None
+                conv_state_k = last_state[1] if use_cache else None
+                conv_state_v = last_state[2] if use_cache else None
+                q = self.q_conv1d(self.q_proj(hidden_states), conv_state_q)
+                k = self.k_conv1d(self.k_proj(hidden_states), conv_state_k)
+                v = self.v_conv1d(self.v_proj(hidden_states), conv_state_v)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
@@ -140,18 +143,26 @@ class GatedLinearAttention(nn.Module):
         if self.clamp_min is not None:
             gk = torch.clamp_min(gk, self.clamp_min)
 
-        attn_state = last_state[-1] if use_cache else None
+        recurrent_state = last_state[-1] if use_cache else None
         if mode == 'fused_recurrent':
-            o, attn_state = fused_recurrent_gla(q, k, v, gk, initial_state=attn_state, output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
         elif mode == 'fused_chunk':
-            o, attn_state = fused_chunk_gla(q, k, v, gk, initial_state=attn_state, output_final_state=use_cache)
+            o, recurrent_state = fused_chunk_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
         elif mode == 'chunk':
-            o, attn_state = chunk_gla(q, k, v, gk, initial_state=attn_state, output_final_state=use_cache)
+            o, recurrent_state = chunk_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
+
         if past_key_values is not None:
-            last_state = (conv_state, attn_state) if self.use_short_conv else (attn_state,)
+            if self.use_short_conv:
+                if self.share_conv_kernel:
+                    last_state = (conv_state, recurrent_state)
+                else:
+                    last_state = (conv_state_q, conv_state_k, conv_state_v, recurrent_state)
+            else:
+                last_state = (recurrent_state,)
             past_key_values.update(last_state, self.layer_idx)
+
 
         o = rearrange(o, 'b h l d -> b l h d')
         g = self.g_proj(hidden_states)
@@ -171,7 +182,11 @@ class GatedLinearAttention(nn.Module):
         param = next(self.parameters())
         state = tuple()
         if self.use_short_conv:
-            state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
+            if self.share_conv_kernel:
+                state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
+            else:
+                # for q/k/v each
+                state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),param.new_zeros(batch_size, self.key_dim, self.conv_size),param.new_zeros(batch_size, self.value_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
         return state
 
