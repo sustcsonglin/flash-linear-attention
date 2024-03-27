@@ -26,11 +26,6 @@ logger = logging.get_logger(__name__)
 
 
 class TransformerAttention(nn.Module):
-    """
-    Llama flash attention module. This module inherits from `LlamaAttention` as the weights of the module stays
-    untouched. The only required change would be on the forward pass where it needs to correctly call the public API of
-    flash attention and deal with padding tokens in case the input contains any of them.
-    """
 
     def __init__(
         self,
@@ -48,13 +43,6 @@ class TransformerAttention(nn.Module):
         self.head_dim = self.hidden_size // self.num_heads
         self.num_heads = config.num_heads
         self.max_position_embeddings = config.max_position_embeddings
-        self.is_causal = True
-
-        if (self.head_dim * self.num_heads) != self.hidden_size:
-            raise ValueError(
-                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
-                f" and `num_heads`: {self.num_heads})."
-            )
 
         self.q_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         self.k_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
@@ -83,8 +71,6 @@ class TransformerAttention(nn.Module):
         use_cache: bool = False,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        output_attentions = False
-
         batch_size, q_len, _ = hidden_states.size()
 
         q = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
@@ -95,7 +81,7 @@ class TransformerAttention(nn.Module):
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length()
         q, k = self.rotary(q, k, seqlen_offset)
-        q, k = q.transpose(1, 2), k.transpose(1, 2)
+        k = k.transpose(1, 2)
 
         if past_key_values is not None:  # reuse k, v, self_attention
             k = torch.cat([past_key_values[0], k], dim=2)
@@ -103,36 +89,10 @@ class TransformerAttention(nn.Module):
 
         past_key_values = (k, v) if use_cache else None
 
-        # TODO: These transpose are quite inefficient
-        # but Flash Attention requires the layout [batch_size, seq_len, num_heads, head_dim].
-        # We would need to refactor the KV cache
-        # to be able to avoid many of these transpose/reshape/view.
-        q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        input_dtype = q.dtype
-        if input_dtype == torch.float32:
-            if torch.is_autocast_enabled():
-                target_dtype = torch.get_autocast_gpu_dtype()
-            # Handle the case where the model is quantized
-            elif hasattr(self.config, "_pre_quantization_dtype"):
-                target_dtype = self.config._pre_quantization_dtype
-            else:
-                target_dtype = self.q_proj.weight.dtype
-
-            logger.warning_once(
-                f"The input hidden states seems to be silently casted in float32, this might be related to"
-                f" the fact you have upcasted embedding or layer norm layers in float32. We will cast back the input in"
-                f" {target_dtype}."
-            )
-
-            q = q.to(target_dtype)
-            k = k.to(target_dtype)
-            v = v.to(target_dtype)
-
         o = flash_attn_func(q, k, v, causal=True)
-
         o = o.reshape(batch_size, q_len, self.hidden_size)
         o = self.o_proj(o)
 
@@ -273,10 +233,8 @@ class TransformerModel(TransformerPreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.layers = nn.ModuleList(
-            [TransformerBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
-        )
+        self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.layers = nn.ModuleList([TransformerBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
@@ -284,10 +242,10 @@ class TransformerModel(TransformerPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        return self.embed_tokens
+        return self.embeddings
 
     def set_input_embeddings(self, value):
-        self.embed_tokens = value
+        self.embeddings = value
 
     def forward(
         self,
@@ -306,20 +264,14 @@ class TransformerModel(TransformerPreTrainedModel):
             )
             output_attentions = False
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
+        output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         use_cache = use_cache if use_cache is not None else (self.config.use_cache if not self.training else False)
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
-        elif input_ids is not None:
-            _, seq_len = input_ids.shape[:2]
-        elif inputs_embeds is not None:
-            _, seq_len = inputs_embeds.shape[:2]
-        else:
+        elif input_ids is None and inputs_embeds is None:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if use_cache:
@@ -328,7 +280,7 @@ class TransformerModel(TransformerPreTrainedModel):
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+            inputs_embeds = self.embeddings(input_ids)
 
         # embed positions
         hidden_states = inputs_embeds
@@ -408,10 +360,10 @@ class TransformerForCausalLM(TransformerPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        return self.model.embed_tokens
+        return self.model.embeddings
 
     def set_input_embeddings(self, value):
-        self.model.embed_tokens = value
+        self.model.embeddings = value
 
     def get_output_embeddings(self):
         return self.lm_head
@@ -475,7 +427,6 @@ class TransformerForCausalLM(TransformerPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
