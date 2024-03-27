@@ -102,7 +102,7 @@ class DeltaNet(nn.Module):
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         # change to inference mode.
-        mode = 'fused_recurrent' if use_cache is not None else self.mode
+        mode = 'fused_recurrent' if past_key_values is not None else self.mode
         last_state = past_key_values[self.layer_idx] if use_cache else None
 
         if self.use_short_conv:

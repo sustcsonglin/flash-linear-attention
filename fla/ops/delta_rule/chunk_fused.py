@@ -121,8 +121,8 @@ def fused_chunk_delta_rule_fwd_kernel(
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
-        # triton.Config({}, num_warps=16),
-        # triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=16),
+        triton.Config({}, num_warps=32),
     ],
     key=["BT", "BK", "BV"],
 )
