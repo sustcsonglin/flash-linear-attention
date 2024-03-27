@@ -8,17 +8,26 @@ from fla.ops.retention import (chunk_retention, fused_chunk_retention,
 from fla.ops.retention.naive import naive_retention
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
-@pytest.mark.parametrize("D", [64, 100])
+@pytest.mark.parametrize("batch_size", [4])
+@pytest.mark.parametrize("n_heads", [4])
+@pytest.mark.parametrize("seq_len", [300, 512])
+@pytest.mark.parametrize("hidden_size", [32, 64, 100])
 @pytest.mark.parametrize("expand_ratio", [1, 2])
-@pytest.mark.parametrize("T", [300, 512])
-def test_chunk(dtype, D, expand_ratio, T, B=4, H=4):
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_chunk(
+    batch_size: int,
+    n_heads: int,
+    seq_len: int,
+    hidden_size: int,
+    expand_ratio: int,
+    dtype: torch.dtype
+):
     torch.manual_seed(42)
     atol = 1e-2 if dtype == torch.float32 else 1e-1
     # [batch_size, n_heads, seq_len, d_head]
-    q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
-    k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
-    v = torch.randn((B, H, T, D * expand_ratio), dtype=dtype, device='cuda').requires_grad_()
+    q = torch.randn((batch_size, n_heads, seq_len, hidden_size), dtype=dtype, device='cuda').requires_grad_()
+    k = torch.randn((batch_size, n_heads, seq_len, hidden_size), dtype=dtype, device='cuda').requires_grad_()
+    v = torch.randn((batch_size, n_heads, seq_len, hidden_size * expand_ratio), dtype=dtype, device='cuda').requires_grad_()
     do = torch.randn_like(v)
     ref = naive_retention(q, k, v)
     ref.backward(do)
@@ -27,7 +36,7 @@ def test_chunk(dtype, D, expand_ratio, T, B=4, H=4):
     ref_dv, v.grad = v.grad.clone(), None
 
     # triton implementation
-    tri = chunk_retention(q, k, v)
+    tri, _ = chunk_retention(q, k, v)
     tri.backward(do)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
@@ -38,17 +47,26 @@ def test_chunk(dtype, D, expand_ratio, T, B=4, H=4):
     assert ref_dv.allclose(tri_dv, 0, atol), f"dv diff: {torch.abs(ref_dv - tri_dv).max()}"
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
-@pytest.mark.parametrize("D", [64, 100])
+@pytest.mark.parametrize("batch_size", [4])
+@pytest.mark.parametrize("n_heads", [4])
+@pytest.mark.parametrize("seq_len", [300, 512])
+@pytest.mark.parametrize("hidden_size", [32, 64, 100])
 @pytest.mark.parametrize("expand_ratio", [1, 2])
-@pytest.mark.parametrize("T", [300, 512])
-def test_fused_chunk(dtype, D, expand_ratio, T, B=4, H=4):
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_fused_chunk(
+    batch_size: int,
+    n_heads: int,
+    seq_len: int,
+    hidden_size: int,
+    expand_ratio: int,
+    dtype: torch.dtype
+):
     torch.manual_seed(42)
     atol = 1e-2 if dtype == torch.float32 else 1e-1
     # [batch_size, n_heads, seq_len, d_head]
-    q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
-    k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
-    v = torch.randn((B, H, T, D * expand_ratio), dtype=dtype, device='cuda').requires_grad_()
+    q = torch.randn((batch_size, n_heads, seq_len, hidden_size), dtype=dtype, device='cuda').requires_grad_()
+    k = torch.randn((batch_size, n_heads, seq_len, hidden_size), dtype=dtype, device='cuda').requires_grad_()
+    v = torch.randn((batch_size, n_heads, seq_len, hidden_size * expand_ratio), dtype=dtype, device='cuda').requires_grad_()
     do = torch.randn_like(v)
     ref = naive_retention(q, k, v)
     ref.backward(do)
@@ -57,7 +75,7 @@ def test_fused_chunk(dtype, D, expand_ratio, T, B=4, H=4):
     ref_dv, v.grad = v.grad.clone(), None
 
     # triton implementation
-    tri = fused_chunk_retention(q, k, v)
+    tri, _ = fused_chunk_retention(q, k, v)
     tri.backward(do)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
@@ -68,17 +86,26 @@ def test_fused_chunk(dtype, D, expand_ratio, T, B=4, H=4):
     assert ref_dv.allclose(tri_dv, 0, atol), f"dv diff: {torch.abs(ref_dv - tri_dv).max()}"
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
-@pytest.mark.parametrize("D", [64, 100])
+@pytest.mark.parametrize("batch_size", [4])
+@pytest.mark.parametrize("n_heads", [4])
+@pytest.mark.parametrize("seq_len", [300, 512])
+@pytest.mark.parametrize("hidden_size", [32, 64, 100])
 @pytest.mark.parametrize("expand_ratio", [1, 2])
-@pytest.mark.parametrize("T", [300, 512])
-def test_parallel(dtype, D, expand_ratio, T, B=4, H=4):
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_parallel(
+    batch_size: int,
+    n_heads: int,
+    seq_len: int,
+    hidden_size: int,
+    expand_ratio: int,
+    dtype: torch.dtype
+):
     torch.manual_seed(42)
     atol = 1e-2 if dtype == torch.float32 else 1e-1
     # [batch_size, n_heads, seq_len, d_head]
-    q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
-    k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
-    v = torch.randn((B, H, T, D * expand_ratio), dtype=dtype, device='cuda').requires_grad_()
+    q = torch.randn((batch_size, n_heads, seq_len, hidden_size), dtype=dtype, device='cuda').requires_grad_()
+    k = torch.randn((batch_size, n_heads, seq_len, hidden_size), dtype=dtype, device='cuda').requires_grad_()
+    v = torch.randn((batch_size, n_heads, seq_len, hidden_size * expand_ratio), dtype=dtype, device='cuda').requires_grad_()
     do = torch.randn_like(v)
     ref = naive_retention(q, k, v)
     ref.backward(do)
