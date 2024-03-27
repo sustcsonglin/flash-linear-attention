@@ -9,12 +9,13 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
+from einops import rearrange
 from flash_attn import flash_attn_func
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import (BaseModelOutputWithPast,
+                                           CausalLMOutputWithPast)
 from transformers.modeling_utils import PreTrainedModel
-from transformers.models.llama.modeling_llama import LlamaFlashAttention2
 from transformers.utils import logging
 
 from fla.models.transformer.configuration_transformer import TransformerConfig
@@ -24,17 +25,54 @@ from fla.modules.activations import swiglu_linear
 logger = logging.get_logger(__name__)
 
 
-class TransformerAttention(LlamaFlashAttention2):
+class TransformerAttention(nn.Module):
     """
     Llama flash attention module. This module inherits from `LlamaAttention` as the weights of the module stays
     untouched. The only required change would be on the forward pass where it needs to correctly call the public API of
     flash attention and deal with padding tokens in case the input contains any of them.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        config: TransformerConfig,
+        layer_idx: Optional[int] = None,
+        **kwargs
+    ):
+        super().__init__()
 
-        self.rotary_emb = RotaryEmbedding(self.head_dim)
+        self.config = config
+        self.layer_idx = layer_idx
+
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_heads
+        self.head_dim = self.hidden_size // self.num_heads
+        self.num_heads = config.num_heads
+        self.max_position_embeddings = config.max_position_embeddings
+        self.is_causal = True
+
+        if (self.head_dim * self.num_heads) != self.hidden_size:
+            raise ValueError(
+                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
+                f" and `num_heads`: {self.num_heads})."
+            )
+
+        self.q_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+        self.k_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+        self.v_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+
+        self.rotary = RotaryEmbedding(self.head_dim)
+
+        self.apply(self._initialize_weights)
+
+    def _initialize_weights(self, module: nn.Module):
+        if getattr(module, "_is_hf_initialized", False):
+            return
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        module._is_hf_initialized = True
 
     def forward(
         self,
@@ -47,17 +85,16 @@ class TransformerAttention(LlamaFlashAttention2):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         output_attentions = False
 
-        bsz, q_len, _ = hidden_states.size()
+        batch_size, q_len, _ = hidden_states.size()
 
-        q = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, -1)
-        k = self.k_proj(hidden_states).view(bsz, q_len, self.num_heads, -1)
-        v = self.v_proj(hidden_states).view(bsz, q_len, self.num_heads, -1).transpose(1, 2)
+        q = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
+        k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
+        v = rearrange(self.v_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
 
-        kv_seq_len = v.shape[-2]
+        seqlen_offset = 0
         if past_key_values is not None:
-            kv_seq_len += past_key_values[0].shape[-2]
-
-        q, k = self.rotary_emb(q, k)
+            seqlen_offset = past_key_values.get_seq_length()
+        q, k = self.rotary(q, k, seqlen_offset)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
 
         if past_key_values is not None:  # reuse k, v, self_attention
@@ -67,14 +104,12 @@ class TransformerAttention(LlamaFlashAttention2):
         past_key_values = (k, v) if use_cache else None
 
         # TODO: These transpose are quite inefficient
-        # but Flash Attention requires the layout [batch_size, sequence_length, num_heads, head_dim].
+        # but Flash Attention requires the layout [batch_size, seq_len, num_heads, head_dim].
         # We would need to refactor the KV cache
         # to be able to avoid many of these transpose/reshape/view.
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
-
-        dropout_rate = self.attention_dropout if self.training else 0.0
 
         input_dtype = q.dtype
         if input_dtype == torch.float32:
@@ -96,46 +131,15 @@ class TransformerAttention(LlamaFlashAttention2):
             k = k.to(target_dtype)
             v = v.to(target_dtype)
 
-        attn_output = self._flash_attention_forward(
-            q, k, v, attention_mask, q_len, dropout=dropout_rate
-        )
+        o = flash_attn_func(q, k, v, causal=True)
 
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
-        attn_output = self.o_proj(attn_output)
+        o = o.reshape(batch_size, q_len, self.hidden_size)
+        o = self.o_proj(o)
 
         if not output_attentions:
             attentions = None
 
-        return attn_output, attentions, past_key_values
-
-    def _flash_attention_forward(
-        self, q, k, v, attention_mask, query_length, dropout=0.0, softmax_scale=None
-    ):
-        """
-        Calls the forward method of Flash Attention - if the input hidden states contain at least one padding token
-        first unpad the input, then computes the attention scores and pad the final attention scores.
-
-        Args:
-            q (`torch.Tensor`):
-                Input query states to be passed to Flash Attention API
-            k (`torch.Tensor`):
-                Input key states to be passed to Flash Attention API
-            v (`torch.Tensor`):
-                Input value states to be passed to Flash Attention API
-            attention_mask (`torch.Tensor`):
-                The padding mask - corresponds to a tensor of size `(batch_size, seq_len)` where 0 stands for the
-                position of padding tokens and 1 for the position of non-padding tokens.
-            dropout (`int`, *optional*):
-                Attention dropout
-            softmax_scale (`float`, *optional*):
-                The scaling of QK^T before applying softmax. Default to 1 / sqrt(head_dim)
-        """
-
-        attn_output = flash_attn_func(
-            q, k, v, dropout, softmax_scale=softmax_scale, causal=True
-        )
-
-        return attn_output
+        return o, attentions, past_key_values
 
 
 class TransformerMLP(nn.Module):
@@ -382,11 +386,12 @@ class TransformerModel(TransformerPreTrainedModel):
             next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_attns] if v is not None)
-        return CausalLMOutputWithPast(
+
+        return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
-            attentions=all_attns,
+            attentions=all_attns
         )
 
 
