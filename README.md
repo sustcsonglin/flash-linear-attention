@@ -56,31 +56,24 @@ While we offer some fixes for Triton<=2.1, be aware that these may result in red
 
 # Usage
 
+## Token Mixing
+
 We provide "token mixing" linear attention layers in `fla.layers` for you to use. 
 You can replace the standard multihead attention layer in your model with other linear attention layers. 
 Example usage is as follows: 
 ```py
-from fla.layers import MultiScaleRetention, GatedLinearAttention, BasedLinearAttention 
-
-hidden_size = 1024
-num_head = 4
-device = "cuda:0"
-dtype = torch.bfloat16
-
-retnet = MultiScaleRetention(hidden_size=hidden_size, num_heads=num_head).to(device).to(dtype)
-gla = GatedLinearAttention(hidden_size=hidden_size, num_heads=num_head).to(device).to(dtype)
-based = BasedLinearAttention(hidden_size=hidden_size, num_heads=num_head).to(device).to(dtype)
-
-bsz, seq_len, hidden_size = 32, 2048, 1024
-x = torch.randn(bsz, seq_len, hidden_size).to(device).to(dtype)
-y1 = retnet(x)
-y2 = gla(x)
-y3 = based(x)
-
-assert y1.shape == y2.shape == y3.shape == x.shape
+>>> import torch
+>>> from fla.layers import MultiScaleRetention
+>>> batch_size, num_heads, seq_len, hidden_size,  = 32, 4, 2048, 1024
+>>> device, dtype = 'cuda:0', torch.bfloat16
+>>> retnet = MultiScaleRetention(hidden_size=hidden_size, num_heads=num_heads).to(device=device, dtype=dtype)
+>>> x = torch.randn(batch_size, seq_len, hidden_size).to(device=device, dtype=dtype)
+>>> y, *_ = retnet(x)
+>>> y.shape
+torch.Size([32, 2048, 1024])
 ```
 
-We also provide the implementations of models that are compatible with 🤗 Transformers library. 
+We provide the implementations of models that are compatible with 🤗 Transformers library. 
 Here's an example of how to initialize a GLA model from the default configs in `fla`:
 
 ```py
@@ -92,6 +85,7 @@ GLAConfig {
   "attn_mode": "fused_chunk",
   "bos_token_id": 1,
   "clamp_min": null,
+  "conv_size": 4,
   "eos_token_id": 2,
   "expand_k": 0.5,
   "expand_v": 1,
@@ -107,11 +101,13 @@ GLAConfig {
   "num_heads": 4,
   "num_hidden_layers": 24,
   "rms_norm_eps": 1e-06,
+  "share_conv_kernel": true,
   "tie_word_embeddings": false,
-  "transformers_version": "4.38.2",
+  "transformers_version": "4.39.1",
   "use_cache": true,
   "use_gk": true,
   "use_gv": false,
+  "use_short_conv": false,
   "vocab_size": 32000
 }
 
@@ -147,12 +143,14 @@ GLAModel(
 
 ```
 
+## Generation
+
 Upon successfully pretraining a model, it becomes accessible for generating text using the 🤗 text generation APIs.
 In the following, we give a generation example:
 ```py
 >>> import fla
 >>> from transformers import AutoModelForCausalLM, AutoTokenizer
->>> name = 'fla-hub/gla-340m-15B'
+>>> name = 'fla-hub/gla-340M-15B'
 >>> tokenizer = AutoTokenizer.from_pretrained(name)
 >>> model = AutoModelForCausalLM.from_pretrained(name).cuda()
 >>> input_prompt = "Power goes with permanence. Impermanence is impotence. And rotation is castration."
@@ -165,7 +163,7 @@ We also provide a simple script [here](benchmarks/benchmark_generation.py) for b
 Simply run it by:
 ```sh
 $ python -m benchmarks.benchmark_generation \
-  --path 'fla-hub/gla-340m-15B' \
+  --path 'fla-hub/gla-340M-15B' \
   --repetition_penalty 2. \
   --prompt="Hello everyone, I'm Songlin Yang"
 
@@ -179,6 +177,12 @@ Prompt length: 10, generation length: 64
 Total prompt processing + decoding time: 4722ms
 ```
 
+All of the pretrained models currently available can be found in [`fla-hub`](https://huggingface.co/fla-hub).
+```py
+>>> from huggingface_hub import list_models
+>>> [model.id for model in list_models(author='fla-hub')]
+```
+
 # Evaluations
 
 The [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) library allows you to easily perform (zero-shot) model evaluations. 
@@ -188,7 +192,7 @@ Follow the steps below to use this library:
 
 2. Run evaluation with:
 ```sh
-$ PATH='fla-hub/gla-340m-15B'
+$ PATH='fla-hub/gla-340M-15B'
 $ python -m evals.harness --model hf \
     --model_args pretrained=$PATH,dtype=bfloat16 \
     --tasks wikitext,lambada_openai,piqa,hellaswag,winogrande,arc_easy,arc_challenge,boolq,sciq,copa,openbookqa \
