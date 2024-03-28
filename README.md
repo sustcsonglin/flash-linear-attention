@@ -174,13 +174,13 @@ Hello everyone, I'm Songlin Yang.
 I am a 20 year old girl from China who is currently studying in the United States of America for my Master degree and also working as an English teacher at school here on campus since last summer (1st semester). My main goal to be able do well with this course so that we can have
 
 Prompt length: 10, generation length: 64
-Total prompt processing + decoding time: 4722ms
+Total prompt processing + decoding time: 4593ms
 ```
 
 All of the pretrained models currently available can be found in [`fla-hub`](https://huggingface.co/fla-hub).
 ```py
 >>> from huggingface_hub import list_models
->>> [model.id for model in list_models(author='fla-hub')]
+>>> for model in list_models(author='fla-hub'): print(model.id)
 ```
 
 # Evaluations

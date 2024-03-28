@@ -31,7 +31,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     device = "cuda"
-    dtype = torch.float16
+    dtype = torch.bfloat16
     torch.manual_seed(0)
 
     print(f"Loading model {args.path}")
