@@ -148,12 +148,13 @@ GLAModel(
 ```
 
 Upon successfully pretraining a model, it becomes accessible for generating text using the 🤗 text generation APIs.
-In the following, we give a generation example by the pretrained model with `name=<PATH-TO-PRETRAINED>`:
+In the following, we give a generation example:
 ```py
+>>> import fla
 >>> from transformers import AutoModelForCausalLM, AutoTokenizer
+>>> name = 'fla-hub/gla-340m-15B'
 >>> tokenizer = AutoTokenizer.from_pretrained(name)
 >>> model = AutoModelForCausalLM.from_pretrained(name).cuda()
->>> model.generation_config.pad_token_id = model.generation_config.eos_token_id
 >>> input_prompt = "Power goes with permanence. Impermanence is impotence. And rotation is castration."
 >>> input_ids = tokenizer(input_prompt, return_tensors="pt").input_ids.cuda()
 >>> outputs = model.generate(input_ids, max_length=64)
@@ -164,9 +165,10 @@ We also provide a simple script [here](benchmarks/benchmark_generation.py) for b
 Simply run it by:
 ```sh
 $ python -m benchmarks.benchmark_generation \
-  --path <PATH-TO-PRETRAINED> \
+  --path 'fla-hub/gla-340m-15B' \
   --repetition_penalty 2. \
   --prompt="Hello everyone, I'm Songlin Yang"
+
 Prompt:
 Hello everyone, I'm Songlin Yang
 Generated:
@@ -186,7 +188,7 @@ Follow the steps below to use this library:
 
 2. Run evaluation with:
 ```sh
-$ PATH=<PATH-TO-PRETRAINED>
+$ PATH='fla-hub/gla-340m-15B'
 $ python -m evals.harness --model hf \
     --model_args pretrained=$PATH,dtype=bfloat16 \
     --tasks wikitext,lambada_openai,piqa,hellaswag,winogrande,arc_easy,arc_challenge,boolq,sciq,copa,openbookqa \
@@ -206,7 +208,6 @@ You may need to install the [extended harness libriary](https://github.com/HazyR
 ```py
 >>> from lm_eval.tasks import TaskManager; TaskManager().initialize_tasks()
 ```
-
 
 # Benchmarks
 
