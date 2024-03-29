@@ -75,22 +75,18 @@ class TransformerAttention(nn.Module):
 
         q = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
         k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
-        v = rearrange(self.v_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
+        v = rearrange(self.v_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
 
         seqlen_offset = 0
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length()
         q, k = self.rotary(q, k, seqlen_offset)
-        k = k.transpose(1, 2)
 
         if past_key_values is not None:  # reuse k, v, self_attention
-            k = torch.cat([past_key_values[0], k], dim=2)
-            v = torch.cat([past_key_values[1], v], dim=2)
+            k = torch.cat([past_key_values[0], k], dim=1)
+            v = torch.cat([past_key_values[1], v], dim=1)
 
         past_key_values = (k, v) if use_cache else None
-
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
 
         o = flash_attn_func(q, k, v, causal=True)
         o = o.reshape(batch_size, q_len, self.hidden_size)
