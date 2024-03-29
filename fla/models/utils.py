@@ -17,12 +17,11 @@ class RecurrentCache(Cache):
 
     def __init__(
         self,
-        seen_tokens: int = 0,
-        **kwargs
+        seen_tokens: int = 0
     ) -> RecurrentCache:
 
         self.states: List[torch.Tensor] = []
-        self.seen_tokens = seen_tokens  # Used in `generate` to keep tally of how many tokens the cache has seen
+        self._seen_tokens = seen_tokens  # Used in `generate` to keep tally of how many tokens the cache has seen
 
     def __getitem__(self, layer_idx: int) -> torch.Tensor:
         if layer_idx < len(self):
@@ -67,7 +66,7 @@ class RecurrentCache(Cache):
                 self.states[layer_idx][i].copy_(s)
             # update the number of seen tokens once we achieve the last layer
             if layer_idx == len(self) - 1:
-                self.seen_tokens += 1
+                self._seen_tokens += 1
 
         return state
 
@@ -75,7 +74,7 @@ class RecurrentCache(Cache):
         """Returns the sequence length of the cached states. A layer index can be optionally passed."""
         if len(self.states) <= layer_idx:
             return 0
-        return self.seen_tokens
+        return self._seen_tokens
 
     def get_max_length(self) -> Optional[int]:
         """Returns the maximum sequence length of the cached states. RecurrentCache does not have a maximum length."""
