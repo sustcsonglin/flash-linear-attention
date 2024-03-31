@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 from einops import rearrange
-from flash_attn import flash_attn_func
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
@@ -22,6 +21,11 @@ from fla.models.transformer.configuration_transformer import TransformerConfig
 from fla.modules import FusedCrossEntropyLoss, RMSNorm, RotaryEmbedding
 from fla.modules.activations import swiglu_linear
 
+try:
+    from flash_attn import flash_attn_func
+except ImportError:
+    warnings.warn("Flash Attention is not installed. Please install it via `pip install flash-attn --no-build-isolation`")
+    flash_attn_func = None
 logger = logging.get_logger(__name__)
 
 
@@ -88,6 +92,9 @@ class TransformerAttention(nn.Module):
 
         past_key_values = (k, v) if use_cache else None
 
+        if flash_attn_func is None:
+            raise ImportError("Flash Attention not installed. "
+                              "Please install it via `pip install flash-attn --no-build-isolation`")
         o = flash_attn_func(q, k, v, causal=True)
         o = o.reshape(batch_size, q_len, self.hidden_size)
         o = self.o_proj(o)
