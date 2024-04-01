@@ -76,7 +76,6 @@ class TransformerAttention(nn.Module):
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         batch_size, q_len, _ = hidden_states.size()
-
         q = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
         k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
         v = rearrange(self.v_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
@@ -86,11 +85,8 @@ class TransformerAttention(nn.Module):
             seqlen_offset = past_key_values.get_seq_length()
         q, k = self.rotary(q, k, seqlen_offset)
 
-        if past_key_values is not None:  # reuse k, v, self_attention
-            k = torch.cat([past_key_values[0], k], dim=1)
-            v = torch.cat([past_key_values[1], v], dim=1)
-
-        past_key_values = (k, v) if use_cache else None
+        if past_key_values is not None:
+            past_key_values.update(k, v, self.layer_idx)
 
         if flash_attn_func is None:
             raise ImportError("Flash Attention not installed. "

@@ -201,9 +201,9 @@ class RetNetModel(RetNetPreTrainedModel):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
-            _, seq_length = input_ids.shape[:2]
+            batch_size, seq_len = input_ids.shape[:2]
         elif inputs_embeds is not None:
-            _, seq_length = inputs_embeds.shape[:2]
+            batch_size, seq_len = inputs_embeds.shape[:2]
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
@@ -213,13 +213,9 @@ class RetNetModel(RetNetPreTrainedModel):
 
         if use_cache:
             if past_key_values is None:
-                num_layers = self.config.num_hidden_layers
-                batch_size = hidden_states.shape[0]
-                key_dim = int(self.config.hidden_size * self.config.expand_k)
-                value_dim = int(self.config.hidden_size * self.config.expand_v // self.config.num_heads)
-                past_key_values = hidden_states.new_zeros(num_layers, batch_size, key_dim, value_dim)
+                past_key_values = [layer.attn.init_state(batch_size) for layer in self.layers]
             if not isinstance(past_key_values, RecurrentCache):
-                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, seq_length)
+                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, seq_len)
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
