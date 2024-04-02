@@ -436,7 +436,7 @@ def fused_recurrent_rwkv_4_backward(
     return gw, gu, gk, gv, gstate
 
 
-class WKVWithEpsTritonFunction(Function):
+class FusedRecurrentRWKV4Function(Function):
     @staticmethod
     def forward(
         ctx: FunctionCtx,
