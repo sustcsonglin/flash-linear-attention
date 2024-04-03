@@ -141,6 +141,12 @@ swiglu_bwd_with_output = torch.cuda.jiterator._create_multi_output_jit_fn(swiglu
 
 
 class SwiGLUFunction(torch.autograd.Function):
+    r"""
+    Swish-Gated Linear Unit (SwiGLU) function.
+
+    .. math::
+        \text{SwiGLU}(x, y) = swish(x) * y = \frac{x}{1 + \exp(-x)} * y
+    """
 
     @staticmethod
     def forward(ctx, x, y):
@@ -154,6 +160,14 @@ class SwiGLUFunction(torch.autograd.Function):
 
 
 class SwiGLULinearFunction(torch.autograd.Function):
+    r"""
+    Swish-Gated Linear Unit (SwiGLU) function followed by a linear transformation.
+
+    .. math::
+        \text{SwiGLULinear}(x, y, W, b) = (swish(x) * y) W + b
+
+    This simple wrap discards the intermediate results of SwiGLU(x, y) to save memory.
+    """
 
     @staticmethod
     def forward(ctx, x, y, weight, bias):
