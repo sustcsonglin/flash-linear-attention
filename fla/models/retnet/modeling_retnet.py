@@ -215,7 +215,7 @@ class RetNetModel(RetNetPreTrainedModel):
             if past_key_values is None:
                 past_key_values = [layer.attn.init_state(batch_size) for layer in self.layers]
             if not isinstance(past_key_values, RecurrentCache):
-                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, seq_len)
+                past_key_values = RecurrentCache.from_legacy_cache(past_key_values)
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
@@ -324,7 +324,7 @@ class RetNetForCausalLM(RetNetPreTrainedModel):
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
             if not isinstance(past_key_values, RecurrentCache):
-                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, input_ids.shape[1])
+                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, input_ids.shape[1] - 1)
             input_ids = input_ids[:, -1:]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step

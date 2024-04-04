@@ -40,6 +40,7 @@ class RecurrentCache(Cache):
         self,
         state: Tuple[torch.Tensor],
         layer_idx: int,
+        offset: Optional[int] = 1,
         cache_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Tuple[torch.Tensor]:
         """
@@ -50,6 +51,8 @@ class RecurrentCache(Cache):
                 The new state to cache.
             layer_idx (`int`):
                 The index of the layer to cache the states for.
+            offset (`int`):
+                The offset of current fed tokens.
             cache_kwargs (`Dict[str, Any]`, `optional`):
                 Additional arguments for the cache subclass.
 
@@ -66,7 +69,7 @@ class RecurrentCache(Cache):
                 self.states[layer_idx][i].copy_(s)
             # update the number of seen tokens once we achieve the last layer
             if layer_idx == len(self) - 1:
-                self._seen_tokens += 1
+                self._seen_tokens += offset
 
         return state
 

@@ -164,7 +164,7 @@ class LinearAttentionModel(LinearAttentionPreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
             [LinearAttentionBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
@@ -175,10 +175,10 @@ class LinearAttentionModel(LinearAttentionPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        return self.embed_tokens
+        return self.embeddings
 
     def set_input_embeddings(self, value):
-        self.embed_tokens = value
+        self.embeddings = value
 
     def forward(
         self,
@@ -230,7 +230,7 @@ class LinearAttentionModel(LinearAttentionPreTrainedModel):
             position_ids = position_ids.unsqueeze(0)
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+            inputs_embeds = self.embeddings(input_ids)
 
         # embed positions
         hidden_states = inputs_embeds
@@ -311,10 +311,10 @@ class LinearAttentionForCausalLM(LinearAttentionPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        return self.model.embed_tokens
+        return self.model.embeddings
 
     def set_input_embeddings(self, value):
-        self.model.embed_tokens = value
+        self.model.embeddings = value
 
     def get_output_embeddings(self):
         return self.lm_head

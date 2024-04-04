@@ -160,7 +160,7 @@ class GatedLinearAttention(nn.Module):
                     last_state = (conv_state_q, conv_state_k, conv_state_v, recurrent_state)
             else:
                 last_state = (recurrent_state,)
-            past_key_values.update(last_state, self.layer_idx)
+            past_key_values.update(last_state, self.layer_idx, q.shape[2])
 
         o = rearrange(o, 'b h l d -> b l h d')
         g = self.g_proj(hidden_states)

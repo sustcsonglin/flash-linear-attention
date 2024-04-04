@@ -159,7 +159,7 @@ class ABCAttention(nn.Module):
         last_state = past_key_values[self.layer_idx] if use_cache else None
         o, last_state = chunk_abc(q, k, v, s, initial_state=last_state, output_final_state=use_cache)
         if past_key_values is not None and last_state is not None:
-            past_key_values.update(last_state, self.layer_idx)
+            past_key_values.update(last_state, self.layer_idx, q.shape[2])
 
         o = rearrange(o, 'b h t d -> b t h d')
         if self.use_norm and not self.use_output_gate:
