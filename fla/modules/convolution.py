@@ -145,9 +145,6 @@ class ShortConvolution(nn.Conv1d):
             The `cache` (if provided) is updated inplace.
         """
 
-        if not next(self.parameters()).is_cuda:
-            warnings.warn("CUDA is required for using causal convolutions, setting `use_causal_conv` to False.")
-            self.use_causal_conv = False
         if cache is not None and x.shape[1] == 1:
             return self.step(x, cache)
         x = rearrange(x, "b l d -> b d l")
