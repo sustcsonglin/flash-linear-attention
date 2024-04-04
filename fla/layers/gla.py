@@ -13,7 +13,6 @@ from einops import rearrange
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 
-from fla.layers.utils import proj_then_conv1d
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
@@ -163,7 +162,6 @@ class GatedLinearAttention(nn.Module):
                 last_state = (recurrent_state,)
             past_key_values.update(last_state, self.layer_idx)
 
-
         o = rearrange(o, 'b h l d -> b l h d')
         g = self.g_proj(hidden_states)
         if self.fuse_norm_and_gate:
@@ -185,8 +183,9 @@ class GatedLinearAttention(nn.Module):
             if self.share_conv_kernel:
                 state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
             else:
-                # for q/k/v each
-                state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),param.new_zeros(batch_size, self.key_dim, self.conv_size),param.new_zeros(batch_size, self.value_dim, self.conv_size))
+                state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                          param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                          param.new_zeros(batch_size, self.value_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
         return state
 

@@ -25,3 +25,9 @@ def require_version(version, hint):
                       **{k: (v if not isinstance(v, torch.Tensor) else v.contiguous()) for k, v in kwargs.items()})
         return wrapper
     return decorator
+
+
+def checkpoint(func):
+    def wrapper(*args, **kwargs):
+        return torch.utils.checkpoint.checkpoint(func, *args, **kwargs)
+    return wrapper

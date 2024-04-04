@@ -10,9 +10,10 @@ import torch.nn as nn
 from einops import rearrange
 from transformers.cache_utils import Cache
 
-from fla.layers.utils import proj_then_conv1d
-from fla.modules import (FusedRMSNormSwishGate, RotaryEmbedding,
+from fla.modules import (FusedRMSNormSwishGate, RMSNorm, RotaryEmbedding,
                          ShortConvolution)
+from fla.modules.activations import swiglu, swish
+from fla.modules.convolution import proj_then_conv1d
 from fla.ops.abc.chunk import chunk_abc
 
 
@@ -21,16 +22,20 @@ class ABCAttention(nn.Module):
     def __init__(
         self,
         hidden_size: int = 1024,
-        expand_k: float = 1.0,
+        expand_k: float = 0.5,
         expand_v: float = 1.0,
         num_heads: int = 4,
-        use_short_conv: bool = True,
+        use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
         num_slots: Optional[int] = None,
         layernorm_eps: float = 1e-5,
         gate_low_rank_dim: int = 16,
+        gate_logit_normalizer: int = 16,
+        use_input_gate: bool = False,
+        use_output_gate: bool = True,
+        use_norm: bool = True,
         clamp_min: Optional[float] = -32,
         clamp_max: Optional[float] = 32,
         layer_idx: Optional[int] = None,
@@ -42,26 +47,33 @@ class ABCAttention(nn.Module):
         self.expand_k = expand_k
         self.expand_v = expand_v
         self.num_heads = num_heads
+        self.key_dim = int(self.hidden_size * self.expand_k)
+        self.value_dim = int(self.hidden_size * self.expand_v)
+        self.head_k_dim = self.key_dim // self.num_heads
+        self.head_v_dim = self.value_dim // self.num_heads
 
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
         self.conv_bias = conv_bias
         self.share_conv_kernel = share_conv_kernel
 
-        self.key_dim = int(self.hidden_size * self.expand_k)
-        self.value_dim = int(self.hidden_size * self.expand_v)
-        self.head_k_dim = self.key_dim // self.num_heads
-        self.head_v_dim = self.value_dim // self.num_heads
+        self.gate_low_rank_dim = gate_low_rank_dim
+        self.gate_logit_normalizer = gate_logit_normalizer
+
+        self.use_input_gate = use_input_gate
+        self.use_output_gate = use_output_gate
+        self.use_norm = use_norm
 
         if num_slots is None:
             num_slots = self.head_k_dim
         self.num_slots = num_slots
 
         self.layernorm_eps = layernorm_eps
-        self.gate_low_rank_dim = gate_low_rank_dim
+
         self.clamp_min = clamp_min
         self.clamp_max = clamp_max
         self.layer_idx = layer_idx
+
         if layer_idx is None:
             warnings.warn(
                 f"Instantiating {self.__class__.__name__} without passing `layer_idx` is not recommended and will "
@@ -72,7 +84,10 @@ class ABCAttention(nn.Module):
         self.q_proj = nn.Linear(self.hidden_size, self.key_dim, bias=False)
         self.k_proj = nn.Linear(self.hidden_size, self.key_dim, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.value_dim, bias=False)
-        self.g_proj = nn.Linear(self.hidden_size, self.value_dim, bias=False)
+
+        if use_output_gate:
+            self.g_proj = nn.Linear(self.hidden_size, self.value_dim, bias=False)
+        self.s_proj = nn.Linear(self.hidden_size, self.num_heads * self.num_slots, bias=False)
         self.o_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
         if use_short_conv:
@@ -84,11 +99,8 @@ class ABCAttention(nn.Module):
                 self.k_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
                 self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
 
-        self.g_norm = FusedRMSNormSwishGate(self.head_v_dim)
-        self.s_proj = nn.Sequential(
-            nn.Linear(self.hidden_size, self.gate_low_rank_dim, bias=False),
-            nn.Linear(self.gate_low_rank_dim, self.num_heads * self.num_slots, bias=True)
-        )
+        if self.use_norm:
+            self.g_norm = FusedRMSNormSwishGate(self.head_v_dim) if self.use_output_gate else RMSNorm(self.head_v_dim)
 
         self.rotary = RotaryEmbedding(self.head_k_dim)
 
@@ -131,6 +143,9 @@ class ABCAttention(nn.Module):
         k = rearrange(k, '... (h d) -> ... h d', h=self.num_heads)
         v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_heads)
 
+        if self.use_input_gate:
+            q, k, v = map(lambda x: swish(x), (q, k, v))
+
         seqlen_offset = 0
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length()
@@ -147,8 +162,12 @@ class ABCAttention(nn.Module):
             past_key_values.update(last_state, self.layer_idx)
 
         o = rearrange(o, 'b h t d -> b t h d')
-        g = rearrange(self.g_proj(hidden_states), 'b t (h d) -> b t h d', h=self.num_heads)
-        o = rearrange(self.g_norm(o, g), 'b t h d -> b t (h d)')
+        if self.use_norm and not self.use_output_gate:
+            o = self.g_norm(o)
+        elif self.use_output_gate:
+            g = rearrange(self.g_proj(hidden_states), 'b t (h d) -> b t h d', h=self.num_heads)
+            o = self.g_norm(o, g) if self.use_norm else swiglu(g, o)
+        o = rearrange(o, 'b t h d -> b t (h d)')
         o = self.o_proj(o)
 
         return o, None, past_key_values
@@ -160,3 +179,6 @@ class ABCAttention(nn.Module):
             state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
         state += (param.new_zeros(batch_size, self.num_heads, self.head_k_dim, self.head_v_dim),)
         return state
+
+    def state_size(self, sequence_length: int = 2048):
+        return self.num_heads * self.key_dim * self.head_v_dim
