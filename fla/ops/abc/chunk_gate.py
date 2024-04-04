@@ -9,7 +9,7 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.abc.utils import (reversed_cumsum_fwd, softmax_bwd_kernel,
+from fla.ops.abc.utils import (chunk_reversed_cumsum_fwd, softmax_bwd_kernel,
                                softmax_fwd_kernel)
 from fla.utils import contiguous
 
@@ -1140,7 +1140,7 @@ class ChunkABCFunction(torch.autograd.Function):
         # def reversed_cumsum(x, dim=-1):
         #     c = x.cumsum(dim)
         #     return x + c.index_select(dim, x.new_tensor([c.shape[dim]-1], dtype=torch.long)) - c
-        dg = reversed_cumsum_fwd(ok * dok + p * dp - s * ds).to(s.dtype)
+        dg = chunk_reversed_cumsum_fwd(ok * dok + p * dp - s * ds).to(s.dtype)
         return dq, dk, dv, ds, dg, None, None
 
 
