@@ -8,7 +8,7 @@ import triton
 import triton.language as tl
 from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.ops.utils import contiguous
+from fla.utils import contiguous
 
 
 @torch.jit.script

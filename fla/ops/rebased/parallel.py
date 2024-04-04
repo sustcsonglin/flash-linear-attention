@@ -4,9 +4,9 @@
 import torch
 import triton
 import triton.language as tl
-
-from fla.ops.utils import contiguous
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.utils import contiguous
 
 # Rebased: Linear Transformers with Learnable Kernel Functions are Better In-Context Models
 # https://github.com/corl-team/rebased/blob/main/flash_linear_attention/fla/ops/triton/rebased_fast/parallel.py
@@ -369,6 +369,7 @@ class ParallelBasedFunction(torch.autograd.Function):
 
 
 triton_parallel_based = ParallelBasedFunction.apply
+
 
 def parallel_rebased(q, k, v, eps=1e-5, use_scale=True, use_normalize=True, return_both=False):
     assert q.shape[-1] <= 128, "only support feature dim up to 128"

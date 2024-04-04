@@ -12,11 +12,11 @@ import torch.nn as nn
 from einops import rearrange
 from transformers.cache_utils import Cache
 
-from fla.layers.utils import proj_then_conv1d
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
+from fla.modules.rotary import RotaryEmbedding
 from fla.ops.delta_rule import (fused_chunk_delta_rule,
                                 fused_recurrent_linear_attn_delta_rule)
-from fla.modules.rotary import RotaryEmbedding
+
 
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
 class DeltaNet(nn.Module):
@@ -82,7 +82,7 @@ class DeltaNet(nn.Module):
             self.norm = FusedRMSNormSwishGate(self.head_v_dim)
         else:
             self.norm = RMSNorm(self.head_v_dim)
-        
+
         self.use_rope = use_rope
         if use_rope:
             self.rotary = RotaryEmbedding(dim=self.head_qk_dim, interleaved=False)
@@ -135,18 +135,18 @@ class DeltaNet(nn.Module):
                 seqlen_offset = past_key_values.get_seq_length()
             q, k = map(lambda x: rearrange(x, 'b l (h d) -> b l h d', h=self.num_heads), (q, k))
             q, k = self.rotary(q, k, seqlen_offset)
-            q, k = q.transpose(1, 2), k.transpose(1, 2)            
+            q, k = q.transpose(1, 2), k.transpose(1, 2)
             v = rearrange(self.v_proj(hidden_states), 'b l (h d) -> b h l d', h=self.num_heads)
         else:
             q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
 
         beta = rearrange(self.b_proj(hidden_states), 'b l h -> b h l').sigmoid()
-        recurrent_state = past_key_values[self.layer_idx][-1] if use_cache else None
+        state = past_key_values[self.layer_idx][-1] if use_cache else None
         if mode == 'fused_recurrent':
             k = torch.nn.functional.normalize(k, p=2, dim=-1)
-            o, recurrent_state = fused_recurrent_linear_attn_delta_rule(q, k, v, beta, recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_linear_attn_delta_rule(q, k, v, beta, state, output_final_state=use_cache)
         elif mode == 'fused_chunk':
-            o, recurrent_state = fused_chunk_delta_rule(q, k, v, beta, self.chunk_size, recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = fused_chunk_delta_rule(q, k, v, beta, self.chunk_size, state, output_final_state=use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
@@ -179,6 +179,8 @@ class DeltaNet(nn.Module):
                 state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
             else:
                 # for q/k/v each
-                state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),param.new_zeros(batch_size, self.key_dim, self.conv_size),param.new_zeros(batch_size, self.value_dim, self.conv_size))
+                state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                          param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                          param.new_zeros(batch_size, self.value_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
         return state

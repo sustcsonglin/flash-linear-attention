@@ -1,11 +1,13 @@
-import triton 
+# -*- coding: utf-8 -*-
+
 import torch
+import triton
 import triton.language as tl
 from einops import rearrange
-from fla.ops.utils import contiguous
-from packaging import version
 from torch.cuda.amp import custom_bwd, custom_fwd
-from fla.modules.l2norm import _l2_norm_fwd, _l2_norm_bwd
+
+from fla.utils import contiguous
+
 
 # Inspired by "THE WY REPRESENTATION FOR PRODUCTS OF HOUSEHOLDER MATRICES" https://epubs.siam.org/doi/pdf/10.1137/0908009
 # o: cumprod
@@ -22,18 +24,20 @@ from fla.modules.l2norm import _l2_norm_fwd, _l2_norm_bwd
     key=["BT", "BK", "BV"],
 )
 @triton.jit
-def fwd_prepare_wy_repr_kernel(k, v, beta, o, o2,
-                        NT, DK, DV, 
-                        BT: tl.constexpr,
-                        BK: tl.constexpr,
-                        BV: tl.constexpr):
+def fwd_prepare_wy_repr_kernel(
+    k, v, beta, o, o2,
+    NT, DK, DV,
+    BT: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr
+):
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
-    p_k = k + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :] 
-    p_v = v + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
+    p_k = k + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :]
+    p_v = v + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :]
     p_beta = beta + i_bh * NT * BT + i_t * BT + tl.arange(0, BT)
     mask_bk = (tl.arange(0, BK) < DK)[None, :]
     mask_bv = (tl.arange(0, BV) < DV)[None, :]
-    
+
     b_k = tl.load(p_k, mask=mask_bk)
     b_v = tl.load(p_v, mask=mask_bv)
     b_beta = tl.load(p_beta).to(tl.float32)
@@ -42,7 +46,6 @@ def fwd_prepare_wy_repr_kernel(k, v, beta, o, o2,
     A = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], A, 0)
     b_o = b_k.to(tl.float32) * b_beta[:, None]
 
-
     for i in range(BT):
         mask = tl.arange(0, BT) == i
         attn = tl.sum(tl.where(mask[:, None], A, 0), axis=0)
@@ -50,10 +53,10 @@ def fwd_prepare_wy_repr_kernel(k, v, beta, o, o2,
         new_v = tl.sum(attn[:, None] * b_v, axis=0)
         b_o = tl.where(mask[:, None], b_o - new_o[None, :], b_o)
         b_v = tl.where(mask[:, None], b_v - new_v[None, :], b_v)
-    
+
     p_o = o + i_bh * BT * NT * DK + (i_t * BT + tl.arange(0, BT)[:,  None]) * DK + tl.arange(0, BK)[None, :]
     tl.store(p_o, (b_o).to(p_o.dtype.element_ty), mask=mask_bk)
-    p_o2 = o2 + i_bh * BT * NT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
+    p_o2 = o2 + i_bh * BT * NT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :]
     tl.store(p_o2, b_v.to(p_o2.dtype.element_ty), mask=mask_bv)
 
 
@@ -69,24 +72,25 @@ def fwd_prepare_wy_repr_kernel(k, v, beta, o, o2,
     key=["BT", "BK", "BV"],
 )
 @triton.jit
-def bwd_prepare_wy_repr_kernel(k, v, beta, 
-                        o, o2, do, do2,
-                        dk, dv, dbeta,
-                        NT, DK, DV,
-                        BT: tl.constexpr,
-                        BK: tl.constexpr,
-                        BV: tl.constexpr,
-                        ):
-    i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2) 
+def bwd_prepare_wy_repr_kernel(
+    k, v, beta,
+    o, o2, do, do2,
+    dk, dv, dbeta,
+    NT, DK, DV,
+    BT: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
+):
+    i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     p_k = k + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :]
-    p_do = do + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :] 
+    p_do = do + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :]
     p_do2 = do2 + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :]
 
     p_beta = beta + i_bh * NT * BT + i_t * BT + tl.arange(0, BT)
     mask_bk = (tl.arange(0, BK) < DK)[None, :]
     mask_bv = (tl.arange(0, BV) < DV)[None, :]
     b_k, b_beta = tl.load(p_k, mask=mask_bk), tl.load(p_beta)
-    
+
     b_beta = b_beta.to(tl.float32)
     A = tl.dot(b_k, tl.trans(b_k), allow_tf32=False) * b_beta[:, None]
     A = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], A, 0)
@@ -99,36 +103,35 @@ def bwd_prepare_wy_repr_kernel(k, v, beta,
         attn = tl.sum(tl.where(mask[:, None], A, 0), axis=0)
         do_ = tl.sum(tl.where(mask[:, None], b_do, 0), axis=0)
         dv_ = tl.sum(tl.where(mask[:, None], b_dv, 0), axis=0)
-        mask2 = tl.arange(0, BT) < i
         b_do = b_do - attn[:, None] * do_[None, :]
         b_dv = b_dv - attn[:, None] * dv_[None, :]
     tl.debug_barrier()
-    p_v = v + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
-    b_v = tl.load(p_v, mask=mask_bv) 
-    b_dk += b_do * b_beta[:, None] 
-    b_dbeta = tl.sum(b_do * b_k, axis=1)    
+    p_v = v + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :]
+    b_v = tl.load(p_v, mask=mask_bv)
+    b_dk += b_do * b_beta[:, None]
+    b_dbeta = tl.sum(b_do * b_k, axis=1)
     b_dbeta += tl.sum(b_dv * b_v, axis=1)
     b_v = None
 
-    p_o = o + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :] 
-    p_o2 = o2 + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
+    p_o = o + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :]
+    p_o2 = o2 + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :]
     b_o = tl.load(p_o, mask=mask_bk)
     b_o2 = tl.load(p_o2, mask=mask_bv)
 
     dA = -tl.dot(b_do.to(b_o.dtype), tl.trans(b_o), allow_tf32=False)
-    dA -= tl.dot(b_dv.to(b_o2.dtype), tl.trans(b_o2).to(b_o.dtype), 
-    allow_tf32=False)
+    dA -= tl.dot(b_dv.to(b_o2.dtype), tl.trans(b_o2).to(b_o.dtype),
+                 allow_tf32=False)
     dA = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], dA, 0)
     b_dv *= b_beta[:, None]
-    p_dv = dv + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :] 
+    p_dv = dv + i_bh * NT * BT * DV + (i_t * BT + tl.arange(0, BT)[:, None]) * DV + tl.arange(0, BV)[None, :]
     tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), mask=mask_bv)
 
     b_dbeta += tl.sum(dA * tl.dot(b_k, tl.trans(b_k), allow_tf32=False), axis=1)
     dA = dA * b_beta[:, None]
     b_dk += tl.dot(tl.trans(dA.to(b_k.dtype)), b_k, allow_tf32=False)
     b_dk += tl.dot(dA.to(b_k.dtype), b_k, allow_tf32=False)
-    p_dk = dk + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :] 
-    tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), mask=mask_bk)    
+    p_dk = dk + i_bh * NT * BT * DK + (i_t * BT + tl.arange(0, BT)[:, None]) * DK + tl.arange(0, BK)[None, :]
+    tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), mask=mask_bk)
     p_dbeta = dbeta + i_bh * NT * BT + i_t * BT + tl.arange(0, BT)
     tl.store(p_dbeta, b_dbeta.to(p_dbeta.dtype.element_ty))
 
@@ -150,8 +153,9 @@ def fwd_prepare_wy_repr(k, v, beta, chunk_size):
     )
     return o_cumdecay, v_new
 
+
 def bwd_prepare_wy_repr(k, v, beta, o_cumdecay, v_new, do, do2, chunk_size):
-    b, h, l, d_k = do.shape 
+    b, h, l, d_k = do.shape
     d_v = v.shape[-1]
     BK = triton.next_power_of_2(d_k)
     BV = triton.next_power_of_2(d_v)
@@ -170,7 +174,6 @@ def bwd_prepare_wy_repr(k, v, beta, o_cumdecay, v_new, do, do2, chunk_size):
     return dk, dv, dbeta
 
 
-
 class WYRepresentationPrepration(torch.autograd.Function):
     @staticmethod
     @contiguous
@@ -180,7 +183,7 @@ class WYRepresentationPrepration(torch.autograd.Function):
         ctx.chunk_size = chunk_size
         ctx.save_for_backward(k, v, beta, o_cumdecay, v_new)
         return o_cumdecay, v_new
-    
+
     @staticmethod
     @contiguous
     @custom_bwd
@@ -189,13 +192,14 @@ class WYRepresentationPrepration(torch.autograd.Function):
         dk, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, o_cumdecay, v_new, do, do2, ctx.chunk_size)
         return dk, dv, dbeta, None
 
+
 prepare_wy_repr = WYRepresentationPrepration.apply
 
 
 def naive(k, v, beta, chunk_size):
-    k, v = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c = chunk_size), (k, v))
+    k, v = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c=chunk_size), (k, v))
     # k = torch.nn.functional.normalize(k, dim=-1, p=2)
-    beta = rearrange(beta, 'b h (n c) -> b h n c', c = chunk_size)
+    beta = rearrange(beta, 'b h (n c) -> b h n c', c=chunk_size)
     mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=k.device), diagonal=0)
     k_beta = k * beta[..., None]
     v = v * beta[..., None]
@@ -205,7 +209,7 @@ def naive(k, v, beta, chunk_size):
 
     o = torch.zeros_like(k)
     o2 = torch.zeros_like(v)
-    
+
     o[..., 0, :] = k_beta[..., 0, :].clone()
     o2[..., 0, :] = x[..., 0, :].clone()
     for i in range(1, chunk_size):
@@ -221,7 +225,7 @@ if __name__ == "__main__":
     b = 2
     h = 4
     k = torch.nn.functional.normalize(torch.randn(b, h, seq_len, 64), dim=-1, p=2)
-    v = torch.randn(b, h, seq_len, 128) * 10  
+    v = torch.randn(b, h, seq_len, 128) * 10
     beta = torch.rand(b, h, seq_len).sigmoid()
     require_grad = True
     k, v, beta = map(lambda x: x.cuda().requires_grad_(require_grad), (k, v, beta))
@@ -247,11 +251,3 @@ if __name__ == "__main__":
         print((v_grad2-v_grad).abs().max())
         print((beta_grad2-beta_grad).abs().max())
     breakpoint()
-
-        
-
-    
-
-
-
-

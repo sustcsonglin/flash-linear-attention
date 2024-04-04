@@ -7,10 +7,12 @@ import triton
 import triton.language as tl
 from packaging import version
 from torch.cuda.amp import custom_bwd, custom_fwd
-from fla.ops.delta_rule.triton_fn import fwd_prepare_wy_repr, bwd_prepare_wy_repr
-from fla.modules.l2norm import _l2_norm_fwd, _l2_norm_bwd
 
-from fla.ops.utils import contiguous
+from fla.modules.l2norm import _l2_norm_bwd, _l2_norm_fwd
+from fla.ops.delta_rule.triton_fn import (bwd_prepare_wy_repr,
+                                          fwd_prepare_wy_repr)
+from fla.utils import contiguous
+
 
 # on-the-fly computation without materializing hidden statets into HBMs
 @triton.autotune(
@@ -187,7 +189,7 @@ def fused_chunk_delta_rule_bwd_kernel(
         b_ds = tl.dot(b_v, tl.trans(b_do), allow_tf32=False)
         b_ds = tl.where(m_s, b_ds, 0).to(b_q.dtype)
         # [BT, BT]
-        b_s = tl.dot(b_k, b_q, allow_tf32=False)  
+        b_s = tl.dot(b_k, b_q, allow_tf32=False)
         b_s = tl.where(m_s, b_s, 0).to(b_q.dtype)
         # [BT, DK]
         b_dk = tl.dot(b_ds, tl.trans(b_q), allow_tf32=False)
@@ -294,6 +296,7 @@ def fused_chunk_delta_rule_fwd(q, k, v, d, BT, initial_state, output_final_state
     )
     return o, v_new, CHECK, final_state
 
+
 def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
     batch_size, n_heads,  seq_len, d_head_qk = q.shape
     d_head_v = v.shape[-1]
@@ -356,7 +359,7 @@ class FusedChunkDeltaRuleFunction(torch.autograd.Function):
         dq, dk, dv, dd = fused_chunk_delta_rule_bwd(q, k, v_new2, d, do, chunk_size, ctx.CHECK, initial_state)
         dk2, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, d, v_new, dd, dv, chunk_size)
         dk.add_(dk2)
-        dk = _l2_norm_bwd(k_origin, dk)   
+        dk = _l2_norm_bwd(k_origin, dk)
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dbeta.to(d.dtype), None, None, None
 
 
@@ -373,7 +376,6 @@ def fused_chunk_delta_rule(
         initial_state = initial_state.detach()
     o, final_state = FusedChunkDeltaRuleFunction.apply(q, k, v, beta, BT, initial_state, output_final_state)
     return o, final_state
-
 
 
 def delta_rule_recurrence(q, k, v, beta):
@@ -399,8 +401,8 @@ if __name__ == "__main__":
     seq_len = 128
     b = 2
     h = 4
-    k = torch.randn(b, h, seq_len, 64) 
-    v = torch.randn(b, h, seq_len, 128)  
+    k = torch.randn(b, h, seq_len, 64)
+    v = torch.randn(b, h, seq_len, 128)
     q = torch.randn(b, h, seq_len, 64)
     beta = torch.rand(b, h, seq_len).sigmoid()
     q, k, v, beta = map(lambda x: x.cuda().to(torch.float32).requires_grad_(True), (q, k, v, beta))
@@ -413,7 +415,7 @@ if __name__ == "__main__":
     o.backward(do, retain_graph=True)
     q_grad, k_grad, v_grad, beta_grad = q.grad, k.grad, v.grad, beta.grad
     q.grad = k.grad = v.grad = beta.grad = None
-    print((o- o2).abs().max())
+    print((o - o2).abs().max())
     print((q_grad - q_grad2).abs().max())
     print((k_grad - k_grad2).abs().max())
     print((v_grad - v_grad2).abs().max())

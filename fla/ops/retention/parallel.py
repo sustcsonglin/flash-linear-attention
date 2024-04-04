@@ -6,7 +6,7 @@ import triton
 import triton.language as tl
 from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.ops.utils import contiguous
+from fla.utils import contiguous
 
 
 @triton.jit
@@ -41,8 +41,6 @@ def parallel_retention_fwd_kernel(
     i_h = i_bh % H
     # decay rate given the head index
     b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
-    # overall decay rate for an entire block
-    d_b = tl.math.exp2(b_b * BTS)
     # cumulative decay from the end of the chunk
     o_k = tl.arange(0, BTS)
     d_h = tl.math.exp2((BTS - o_k) * b_b)

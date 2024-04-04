@@ -11,7 +11,7 @@ import triton.language as tl
 
 from fla.ops.abc.utils import (logcumsumexp_fwd_kernel, softmax_bwd_kernel,
                                softmax_fwd_kernel)
-from fla.ops.utils import contiguous
+from fla.utils import contiguous
 
 
 @triton.jit
@@ -1052,7 +1052,7 @@ class ChunkABCFunction(torch.autograd.Function):
                 scale=scale,
                 T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
                 NORMK=normk,
-                num_warps=2,
+                num_warps=num_warps,
                 num_stages=num_stages
             )
             return dh
@@ -1072,7 +1072,7 @@ class ChunkABCFunction(torch.autograd.Function):
                 s, z, ss, doo,
                 s.stride(1), s.stride(2), s.stride(3),
                 T=T, S=S, BT=BT, BC=BC, BS=BS, NC=NC,
-                num_warps=2,
+                num_warps=num_warps,
                 num_stages=num_stages
             )
             return doo
@@ -1112,8 +1112,8 @@ class ChunkABCFunction(torch.autograd.Function):
             num_stages=num_stages
         )
         dp = dp1.add_(dp0)
-
         dsv = dsv1.add_(dsv0)
+
         # softmax gradient, equivalent to:
         # dok = p * (dp - (p * dp).sum(-1, True))
         dok = torch.empty_like(ok)

@@ -9,7 +9,7 @@ import triton.language as tl
 from packaging import version
 from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.ops.utils import contiguous
+from fla.utils import contiguous
 
 # on-the-fly computation without materializing hidden statets into HBMs
 

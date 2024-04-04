@@ -11,7 +11,7 @@ import triton.language as tl
 
 from fla.ops.abc.utils import (reversed_cumsum_fwd, softmax_bwd_kernel,
                                softmax_fwd_kernel)
-from fla.ops.utils import contiguous
+from fla.utils import contiguous
 
 
 @triton.jit

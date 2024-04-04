@@ -14,7 +14,7 @@ from torch.cuda.amp import custom_bwd, custom_fwd
 
 from fla.ops.gla.chunk_util import (bwd_decay_global_cumsum, fwd_decay_cumsum,
                                     prepare_qg_kg)
-from fla.ops.utils import contiguous
+from fla.utils import contiguous
 
 inv_ln2 = 1.44269504
 

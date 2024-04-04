@@ -7,7 +7,7 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.utils import contiguous
+from fla.utils import contiguous
 
 # on-the-fly computation without materializing hidden statets into HBMs
 

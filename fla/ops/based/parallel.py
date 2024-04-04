@@ -6,7 +6,7 @@ import triton
 import triton.language as tl
 from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.ops.utils import contiguous
+from fla.utils import contiguous
 
 # Based: An Educational and Effective Sequence Mixer
 # https://hazyresearch.stanford.edu/blog/2023-12-11-zoology2-based
