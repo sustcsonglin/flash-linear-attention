@@ -16,6 +16,7 @@ from fla.layers.utils import proj_then_conv1d
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.ops.delta_rule import (fused_chunk_delta_rule,
                                 fused_recurrent_linear_attn_delta_rule)
+from fla.modules.rotary import RotaryEmbedding
 
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
 class DeltaNet(nn.Module):
@@ -28,7 +29,7 @@ class DeltaNet(nn.Module):
         num_heads: int = 4,
         chunk_size: int = 16,
         use_gate: bool = True,
-
+        use_rope: bool = True,
         use_short_conv: bool = True,
         conv_size: int = 4,
         conv_bias: bool = False,
@@ -81,6 +82,10 @@ class DeltaNet(nn.Module):
             self.norm = FusedRMSNormSwishGate(self.head_v_dim)
         else:
             self.norm = RMSNorm(self.head_v_dim)
+        
+        self.use_rope = use_rope
+        if use_rope:
+            self.rotary = RotaryEmbedding(dim=self.head_qk_dim, interleaved=False)
 
         self.apply(self._initialize_weights)
 
@@ -119,13 +124,22 @@ class DeltaNet(nn.Module):
                 q = self.q_conv1d(self.q_proj(hidden_states), conv_state_q)
                 k = self.k_conv1d(self.k_proj(hidden_states), conv_state_k)
                 v = self.v_conv1d(self.v_proj(hidden_states), conv_state_v)
-
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
 
-        q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
+        if self.use_rope:
+            seqlen_offset = 0
+            if past_key_values is not None:
+                seqlen_offset = past_key_values.get_seq_length()
+            q, k = map(lambda x: rearrange(x, 'b l (h d) -> b l h d', h=self.num_heads), (q, k))
+            q, k = self.rotary(q, k, seqlen_offset)
+            q, k = q.transpose(1, 2), k.transpose(1, 2)            
+            v = rearrange(self.v_proj(hidden_states), 'b l (h d) -> b h l d', h=self.num_heads)
+        else:
+            q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
+
         beta = rearrange(self.b_proj(hidden_states), 'b l h -> b h l').sigmoid()
         recurrent_state = past_key_values[self.layer_idx][-1] if use_cache else None
         if mode == 'fused_recurrent':
