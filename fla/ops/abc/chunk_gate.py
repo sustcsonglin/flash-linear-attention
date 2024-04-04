@@ -9,7 +9,8 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.abc.utils import softmax_bwd_kernel, softmax_fwd_kernel
+from fla.ops.abc.utils import (reversed_cumsum_fwd, softmax_bwd_kernel,
+                               softmax_fwd_kernel)
 from fla.ops.utils import contiguous
 
 
@@ -960,7 +961,7 @@ class ChunkABCFunction(torch.autograd.Function):
             s, g, ok0, Ak,
             s.stride(1), s.stride(2), s.stride(3),
             T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
-            num_warps=2,
+            num_warps=num_warps,
             num_stages=num_stages
         )
         ok = ok0.add_(ok1)
@@ -990,7 +991,7 @@ class ChunkABCFunction(torch.autograd.Function):
             s.stride(1), s.stride(2), s.stride(3),
             scale,
             T=T, K=M, BT=BT, BC=BC, BK=BM, NC=NC,
-            num_warps=2,
+            num_warps=num_warps,
             num_stages=num_stages
         )
         Av = Av.sum(0)
@@ -1036,32 +1037,10 @@ class ChunkABCFunction(torch.autograd.Function):
                 scale,
                 T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
                 NORMK=normk,
-                num_warps=2,
-                num_stages=num_stages
-            )
-            return dh
-
-        def bwd_post(s, B, H, T, S, BT, BS, NT, NS):
-            s = s.float()
-            c = torch.empty_like(s)
-            z = s.new_empty(B, H, NT, S)
-            grid = (NS, NT, B * H)
-            chunk_abc_bwd_kernel_rcum[grid](
-                s, c, z,
-                s.stride(1), s.stride(2), s.stride(3),
-                T=T, S=S, BT=BT, BS=BS, NT=NT,
                 num_warps=num_warps,
                 num_stages=num_stages
             )
-            grid = (NS, B * H)
-            chunk_abc_bwd_kernel_rcum_inter[grid](
-                c, z,
-                s.stride(1), s.stride(2), s.stride(3),
-                T=T, S=S, BT=BT, BS=BS, NT=NT,
-                num_warps=2,
-                num_stages=num_stages
-            )
-            return c
+            return dh
 
         scale = 1.
         qv = p.to(q.dtype)
@@ -1094,12 +1073,12 @@ class ChunkABCFunction(torch.autograd.Function):
             qv, s, g, dAv, dp0, dsv0,
             s.stride(1), s.stride(2), s.stride(3),
             T=T, K=M, BT=BT, BC=BC, BK=BM, NC=NC,
-            num_warps=2,
+            num_warps=num_warps,
             num_stages=num_stages
         )
         dp = dp1.add_(dp0)
-
         dsv = dsv1.add_(dsv0).float()
+
         # softmax gradient, equivalent to:
         # dok = p * (dp - (p * dp).sum(-1, True))
         dok = torch.empty_like(ok)
@@ -1124,7 +1103,7 @@ class ChunkABCFunction(torch.autograd.Function):
             s.stride(1), s.stride(2), s.stride(3),
             scale,
             T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
-            num_warps=2,
+            num_warps=num_warps,
             num_stages=num_stages
         )
         dAk = dAk.sum(0)
@@ -1152,7 +1131,7 @@ class ChunkABCFunction(torch.autograd.Function):
             g, Ak, dok, dsk0,
             s.stride(1), s.stride(2), s.stride(3),
             T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
-            num_warps=2,
+            num_warps=num_warps,
             num_stages=num_stages
         )
         ds = dsv.add_(dsk1.add_(dsk0))
@@ -1161,7 +1140,7 @@ class ChunkABCFunction(torch.autograd.Function):
         # def reversed_cumsum(x, dim=-1):
         #     c = x.cumsum(dim)
         #     return x + c.index_select(dim, x.new_tensor([c.shape[dim]-1], dtype=torch.long)) - c
-        dg = bwd_post(ok * dok + p * dp - s * ds, B, H, T, M, BT, BM, NT, NM).to(s.dtype)
+        dg = reversed_cumsum_fwd(ok * dok + p * dp - s * ds).to(s.dtype)
         return dq, dk, dv, ds, dg, None, None
 
 

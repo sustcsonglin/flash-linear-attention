@@ -280,3 +280,148 @@ def cumsum(
     dtype: Optional[torch.dtype] = None,
 ) -> torch.Tensor:
     return CumsumFunction.apply(s, dtype)
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BT': 16}, num_warps=2),
+        triton.Config({'BT': 16}, num_warps=4),
+        triton.Config({'BT': 16}, num_warps=8),
+        triton.Config({'BT': 32}, num_warps=2),
+        triton.Config({'BT': 32}, num_warps=4),
+        triton.Config({'BT': 32}, num_warps=8),
+        triton.Config({'BT': 64}, num_warps=2),
+        triton.Config({'BT': 64}, num_warps=4),
+        triton.Config({'BT': 64}, num_warps=8),
+    ],
+    key=['S']
+)
+@triton.jit
+def reversed_cumsum_fwd_kernel(
+    s,
+    z,
+    s_s_h,
+    s_s_t,
+    s_s_d,
+    T: tl.constexpr,
+    S: tl.constexpr,
+    BT: tl.constexpr,
+    BS: tl.constexpr
+):
+    i_s, i_bh = tl.program_id(0), tl.program_id(1)
+    o_i = tl.arange(0, BT)
+    m_s = tl.where(o_i[:, None] <= o_i[None, :], 1., 0.)
+
+    b_z = tl.zeros([BS], dtype=tl.float32)
+    for i_t in range(tl.cdiv(T, BT) - 1, -1, -1):
+        p_s = tl.make_block_ptr(s + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+        p_z = tl.make_block_ptr(z + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+        # [BT, BS]
+        b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
+        b_c = b_z[None, :] + tl.dot(m_s, b_s, allow_tf32=False)
+        tl.store(p_z, b_c.to(p_z.dtype.element_ty), boundary_check=(0, 1))
+
+        if i_t >= 0:
+            b_z += tl.sum(b_s, 0)
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BT': 16}, num_warps=2),
+        triton.Config({'BT': 16}, num_warps=4),
+        triton.Config({'BT': 16}, num_warps=8),
+        triton.Config({'BT': 32}, num_warps=2),
+        triton.Config({'BT': 32}, num_warps=4),
+        triton.Config({'BT': 32}, num_warps=8),
+        triton.Config({'BT': 64}, num_warps=2),
+        triton.Config({'BT': 64}, num_warps=4),
+        triton.Config({'BT': 64}, num_warps=8),
+    ],
+    key=['S']
+)
+@triton.jit
+def reversed_cumsum_bwd_kernel(
+    ds,
+    dz,
+    s_s_h,
+    s_s_t,
+    s_s_d,
+    T: tl.constexpr,
+    S: tl.constexpr,
+    BT: tl.constexpr,
+    BS: tl.constexpr
+):
+    i_s, i_bh = tl.program_id(0), tl.program_id(1)
+    o_i = tl.arange(0, BT)
+    m_s = tl.where(o_i[:, None] >= o_i[None, :], 1., 0.)
+
+    b_ds = tl.zeros([BS], dtype=tl.float32)
+    for i_t in range(tl.cdiv(T, BT)):
+        p_ds = tl.make_block_ptr(ds + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+        p_dz = tl.make_block_ptr(dz + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+        # [BT, BS]
+        b_dz = tl.load(p_dz, boundary_check=(0, 1)).to(tl.float32)
+        b_c = b_ds[None, :] + tl.dot(m_s, b_dz, allow_tf32=False)
+        tl.store(p_ds, b_c.to(p_ds.dtype.element_ty), boundary_check=(0, 1))
+
+        if i_t >= 0:
+            b_ds += tl.sum(b_dz, 0)
+
+
+@contiguous
+def reversed_cumsum_fwd(
+    s: torch.Tensor,
+    dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    B, H, T, S = s.shape
+    BS = 32
+
+    dtype = dtype or s.dtype
+    grid = (triton.cdiv(S, BS), B * H)
+    z = torch.empty_like(s, dtype=dtype)
+    reversed_cumsum_fwd_kernel[grid](
+        s, z,
+        s.stride(1), s.stride(2), s.stride(3),
+        T=T, S=S, BS=BS
+    )
+    return z
+
+
+@contiguous
+def reversed_cumsum_bwd(
+    dz: torch.Tensor,
+    dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    B, H, T, S = dz.shape
+    BS = 32
+
+    dtype = dtype or dz.dtype
+    grid = (triton.cdiv(S, BS), B * H)
+    ds = torch.empty_like(dz, dtype=dtype)
+    reversed_cumsum_bwd_kernel[grid](
+        ds, dz,
+        ds.stride(1), ds.stride(2), ds.stride(3),
+        T=T, S=S, BS=BS
+    )
+    return ds
+
+
+class ReversedCumsumFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, s, dtype):
+        z = reversed_cumsum_fwd(s, dtype)
+        ctx.dtype = dtype
+        return z
+
+    @staticmethod
+    def backward(ctx, dz):
+        ds = reversed_cumsum_bwd(dz, ctx.dtype)
+        return ds, None
+
+
+def reversed_cumsum(
+    s: torch.Tensor,
+    dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    return CumsumFunction.apply(s, dtype)
