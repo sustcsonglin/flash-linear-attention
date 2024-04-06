@@ -86,8 +86,10 @@ class TransformerAttention(nn.Module):
         q, k = self.rotary(q, k, seqlen_offset)
 
         k = rearrange(k, 'b t h d -> b h t d')
+        if attention_mask is not None:
+            v = v.mul_(attention_mask[:, None, :, None])
         if past_key_values is not None:
-            past_key_values.update(k, v, self.layer_idx)
+            k, v = past_key_values.update(k, v, self.layer_idx)
         k, v = rearrange(k, 'b h t d -> b t h d'), rearrange(v, 'b h t d -> b t h d')
 
         if flash_attn_func is None:
@@ -104,6 +106,7 @@ class TransformerAttention(nn.Module):
 
 
 class TransformerMLP(nn.Module):
+
     def __init__(
         self,
         hidden_size: int,
@@ -166,6 +169,7 @@ class TransformerBlock(nn.Module):
         hidden_states = self.attn_norm(hidden_states)
         hidden_states, attentions, past_key_values = self.attn(
             hidden_states=hidden_states,
+            attention_mask=attention_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_attentions=output_attentions
@@ -186,6 +190,7 @@ class TransformerBlock(nn.Module):
 
 
 class TransformerPreTrainedModel(PreTrainedModel):
+
     config_class = TransformerConfig
     supports_gradient_checkpointing = True
     _no_split_modules = ['TransformerBlock']
@@ -250,14 +255,14 @@ class TransformerModel(TransformerPreTrainedModel):
 
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
+        return_dict: Optional[bool] = None
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         if output_attentions:
             warnings.warn(
@@ -293,31 +298,30 @@ class TransformerModel(TransformerPreTrainedModel):
                 )
                 use_cache = False
 
-        # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_attns = () if output_attentions else None
         next_decoder_cache = None
 
-        for decoder_layer in self.layers:
+        for layer in self.layers:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
-                    decoder_layer.__call__,
+                    layer.__call__,
                     hidden_states,
                     attention_mask,
                     past_key_values,
                     output_attentions,
-                    use_cache,
+                    use_cache
                 )
             else:
-                layer_outputs = decoder_layer(
+                layer_outputs = layer(
                     hidden_states,
                     attention_mask=attention_mask,
                     past_key_values=past_key_values,
                     output_attentions=output_attentions,
-                    use_cache=use_cache,
+                    use_cache=use_cache
                 )
 
             hidden_states = layer_outputs[0]
@@ -375,39 +379,35 @@ class TransformerForCausalLM(TransformerPreTrainedModel):
     def set_decoder(self, decoder):
         self.model = decoder
 
-    def generate(self, *args, **kwargs):
-        try:
-            return super().generate(*args, **kwargs)
-        except AttributeError as exc:
-            # Expected exception: "AttributeError: '(object name)' object has no attribute 'past_key_values'"
-            if 'past_key_values' in str(exc):
-                raise AttributeError(
-                    f"You tried to call `generate` with a decoding strategy that manipulates `past_key_values`, "
-                    f"which is not supported for {self.__class__.__name__}. "
-                    f"Try another generation strategy instead. "
-                    f"For the available generation strategies, check this doc: "
-                    f"https://huggingface.co/docs/transformers/en/generation_strategies#decoding-strategies"
-                )
-            else:
-                raise exc
+    def get_decoder(self):
+        return self.model
 
     def prepare_inputs_for_generation(
         self,
         input_ids: torch.LongTensor = None,
         past_key_values: Optional[torch.Tensor] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs
     ):
-        # only last token for inputs_ids if the state is passed along.
+        # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
-            input_ids = input_ids[:, -1].unsqueeze(-1)
-
+            input_ids, attention_mask = input_ids[:, -1:], attention_mask[:, -1:]
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
+            model_inputs = {'inputs_embeds': inputs_embeds}
         else:
-            model_inputs = {"input_ids": input_ids}
-        model_inputs["past_key_values"] = past_key_values
+            # The `contiguous()` here is necessary to have a static stride during decoding. torchdynamo otherwise
+            # recompiles graphs as the stride of the inputs is a guard.
+            # Ref: https://github.com/huggingface/transformers/pull/29114
+            # TODO: use `next_tokens` directly instead.
+            model_inputs = {'input_ids': input_ids.contiguous()}
+
+        model_inputs.update({
+            'past_key_values': past_key_values,
+            'use_cache': kwargs.get('use_cache'),
+            'attention_mask': attention_mask,
+        })
         return model_inputs
 
     def forward(
@@ -436,7 +436,7 @@ class TransformerForCausalLM(TransformerPreTrainedModel):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            return_dict=return_dict
         )
 
         hidden_states = outputs[0]
