@@ -17,10 +17,12 @@ class DeltaNetConfig(PretrainedConfig):
         expand_k: int = 0.5,
         expand_v: int = 1,
         use_gate: bool = True,
-        use_short_conv: bool = True,
+        use_short_conv: bool = False,
         conv_size: int = 4,
         share_conv_kernel: bool = False,
-        use_rope: bool = True,
+        use_rope: bool = False,
+        use_beta: bool = True,
+        
         
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
@@ -28,7 +30,7 @@ class DeltaNetConfig(PretrainedConfig):
         num_heads: int = 4,
         attn_mode: str = "fused_chunk",
         chunk_size: int = 32,
-        feature_map: str = "elementwise_product",
+        feature_map: str = "identity",
         tie_feature_map_qk: bool = False,
         norm_q: bool = False,
         norm_k: bool = False,
@@ -70,6 +72,7 @@ class DeltaNetConfig(PretrainedConfig):
         self.conv_size = conv_size
         self.share_conv_kernel = share_conv_kernel
         self.use_rope = use_rope
+        self.use_beta = use_beta
 
         super().__init__(
             pad_token_id=pad_token_id,
