@@ -78,15 +78,17 @@ class TransformerAttention(nn.Module):
         batch_size, q_len, _ = hidden_states.size()
         q = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
         k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
-        v = rearrange(self.v_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
+        v = rearrange(self.v_proj(hidden_states), 'b t (h d) -> b h t d', h=self.num_heads)
 
         seqlen_offset = 0
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length()
         q, k = self.rotary(q, k, seqlen_offset)
 
+        k = rearrange(k, 'b t h d -> b h t d')
         if past_key_values is not None:
             past_key_values.update(k, v, self.layer_idx)
+        k, v = rearrange(k, 'b h t d -> b t h d'), rearrange(v, 'b h t d -> b t h d')
 
         if flash_attn_func is None:
             raise ImportError("Flash Attention not installed. "
