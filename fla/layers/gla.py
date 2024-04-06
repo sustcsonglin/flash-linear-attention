@@ -106,6 +106,7 @@ class GatedLinearAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
@@ -138,6 +139,9 @@ class GatedLinearAttention(nn.Module):
         q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
         gk = rearrange(self.gk_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
         gk = F.logsigmoid(gk) / self.gate_logit_normalizer
+
+        if attention_mask is not None:
+            v = v.masked_fill_(~attention_mask.view(v.shape[0], 1, v.shape[2], -1), 0)
 
         if self.clamp_min is not None:
             gk = torch.clamp_min(gk, self.clamp_min)

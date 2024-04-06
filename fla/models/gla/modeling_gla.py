@@ -88,17 +88,17 @@ class GLABlock(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-
         residual = hidden_states
-
         hidden_states = self.attn_norm(hidden_states)
         hidden_states, attentions, past_key_values = self.attn(
             hidden_states=hidden_states,
+            attention_mask=attention_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_attentions=output_attentions
@@ -199,9 +199,9 @@ class GLAModel(GLAPreTrainedModel):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
-            batch_size, seq_len = input_ids.shape[:2]
+            batch_size = input_ids.shape[0]
         elif inputs_embeds is not None:
-            batch_size, seq_len = inputs_embeds.shape[:2]
+            batch_size = inputs_embeds.shape[0]
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
@@ -232,6 +232,7 @@ class GLAModel(GLAPreTrainedModel):
                 hidden_states, attentions, past_key_values = self._gradient_checkpointing_func(
                     layer.__call__,
                     hidden_states,
+                    attention_mask,
                     past_key_values,
                     use_cache,
                     output_attentions
@@ -239,6 +240,7 @@ class GLAModel(GLAPreTrainedModel):
             else:
                 hidden_states, attentions, past_key_values = layer(
                     hidden_states,
+                    attention_mask=attention_mask,
                     past_key_values=past_key_values,
                     use_cache=use_cache,
                     output_attentions=output_attentions
@@ -315,21 +317,32 @@ class GLAForCausalLM(GLAPreTrainedModel):
         self,
         input_ids: torch.LongTensor = None,
         past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs
     ):
+        if attention_mask is not None and not isinstance(attention_mask, torch.BoolTensor):
+            attention_mask = attention_mask.bool()
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
             if not isinstance(past_key_values, RecurrentCache):
                 past_key_values = RecurrentCache.from_legacy_cache(past_key_values, input_ids.shape[1] - 1)
-            input_ids = input_ids[:, -1:]
-
+            input_ids, attention_mask = input_ids[:, -1:], attention_mask[:, -1:]
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
             model_inputs = {'inputs_embeds': inputs_embeds}
         else:
-            model_inputs = {'input_ids': input_ids}
-        model_inputs['past_key_values'] = past_key_values
+            # The `contiguous()` here is necessary to have a static stride during decoding. torchdynamo otherwise
+            # recompiles graphs as the stride of the inputs is a guard.
+            # Ref: https://github.com/huggingface/transformers/pull/29114
+            # TODO: use `next_tokens` directly instead.
+            model_inputs = {'input_ids': input_ids.contiguous()}
+
+        model_inputs.update({
+            'past_key_values': past_key_values,
+            'use_cache': kwargs.get('use_cache'),
+            'attention_mask': attention_mask,
+        })
         return model_inputs
 
     def forward(
