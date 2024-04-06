@@ -9,23 +9,31 @@ import fla.models
 model = AutoModelForCausalLM.from_pretrained('fla-hub/gla-340M-15B').to('cuda').to(torch.float32)
 tokenizer = AutoTokenizer.from_pretrained('fla-hub/gla-340M-15B')
 print("The original tokenizer padding side:", tokenizer.padding_side)
-tokenizer.padding_side = 'left'
+tokenizer.padding_side = 'right'
 tokenizer.pad_token = tokenizer.eos_token
+print("The afterward tokenizer padding side:", tokenizer.padding_side)
 
 pad_count = 24
-
+seq_len = 1024
+input_ids = torch.randint(1, 1000, (1, seq_len)).to('cuda')
 # Check prefill logits
-input_ids = torch.randint(1, 1000, (1, 1024)).to('cuda')
-input_ids_padded = torch.cat([torch.zeros_like(input_ids[:, [0] * pad_count]), input_ids], dim=1)
-attention_mask = torch.cat([torch.zeros_like(input_ids[:, [0] * pad_count]), torch.ones_like(input_ids)], dim=1)
+if tokenizer.padding_side == 'left':
+    input_ids_padded = torch.cat([torch.zeros_like(input_ids[:, [0] * pad_count]), input_ids], dim=1)
+    attention_mask = torch.cat([torch.zeros_like(input_ids[:, [0] * pad_count]), torch.ones_like(input_ids)], dim=1)
+else:
+    input_ids_padded = torch.cat([input_ids, torch.zeros_like(input_ids[:, [0] * pad_count])], dim=1)
+    attention_mask = torch.cat([torch.ones_like(input_ids), torch.zeros_like(input_ids[:, [0] * pad_count])], dim=1)
 
 out = model(input_ids_padded).logits.detach().cpu()
 out_padded = model(input_ids_padded, attention_mask).logits.detach().cpu()
 out_true = model(input_ids).logits.detach().cpu()
 
-print("max L2 error:", (out_true - out[:, pad_count:]).norm(dim=-1).max())
-print("max L2 errors (padded):", (out_true - out_padded[:, pad_count:]).norm(dim=-1).max())
-
+if tokenizer.padding_side == 'left':
+    print("max L2 error (unpadded):", (out_true - out[:, pad_count:]).norm(dim=-1).max())
+    print("max L2 errors (padded):", (out_true - out_padded[:, pad_count:]).norm(dim=-1).max())
+else:
+    print("max L2 error (unpadded):", (out_true - out[:, :seq_len]).norm(dim=-1).max())
+    print("max L2 errors (padded):", (out_true - out_padded[:, :seq_len]).norm(dim=-1).max())
 
 # Check decoding outputs
 text = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.'
