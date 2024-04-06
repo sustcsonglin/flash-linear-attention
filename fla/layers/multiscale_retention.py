@@ -105,6 +105,7 @@ class MultiScaleRetention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
@@ -117,6 +118,9 @@ class MultiScaleRetention(nn.Module):
         if self.use_short_conv:
             conv_state = last_state[0] if use_cache else None
             if self.share_conv_kernel:
+                # dealing with left-padding
+                if attention_mask is not None:
+                    hidden_states = hidden_states.masked_fill_(~attention_mask.bool().view(v.shape[0], v.shape[1], 1), 0)
                 # conv state is updated inplace
                 hidden_states = self.h_conv1d(hidden_states, conv_state)
                 q = self.q_proj(hidden_states)
@@ -126,13 +130,25 @@ class MultiScaleRetention(nn.Module):
                 conv_state_q = last_state[0] if use_cache else None
                 conv_state_k = last_state[1] if use_cache else None
                 conv_state_v = last_state[2] if use_cache else None
-                q = self.q_conv1d(self.q_proj(hidden_states), conv_state_q)
-                k = self.k_conv1d(self.k_proj(hidden_states), conv_state_k)
-                v = self.v_conv1d(self.v_proj(hidden_states), conv_state_v)
+                q = self.q_proj(hidden_states)
+                k = self.k_proj(hidden_states)
+                v = self.v_proj(hidden_states)
+                # dealing with left-padding
+                if attention_mask is not None:
+                    q = q.masked_fill_(~attention_mask.bool().view(v.shape[0], v.shape[1], 1), 0)
+                    k = k.masked_fill_(~attention_mask.bool().view(v.shape[0], v.shape[1], 1), 0)
+                    v = v.masked_fill_(~attention_mask.bool().view(v.shape[0], v.shape[1], 1), 0)
+                q = self.q_conv1d(q, conv_state_q)
+                k = self.k_conv1d(k, conv_state_k)
+                v = self.v_conv1d(v, conv_state_v)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
+        
+        # dealing with left-padding
+        if attention_mask is not None:            
+            v = v.masked_fill_(~attention_mask.bool().view(v.shape[0], v.shape[1], 1), 0)   
 
         seqlen_offset = 0
         if past_key_values is not None:
