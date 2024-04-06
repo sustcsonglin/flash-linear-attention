@@ -148,6 +148,8 @@ class ShortConvolution(nn.Conv1d):
         if cache is not None and x.shape[1] == 1:
             return self.step(x, cache)
         x = rearrange(x, "b l d -> b d l")
+        if cache is not None: 
+            cache.copy_(F.pad(x, (self.kernel_size[0] - x.shape[-1], 0)))  # Update state (B D W)
         if self.use_causal_conv:
             x = causal_conv1d_fn(
                 x=x,
