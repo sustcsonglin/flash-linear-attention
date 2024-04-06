@@ -15,7 +15,8 @@ import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.utils import contiguous
 
 
 def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
@@ -67,7 +68,7 @@ def rms_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast
 @triton.jit
 def _layer_norm_fwd_1pass_kernel(
     X,  # pointer to the input
-    O, # pointer to the gate
+    O,  # pointer to the gate
     Y,  # pointer to the output
     W,  # pointer to the weights
     B,  # pointer to the biases
@@ -126,7 +127,7 @@ def _layer_norm_fwd_1pass_kernel(
     # Swish output gate
     o = tl.load(O + cols, mask=cols < N, other=0.0).to(tl.float32)
     y = y * o * tl.sigmoid(o)
-    
+
     # Write output
     tl.store(Y + cols, y, mask=mask)
 
@@ -267,7 +268,7 @@ def _layer_norm_bwd_kernel(
         x = tl.load(X + cols, mask=mask, other=0).to(tl.float32)
         o = tl.load(O + cols, mask=mask, other=0).to(tl.float32)
         dy = tl.load(DY + cols, mask=mask, other=0).to(tl.float32)
-        
+
         if not IS_RMS_NORM:
             mean = tl.load(Mean + row)
         rstd = tl.load(Rstd + row)
@@ -277,7 +278,7 @@ def _layer_norm_bwd_kernel(
         if RECOMPUTE_OUTPUT:
             y = xhat * w + b if HAS_BIAS else xhat * w
             tl.store(Y + cols, y, mask=mask)
-            
+
         y = xhat * w + b if HAS_BIAS else xhat * w
         sigmoid_o = tl.sigmoid(o)
         do = dy * y * (sigmoid_o + o * sigmoid_o * (1 - sigmoid_o))
@@ -313,7 +314,7 @@ def _layer_norm_bwd_kernel(
         DY += stride_dy_row
         DX += stride_dx_row
         DO += stride_dx_row
-        
+
     tl.store(DW + row_block_id * N + cols, dw, mask=mask)
     if HAS_BIAS:
         tl.store(DB + row_block_id * N + cols, db, mask=mask)
@@ -322,7 +323,7 @@ def _layer_norm_bwd_kernel(
 def _layer_norm_bwd(
     dy,
     x,
-    o, 
+    o,
     weight,
     bias,
     eps,
@@ -418,11 +419,13 @@ def _layer_norm_bwd(
 
 
 class LayerNormFn(torch.autograd.Function):
+
     @staticmethod
+    @contiguous
     def forward(
         ctx,
         x,
-        o, 
+        o,
         weight,
         bias,
         residual=None,
@@ -466,6 +469,7 @@ class LayerNormFn(torch.autograd.Function):
         return y if not prenorm else (y, residual_out.reshape(x_shape_og))
 
     @staticmethod
+    @contiguous
     def backward(ctx, dy, *args):
         x, o, weight, bias, mean, rstd = ctx.saved_tensors
         dy = dy.reshape(-1, dy.shape[-1])
@@ -534,5 +538,3 @@ class FusedRMSNormSwishGate(torch.nn.Module):
             prenorm=prenorm,
             residual_in_fp32=residual_in_fp32,
         )
-
-
