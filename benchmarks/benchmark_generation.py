@@ -20,14 +20,14 @@ def sizeof_fmt(num, suffix='B'):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generation benchmarking")
-    parser.add_argument("--path", type=str)
+    parser.add_argument("--path", type=str, default="fla-hub/transformer-340M-15B")
     parser.add_argument("--prompt", type=str, default="Hello everyone, I'm Songlin Yang")
     parser.add_argument("--maxlen", type=int, default=64)
     parser.add_argument("--cache", action='store_true')
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--topk", type=int, default=1)
     parser.add_argument("--topp", type=float, default=1.0)
-    parser.add_argument("--repetition_penalty", type=float, default=1.0)
+    parser.add_argument("--repetition_penalty", type=float, default=2.0)
     args = parser.parse_args()
 
     device = "cuda"
@@ -36,6 +36,7 @@ if __name__ == "__main__":
 
     print(f"Loading model {args.path}")
     tokenizer = AutoTokenizer.from_pretrained(args.path)
+    tokenizer.pad_token_id = tokenizer.eos_token_id
     model = AutoModelForCausalLM.from_pretrained(
         args.path,
         device_map={"": device},
@@ -54,6 +55,7 @@ if __name__ == "__main__":
     start = time.time()
     text = model.generate(
         input_ids=input_ids,
+        use_cache=args.cache,
         max_length=max_length,
         pad_token_id=tokenizer.eos_token_id,
         do_sample=True,
