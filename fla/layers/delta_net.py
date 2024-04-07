@@ -150,7 +150,7 @@ class DeltaNet(nn.Module):
             q, k = map(lambda x: rearrange(x, 'b l (h d) -> b l h d', h=self.num_heads), (q, k))
             q, k = self.rotary(q, k, seqlen_offset)
             q, k = q.transpose(1, 2), k.transpose(1, 2)
-            v = rearrange(self.v_proj(hidden_states), 'b l (h d) -> b h l d', h=self.num_heads)
+            v = rearrange(v, 'b l (h d) -> b h l d', h=self.num_heads)
         else:
             q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
 
