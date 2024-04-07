@@ -87,11 +87,7 @@ class TransformerAttention(nn.Module):
         if attention_mask is not None:
             seqlens = attention_mask.sum(-1, dtype=torch.int32)
         if past_key_values is not None:
-            if attention_mask is None:
-                seqlen_offsets = past_key_values.get_seq_length()
-            elif attention_mask is not None and len(past_key_values) > self.layer_idx:
-                seqlen_offsets = seqlens - 1
-                max_len = q_len + seqlen_offsets.max().item()
+            seqlen_offsets = past_key_values.get_seq_length(self.layer_idx)
         q, k = self.rotary(q, k, seqlen_offsets, max_len)
 
         k = rearrange(k, 'b t h d -> b h t d')
