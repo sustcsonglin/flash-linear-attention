@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils.checkpoint
 from einops import rearrange
 from transformers.activations import ACT2FN
@@ -22,7 +23,9 @@ from fla.modules import FusedCrossEntropyLoss, RMSNorm, RotaryEmbedding
 from fla.modules.activations import swiglu_linear
 
 try:
-    from flash_attn import flash_attn_func
+    from flash_attn import flash_attn_func, flash_attn_varlen_func
+    from flash_attn.bert_padding import (index_first_axis, pad_input,
+                                         unpad_input)
 except ImportError:
     warnings.warn("Flash Attention is not installed. Please install it via `pip install flash-attn --no-build-isolation`")
     flash_attn_func = None
@@ -80,22 +83,41 @@ class TransformerAttention(nn.Module):
         k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
         v = rearrange(self.v_proj(hidden_states), 'b t (h d) -> b h t d', h=self.num_heads)
 
-        seqlen_offset = 0
+        seqlen_offsets, max_len = 0, None
+        if attention_mask is not None:
+            seqlens = attention_mask.sum(-1, dtype=torch.int32)
         if past_key_values is not None:
-            seqlen_offset = past_key_values.get_seq_length()
-        q, k = self.rotary(q, k, seqlen_offset)
+            if attention_mask is None:
+                seqlen_offsets = past_key_values.get_seq_length()
+            elif attention_mask is not None and len(past_key_values) > self.layer_idx:
+                seqlen_offsets = seqlens - 1
+                max_len = q_len + seqlen_offsets.max().item()
+        q, k = self.rotary(q, k, seqlen_offsets, max_len)
 
         k = rearrange(k, 'b t h d -> b h t d')
-        if attention_mask is not None:
-            v = v.mul_(attention_mask[:, None, :, None])
         if past_key_values is not None:
             k, v = past_key_values.update(k, v, self.layer_idx)
         k, v = rearrange(k, 'b h t d -> b t h d'), rearrange(v, 'b h t d -> b t h d')
 
         if flash_attn_func is None:
-            raise ImportError("Flash Attention not installed. "
-                              "Please install it via `pip install flash-attn --no-build-isolation`")
-        o = flash_attn_func(q, k, v, causal=True)
+            raise ImportError("Please install Flash Attention via `pip install flash-attn --no-build-isolation` first")
+
+        # Contains at least one padding token in the sequence
+        if attention_mask is not None:
+            q, k, v, indices_q, cu_seq_lens, max_seq_lens = self._upad_input(q, k, v, attention_mask, seqlens, q_len)
+            cu_seqlens_q, cu_seqlens_k = cu_seq_lens
+            max_seqlen_q, max_seqlen_k = max_seq_lens
+            o = flash_attn_varlen_func(
+                q, k, v,
+                cu_seqlens_q=cu_seqlens_q,
+                cu_seqlens_k=cu_seqlens_k,
+                max_seqlen_q=max_seqlen_q,
+                max_seqlen_k=max_seqlen_k,
+                causal=True
+            )
+            o = pad_input(o, indices_q, batch_size, q_len)
+        else:
+            o = flash_attn_func(q, k, v, causal=True)
         o = o.reshape(batch_size, q_len, self.hidden_size)
         o = self.o_proj(o)
 
@@ -103,6 +125,32 @@ class TransformerAttention(nn.Module):
             attentions = None
 
         return o, attentions, past_key_values
+
+    def _upad_input(self, q, k, v, attention_mask, seqlens, q_len):
+        indices_k = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
+        max_seqlen_k = seqlens.max().item()
+        cu_seqlens_k = F.pad(torch.cumsum(seqlens, dim=0, dtype=torch.int32), (1, 0))
+        batch_size, seq_len, num_key_value_heads, head_dim = k.shape
+
+        k = index_first_axis(k.reshape(batch_size * seq_len, num_key_value_heads, head_dim), indices_k)
+        v = index_first_axis(v.reshape(batch_size * seq_len, num_key_value_heads, head_dim), indices_k)
+        if q_len == seq_len:
+            q = index_first_axis(q.reshape(batch_size * seq_len, self.num_heads, head_dim), indices_k)
+            cu_seqlens_q = cu_seqlens_k
+            max_seqlen_q = max_seqlen_k
+            indices_q = indices_k
+        elif q_len == 1:
+            max_seqlen_q = 1
+            # There is a memcpy here, that is very bad.
+            cu_seqlens_q = torch.arange(batch_size + 1, dtype=torch.int32, device=q.device)
+            indices_q = cu_seqlens_q[:-1]
+            q = q.squeeze(1)
+        else:
+            # The -q_len: slice assumes left padding.
+            attention_mask = attention_mask[:, -q_len:]
+            q, indices_q, cu_seqlens_q, max_seqlen_q = unpad_input(q, attention_mask)
+
+        return q, k, v, indices_q, (cu_seqlens_q, cu_seqlens_k), (max_seqlen_q, max_seqlen_k)
 
 
 class TransformerMLP(nn.Module):
@@ -392,7 +440,7 @@ class TransformerForCausalLM(TransformerPreTrainedModel):
     ):
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
-            input_ids, attention_mask = input_ids[:, -1:], attention_mask[:, -1:]
+            input_ids = input_ids[:, -1:]
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
             model_inputs = {'inputs_embeds': inputs_embeds}
