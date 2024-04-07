@@ -321,8 +321,6 @@ class GLAForCausalLM(GLAPreTrainedModel):
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs
     ):
-        if attention_mask is not None and not isinstance(attention_mask, torch.BoolTensor):
-            attention_mask = attention_mask.bool()
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
             if not isinstance(past_key_values, RecurrentCache):

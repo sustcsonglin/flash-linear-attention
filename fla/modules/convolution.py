@@ -132,24 +132,29 @@ class ShortConvolution(nn.Conv1d):
     def forward(
         self,
         x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
         cache: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Args:
-            x:
+            x (`torch.Tensor`):
                 Tensor of shape `[batch_size, seq_len, hidden_size]`
-            cache:
-                Previous cache tensor of shape `[batch_size, hidden_size, kernel_size]`
+            mask (`Optional[torch.Tensor]`):
+                Attention mask dealing with padded positions.
+            cache (`Optional[torch.Tensor]`):
+                Previous cache tensor of shape `[batch_size, hidden_size, kernel_size]`,
         Returns:
-            Tensor of shape `[batch_size, seq_len, hidden_size]`.
-            The `cache` (if provided) is updated inplace.
+            Tensor of shape `[batch_size, seq_len, hidden_size]`. The `cache` (if provided) is updated inplace.
         """
 
+        if mask is not None:
+            x = x.mul_(mask.unsqueeze(-1))
         if cache is not None and x.shape[1] == 1:
             return self.step(x, cache)
         x = rearrange(x, "b l d -> b d l")
-        if cache is not None: 
-            cache.copy_(F.pad(x, (self.kernel_size[0] - x.shape[-1], 0)))  # Update state (B D W)
+        # Update state (B D W)
+        if cache is not None:
+            cache.copy_(F.pad(x, (self.kernel_size[0] - x.shape[-1], 0)))
         if self.use_causal_conv:
             x = causal_conv1d_fn(
                 x=x,

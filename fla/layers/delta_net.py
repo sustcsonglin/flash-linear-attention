@@ -17,6 +17,7 @@ from fla.modules.rotary import RotaryEmbedding
 from fla.ops.delta_rule import (fused_chunk_delta_rule,
                                 fused_recurrent_linear_attn_delta_rule)
 
+
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
 class DeltaNet(nn.Module):
     def __init__(
@@ -66,7 +67,7 @@ class DeltaNet(nn.Module):
         self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
-        
+
         self.use_beta = use_beta
         if self.use_beta:
             self.b_proj = nn.Linear(hidden_size, self.num_heads, bias=False)
@@ -110,7 +111,7 @@ class DeltaNet(nn.Module):
         output_attentions: Optional[bool] = False,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
-        
+
         # change to inference mode.
         mode = 'fused_recurrent' if past_key_values is not None else self.mode
         last_state = past_key_values[self.layer_idx] if use_cache else None
@@ -118,11 +119,8 @@ class DeltaNet(nn.Module):
         if self.use_short_conv:
             conv_state = last_state[0] if use_cache else None
             if self.share_conv_kernel:
-                # dealing with left-padding
-                if attention_mask is not None:
-                    hidden_states = hidden_states.masked_fill_(~attention_mask.bool().view(v.shape[0], v.shape[1], 1), 0)
                 # conv state is updated inplace
-                hidden_states = self.h_conv1d(hidden_states, conv_state)
+                hidden_states = self.h_conv1d(hidden_states, attention_mask, conv_state)
                 q = self.q_proj(hidden_states)
                 k = self.k_proj(hidden_states)
                 v = self.v_proj(hidden_states)
@@ -133,14 +131,9 @@ class DeltaNet(nn.Module):
                 q = self.q_proj(hidden_states)
                 k = self.k_proj(hidden_states)
                 v = self.v_proj(hidden_states)
-                # dealing with left-padding
-                if attention_mask is not None:
-                    q = q.masked_fill_(~attention_mask.bool().view(v.shape[0], v.shape[1], 1), 0)
-                    k = k.masked_fill_(~attention_mask.bool().view(v.shape[0], v.shape[1], 1), 0)
-                    v = v.masked_fill_(~attention_mask.bool().view(v.shape[0], v.shape[1], 1), 0)
-                q = self.q_conv1d(q, conv_state_q)
-                k = self.k_conv1d(k, conv_state_k)
-                v = self.v_conv1d(v, conv_state_v)
+                q = self.q_conv1d(q, attention_mask, conv_state_q)
+                k = self.k_conv1d(k, attention_mask, conv_state_k)
+                v = self.v_conv1d(v, attention_mask, conv_state_v)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
@@ -148,7 +141,7 @@ class DeltaNet(nn.Module):
 
         # dealing with left-padding
         if attention_mask is not None:
-            v = v.masked_fill_(~attention_mask.bool().view(v.shape[0], v.shape[1], 1), 0)   
+            v = v.mul_(attention_mask.unsqueeze(-1))
 
         if self.use_rope:
             seqlen_offset = 0
@@ -160,7 +153,6 @@ class DeltaNet(nn.Module):
             v = rearrange(self.v_proj(hidden_states), 'b l (h d) -> b h l d', h=self.num_heads)
         else:
             q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
-
 
         if self.use_beta:
             beta = rearrange(self.b_proj(hidden_states), 'b l h -> b h l').sigmoid()
