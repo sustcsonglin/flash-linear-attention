@@ -24,8 +24,9 @@ def naive_recurrent_abc(
     ok = torch.zeros_like(s)
     scale = K ** -0.5
 
+    final_state = None
     if initial_state is not None:
-        hk += initial_state
+        hk += initial_state[0].detach()
 
     for i in range(T):
         q_i = q[:, :, i] * scale
@@ -39,6 +40,10 @@ def naive_recurrent_abc(
 
     hv = torch.zeros(B, H, M, V, dtype=torch.float, device=q.device)
     ov = torch.zeros_like(v)
+
+    if initial_state is not None:
+        hv += initial_state[1].detach()
+
     for i in range(T):
         q_i = p[:, :, i]
         k_i = s[:, :, i]
@@ -48,7 +53,9 @@ def naive_recurrent_abc(
         hv = hv * g_i[..., :, None] + (k_i - z_i).exp()[..., None] * v_i[..., None, :]
         ov[:, :, i] = (q_i[..., None] * hv).sum(-2)
 
-    return ov.to(dtype), hv
+    if output_final_state:
+        final_state = (hk, hv)
+    return ov.to(dtype), final_state
 
 
 def naive_cumsum_abc(

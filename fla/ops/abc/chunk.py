@@ -2,7 +2,6 @@
 
 # Copyright (c) 2023-2024, Yu Zhang, Songlin Yang
 
-import warnings
 from typing import Optional, Tuple
 
 import torch
@@ -48,7 +47,11 @@ def chunk_abc_fwd_kernel_h(
     if USE_INITIAL_STATE:
         p_h = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
-    b_zp = tl.zeros([BK if NORMK else BV], dtype=tl.float32)
+    if NORMK:
+        p_z0 = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), (i_k * BK,), (BK,), (0,))
+    else:
+        p_z0 = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), (i_v * BV,), (BV,), (0,))
+    b_zp = tl.load(p_z0).to(tl.float32)
     for i_t in range(NT):
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
@@ -63,8 +66,6 @@ def chunk_abc_fwd_kernel_h(
             p_zc = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + BT - 1) * K + i_k * BK,), (BK,), (0,))
             # [BK,]
             b_zc = tl.load(p_zc, boundary_check=(0,))
-            if i_t == 0:
-                b_zp = b_zc
             b_r, b_zp = tl.exp(b_zp - b_zc), b_zc
             # [BK, BV]
             b_h = b_h * b_r[:, None]
@@ -73,8 +74,6 @@ def chunk_abc_fwd_kernel_h(
             p_zc = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), ((i_t * BT + BT - 1) * V + i_v * BV,), (BV,), (0,))
             # [BV,]
             b_zc = tl.load(p_zc, boundary_check=(0,))
-            if i_t == 0:
-                b_zp = b_zc
             b_r, b_zp = tl.exp(b_zp - b_zc), b_zc
             # [BK, BV]
             b_h = b_h * b_r[None, :]
@@ -166,6 +165,7 @@ def chunk_abc_fwd_kernel_K(
     BV: tl.constexpr
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_p = tl.maximum(i_t * BT - 1, 0)
 
     o_i = tl.arange(0, BT)
     m_s = o_i[:, None] >= o_i[None, :]
@@ -189,15 +189,13 @@ def chunk_abc_fwd_kernel_K(
         # [BT, BT]
         b_A += tl.dot(b_q, b_k, allow_tf32=False)
     p_z = tl.make_block_ptr(z + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_zp = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), ((i_t * BT - 1) * V + i_v * BV,), (BV,), (0,))
     p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     # [BT, BV]
     b_z = tl.load(p_z, boundary_check=(0, 1))
-    # [BV,]
-    b_zp = tl.load(p_zp, boundary_check=(0,))
     # [BT, BV]
-    if i_t > 0:
-        b_o = b_o * tl.exp(b_zp[None, :] - b_z)
+    p_zp = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), (i_p * V + i_v * BV,), (BV,), (0,))
+    b_zp = tl.load(p_zp, boundary_check=(0,))
+    b_o = b_o * tl.exp(b_zp[None, :] - b_z)
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
     p_A = tl.make_block_ptr(A + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
@@ -294,13 +292,14 @@ def chunk_abc_fwd_kernel_V(
     BV: tl.constexpr
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_p = tl.maximum(i_t * BT - 1, 0)
 
     b_o = tl.zeros([BT, BV], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
         p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_z = tl.make_block_ptr(z + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_h = tl.make_block_ptr(h + i_bh * s_h_h + i_t * K * V, (K, V), (s_h_t, s_h_d), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        p_zp = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT - 1) * K + i_k * BK,), (BK,), (0,))
+        p_zp = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), (i_p * K + i_k * BK,), (BK,), (0,))
 
         # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
@@ -308,9 +307,8 @@ def chunk_abc_fwd_kernel_V(
         # [BT, BK]
         b_z = tl.load(p_z, boundary_check=(0, 1))
         # [BT, BK]
-        if i_t > 0:
-            b_zp = tl.load(p_zp, boundary_check=(0,))
-            b_q = (b_q * tl.exp(b_zp[None, :] - b_z)).to(b_q.dtype)
+        b_zp = tl.load(p_zp, boundary_check=(0,))
+        b_q = (b_q * tl.exp(b_zp[None, :] - b_z)).to(b_q.dtype)
         # [BK, BV]
         b_h = tl.load(p_h, boundary_check=(0, 1))
         # works but dkw, owing to divine benevolence
@@ -358,6 +356,7 @@ def chunk_abc_bwd_kernel_dh(
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
     b_zp = tl.full([BK if NORMK else BV], float('inf'), dtype=tl.float32)
     for i_t in range(NT - 1, -1, -1):
+        i_p = tl.maximum(i_t * BT - 1, 0)
         p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         p_dh = tl.make_block_ptr(dh + i_bh * s_h_h + i_t * K*V, (K, V), (s_h_t, s_h_d), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
@@ -371,7 +370,7 @@ def chunk_abc_bwd_kernel_dh(
         tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
         if NORMK:
             p_z = tl.make_block_ptr(z + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-            p_zc = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT - 1) * K + i_k * BK,), (BK,), (0,))
+            p_zc = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), (i_p * K + i_k * BK,), (BK,), (0,))
             # [BK,]
             b_zc = tl.load(p_zc, boundary_check=(0,))
             b_r, b_zp = tl.exp(b_zc - b_zp), b_zc
@@ -382,7 +381,7 @@ def chunk_abc_bwd_kernel_dh(
             b_dh = b_dh * b_r[:, None]
         else:
             p_z = tl.make_block_ptr(z + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_zc = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), ((i_t * BT - 1) * V + i_v * BV,), (BV,), (0,))
+            p_zc = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), (i_p * V + i_v * BV,), (BV,), (0,))
             # [BV,]
             b_zc = tl.load(p_zc, boundary_check=(0,))
             b_r, b_zp = tl.exp(b_zc - b_zp), b_zc
@@ -426,6 +425,7 @@ def chunk_abc_bwd_kernel_V(
     BV: tl.constexpr
 ):
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_p = tl.maximum(i_t * BT - 1, 0)
     n_bh = tl.num_programs(2)
 
     p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
@@ -472,20 +472,19 @@ def chunk_abc_bwd_kernel_V(
         # [BT, BK]
         b_dk += tl.dot(b_v, tl.trans(b_dh), allow_tf32=False)
     p_z = tl.make_block_ptr(z + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_zp = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT - 1) * K + i_k * BK,), (BK,), (0,))
-    if i_t > 0:
-        # [BK,]
-        b_zp = tl.load(p_zp, boundary_check=(0,))
-        # [BT, BK]
-        b_z = tl.load(p_z, boundary_check=(0, 1))
-        b_z = tl.exp(b_zp[None, :] - b_z)
-        # [BT, BK]
-        b_dq = b_dq * b_z
+    p_zp = tl.make_block_ptr(z + i_bh * s_k_h, (T * K,), (s_k_d,), (i_p * K + i_k * BK,), (BK,), (0,))
+    # [BK,]
+    b_zp = tl.load(p_zp, boundary_check=(0,))
+    # [BT, BK]
+    b_z = tl.load(p_z, boundary_check=(0, 1))
+    b_z = tl.exp(b_zp[None, :] - b_z)
+    # [BT, BK]
+    b_dq = b_dq * b_z
     b_dk = b_dk * b_k
 
     p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_dk = tl.make_block_ptr(dk + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT, ), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
+    p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT,), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
 
@@ -686,6 +685,7 @@ def chunk_abc_bwd_kernel_K(
     BV: tl.constexpr
 ):
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_p = tl.maximum(i_t * BT - 1, 0)
     n_bh = tl.num_programs(2)
 
     o_i = tl.arange(0, BT)
@@ -708,7 +708,7 @@ def chunk_abc_bwd_kernel_K(
     for i_v in range(tl.cdiv(V, BV)):
         p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         p_z = tl.make_block_ptr(z + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_zp = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), ((i_t * BT - 1) * V + i_v * BV,), (BV,), (0,))
+        p_zp = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), (i_p * V + i_v * BV,), (BV,), (0,))
         p_zc = tl.make_block_ptr(z + i_bh * s_v_h, (T * V,), (s_v_d,), ((i_t * BT + BT - 1) * V + i_v * BV,), (BV,), (0,))
         p_h = tl.make_block_ptr(h + i_bh * s_h_h + i_t * K*V, (V, K), (s_h_d, s_h_t), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
 
@@ -733,8 +733,7 @@ def chunk_abc_bwd_kernel_K(
         b_dh = tl.load(p_dh, boundary_check=(0, 1))
 
         # [BT, BK]
-        if i_t > 0:
-            b_dq += tl.dot(b_do, b_h, allow_tf32=False)
+        b_dq += tl.dot(b_do, b_h, allow_tf32=False)
         b_dk += tl.dot(b_v, tl.trans(b_dh), allow_tf32=False)
         # [BT, BV]
         b_dv = b_v * tl.dot(b_k, b_dh, allow_tf32=False)
@@ -916,8 +915,6 @@ class ChunkABCFunction(torch.autograd.Function):
         NV, NM = triton.cdiv(V, BV), triton.cdiv(M, BM)
         num_warps = 4 if BK == 64 else 2
         num_stages = 1
-        assert not output_final_state
-        assert M % 16 == 0, "For efficiency, M must be a multiple of 16."
 
         def fwd_pre(s, B, H, T, S):
             # keep cummulative normalizer in fp32
@@ -948,13 +945,19 @@ class ChunkABCFunction(torch.autograd.Function):
             )
             return h
 
+        final_state = None
+        if output_final_state:
+            final_state = (q.new_empty(B, H, K, M, dtype=torch.float),
+                           q.new_empty(B, H, M, V, dtype=torch.float))
+
         z = fwd_pre(s, B, H, T, M)
         scale = K ** -0.5
         hk = fwd_inner(
             q=q, k=k, v=s, z=z,
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, NT=NT,
             normk=False,
-            h0=initial_state
+            h0=initial_state[0] if initial_state is not None else None,
+            ht=final_state[0] if final_state is not None else None
         )
         ok1 = torch.empty_like(s)
         Ak = q.new_empty(B, H, T, BT)
@@ -997,7 +1000,9 @@ class ChunkABCFunction(torch.autograd.Function):
         hv = fwd_inner(
             q=qv, k=s, v=v, z=z,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
-            normk=True
+            normk=True,
+            h0=initial_state[1] if initial_state is not None else None,
+            ht=final_state[1] if final_state is not None else None
         )
         Av = q.new_zeros(NM, B, H, T, BT)
         grid = (NM, NT * NC * NC, B * H)
@@ -1024,7 +1029,7 @@ class ChunkABCFunction(torch.autograd.Function):
         )
         ctx.save_for_backward(q, k, v, s, z, ok, p, hk, hv, Av)
         ctx.BT = BT
-        return ov, None
+        return ov, final_state
 
     @staticmethod
     @contiguous
@@ -1180,13 +1185,10 @@ def chunk_abc(
     k: torch.Tensor,
     v: torch.Tensor,
     s: torch.Tensor,
-    initial_state: Optional[torch.Tensor] = None,
+    initial_state: Optional[Tuple[torch.Tensor]] = None,
     output_final_state: Optional[bool] = False
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, Tuple[torch.Tensor]]:
     if initial_state is not None:
-        initial_state = initial_state.detach()
-    if output_final_state:
-        output_final_state = False
-        warnings.warn("output_final_state is not supported in ABC, setting it to `False`.")
+        initial_state = tuple(i.detach() for i in initial_state)
     ov, final_state = ChunkABCFunction.apply(q, k, v, s, initial_state, output_final_state)
     return ov, final_state

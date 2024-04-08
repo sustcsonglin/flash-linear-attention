@@ -118,6 +118,7 @@ class ABCAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
@@ -139,6 +140,10 @@ class ABCAttention(nn.Module):
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
 
+        # dealing with left-padding
+        if attention_mask is not None:
+            v = v.mul_(attention_mask.unsqueeze(-1))
+
         q = rearrange(q, '... (h d) -> ... h d', h=self.num_heads)
         k = rearrange(k, '... (h d) -> ... h d', h=self.num_heads)
         v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_heads)
@@ -148,7 +153,7 @@ class ABCAttention(nn.Module):
 
         seqlen_offset = 0
         if past_key_values is not None:
-            seqlen_offset = past_key_values.get_seq_length()
+            seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
         q, k = self.rotary(q, k, seqlen_offset)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
 
@@ -177,7 +182,8 @@ class ABCAttention(nn.Module):
         state = tuple()
         if self.use_short_conv:
             state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
-        state += (param.new_zeros(batch_size, self.num_heads, self.head_k_dim, self.head_v_dim),)
+        state += (param.new_zeros(batch_size, self.num_heads, self.head_k_dim, self.num_slots),
+                  param.new_zeros(batch_size, self.num_heads, self.num_slots, self.head_v_dim))
         return state
 
     def state_size(self, sequence_length: int = 2048):

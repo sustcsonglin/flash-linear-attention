@@ -189,7 +189,8 @@ class GatedABCAttention(nn.Module):
         state = tuple()
         if self.use_short_conv:
             state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
-        state += (param.new_zeros(batch_size, self.num_heads, self.head_k_dim, self.head_v_dim),)
+        state += (param.new_zeros(batch_size, self.num_heads, self.head_k_dim, self.num_slots),
+                  param.new_zeros(batch_size, self.num_heads, self.num_slots, self.head_v_dim))
         return state
 
     def state_size(self, sequence_length: int = 2048):

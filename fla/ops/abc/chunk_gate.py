@@ -2,7 +2,6 @@
 
 # Copyright (c) 2023-2024, Yu Zhang, Songlin Yang
 
-import warnings
 from typing import Optional, Tuple
 
 import torch
@@ -755,8 +754,7 @@ def chunk_abc_bwd_kernel_K(
         b_dh = tl.load(p_dh, boundary_check=(0, 1))
 
         # [BT, BK]
-        if i_t > 0:
-            b_dq += tl.dot(b_do, b_h, allow_tf32=False)
+        b_dq += tl.dot(b_do, b_h, allow_tf32=False)
         b_dk += tl.dot(b_v.to(b_dh.dtype), tl.trans(b_dh), allow_tf32=False)
         # [BT, BV]
         b_dv = tl.exp(b_gn[None, :] - b_g) * tl.dot(b_k, b_dh, allow_tf32=False)
@@ -830,62 +828,6 @@ def chunk_abc_bwd_kernel_intra_KV(
     tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
 
-@triton.jit
-def chunk_abc_bwd_kernel_rcum(
-    s,
-    c,
-    z,
-    s_s_h,
-    s_s_t,
-    s_s_d,
-    T: tl.constexpr,
-    S: tl.constexpr,
-    BT: tl.constexpr,
-    BS: tl.constexpr,
-    NT: tl.constexpr
-):
-    i_s, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    o_i = tl.arange(0, BT)
-    m_s = tl.where(o_i[:, None] <= o_i[None, :], 1., 0.)
-
-    p_s = tl.make_block_ptr(s + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-    p_c = tl.make_block_ptr(c + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-    p_z = tl.make_block_ptr(z + i_bh * NT * S, (NT * S,), (s_s_d,), (i_t * S + i_s * BS,), (BS,), (0,))
-    # [BT, BS]
-    b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
-    b_c = tl.dot(m_s, b_s)
-    # [BS]
-    b_z = tl.sum(b_s, 0)
-    tl.store(p_c, b_c.to(p_z.dtype.element_ty), boundary_check=(0, 1))
-    tl.store(p_z, b_z.to(p_z.dtype.element_ty), boundary_check=(0,))
-
-
-@triton.jit
-def chunk_abc_bwd_kernel_rcum_inter(
-    c,
-    z,
-    s_s_h,
-    s_s_t,
-    s_s_d,
-    T: tl.constexpr,
-    S: tl.constexpr,
-    BT: tl.constexpr,
-    BS: tl.constexpr,
-    NT: tl.constexpr
-):
-    i_s, i_bh = tl.program_id(0), tl.program_id(1)
-
-    b_z = tl.zeros([BS], dtype=tl.float32)
-    for i_t in range(NT - 1, -1, -1):
-        p_c = tl.make_block_ptr(c + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-        p_z = tl.make_block_ptr(z + i_bh * NT * S, (NT * S,), (s_s_d,), (i_t * S + i_s * BS,), (BS,), (0,))
-        # [BT, BS]
-        b_c = tl.load(p_c, boundary_check=(0, 1)) + b_z
-        # [BS]
-        b_z += tl.load(p_z, boundary_check=(0,))
-        tl.store(p_c, b_c.to(p_z.dtype.element_ty), boundary_check=(0, 1))
-
-
 class ChunkABCFunction(torch.autograd.Function):
 
     @staticmethod
@@ -900,8 +842,6 @@ class ChunkABCFunction(torch.autograd.Function):
         NV, NM = triton.cdiv(V, BV), triton.cdiv(M, BM)
         num_warps = 4 if BK == 64 else 2
         num_stages = 1
-        assert not output_final_state
-        assert M % 64 == 0, "For efficiency, M must be a multiple of 64."
 
         def fwd_inner(q, k, v, g, B, H, T, K, V, BT, BK, BV, NT, normk=False, h0=None, ht=None):
             NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
@@ -920,6 +860,11 @@ class ChunkABCFunction(torch.autograd.Function):
                 num_stages=num_stages
             )
             return h
+
+        final_state = None
+        if output_final_state:
+            final_state = (q.new_empty(B, H, K, M, dtype=torch.float),
+                           q.new_empty(B, H, M, V, dtype=torch.float))
 
         gc = torch.empty_like(g, dtype=torch.float)
         grid = (NM, NT, B * H)
@@ -940,7 +885,8 @@ class ChunkABCFunction(torch.autograd.Function):
             q=q, k=k, v=s, g=g,
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, NT=NT,
             normk=False,
-            h0=initial_state
+            h0=initial_state[0] if initial_state is not None else None,
+            ht=final_state[0] if final_state is not None else None
         )
         ok1 = torch.empty_like(s)
         Ak = q.new_empty(B, H, T, BT)
@@ -982,7 +928,9 @@ class ChunkABCFunction(torch.autograd.Function):
         hv = fwd_inner(
             q=qv, k=s, v=v, g=g,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
-            normk=True
+            normk=True,
+            h0=initial_state[1] if initial_state is not None else None,
+            ht=final_state[1] if final_state is not None else None
         )
         Av = q.new_zeros(NM, B, H, T, BT)
         grid = (NM, NT * NC * NC, B * H)
@@ -1009,7 +957,7 @@ class ChunkABCFunction(torch.autograd.Function):
         )
         ctx.save_for_backward(q, k, v, s, g, ok, p, hk, hv, Av)
         ctx.BT = BT
-        return ov, None
+        return ov, final_state
 
     @staticmethod
     @contiguous
@@ -1077,8 +1025,8 @@ class ChunkABCFunction(torch.autograd.Function):
             num_stages=num_stages
         )
         dp = dp1.add_(dp0)
-        dsv = dsv1.add_(dsv0).float()
 
+        dsv = dsv1.add_(dsv0).float()
         # softmax gradient, equivalent to:
         # dok = p * (dp - (p * dp).sum(-1, True))
         dok = torch.empty_like(ok)
@@ -1153,10 +1101,7 @@ def gated_chunk_abc(
     output_final_state: Optional[bool] = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
-        initial_state = initial_state.detach()
-    if output_final_state:
-        output_final_state = False
-        warnings.warn("output_final_state is not supported in ABC, setting it to `False`.")
+        initial_state = tuple(i.detach() for i in initial_state)
     # TODO: this 3 steps took huge amount of time, ought to be optimized
     z = s.float().logcumsumexp(2)
     g = torch.cat((z[:, :, :1], z[:, :, :-1]), 2) - z
