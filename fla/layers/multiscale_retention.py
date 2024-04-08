@@ -144,7 +144,7 @@ class MultiScaleRetention(nn.Module):
 
         seqlen_offset = 0
         if past_key_values is not None:
-            seqlen_offset = past_key_values.get_seq_length()
+            seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
         q, k = map(lambda x: rearrange(x, '... (h d) -> ... h d', h=self.num_heads), (q, k))
         q, k = self.rotary(q, k, seqlen_offset)
         q, k = q.transpose(1, 2), k.transpose(1, 2)

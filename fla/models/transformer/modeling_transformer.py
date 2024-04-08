@@ -83,12 +83,10 @@ class TransformerAttention(nn.Module):
         k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
         v = rearrange(self.v_proj(hidden_states), 'b t (h d) -> b h t d', h=self.num_heads)
 
-        seqlen_offsets, max_len = 0, None
-        if attention_mask is not None:
-            seqlens = attention_mask.sum(-1, dtype=torch.int32)
+        seqlen_offset = 0
         if past_key_values is not None:
-            seqlen_offsets = past_key_values.get_seq_length(self.layer_idx)
-        q, k = self.rotary(q, k, seqlen_offsets, max_len)
+            seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
+        q, k = self.rotary(q, k, seqlen_offset)
 
         k = rearrange(k, 'b t h d -> b h t d')
         if past_key_values is not None:
@@ -100,7 +98,7 @@ class TransformerAttention(nn.Module):
 
         # Contains at least one padding token in the sequence
         if attention_mask is not None:
-            q, k, v, indices_q, cu_seq_lens, max_seq_lens = self._upad_input(q, k, v, attention_mask, seqlens, q_len)
+            q, k, v, indices_q, cu_seq_lens, max_seq_lens = self._upad_input(q, k, v, attention_mask, q_len)
             cu_seqlens_q, cu_seqlens_k = cu_seq_lens
             max_seqlen_q, max_seqlen_k = max_seq_lens
             o = flash_attn_varlen_func(
@@ -122,7 +120,8 @@ class TransformerAttention(nn.Module):
 
         return o, attentions, past_key_values
 
-    def _upad_input(self, q, k, v, attention_mask, seqlens, q_len):
+    def _upad_input(self, q, k, v, attention_mask, q_len):
+        seqlens = attention_mask.sum(-1, dtype=torch.int32)
         indices_k = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
         max_seqlen_k = seqlens.max().item()
         cu_seqlens_k = F.pad(torch.cumsum(seqlens, dim=0, dtype=torch.int32), (1, 0))
