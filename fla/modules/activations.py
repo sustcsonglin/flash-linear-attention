@@ -5,10 +5,37 @@
 import torch
 import torch.nn.functional as F
 
+swish_fwd_codestring = """
+template <typename T> T swish_fwd(T x) {
+    float x_sigmoid = 1.0f / (1.0f + ::exp(-float(x)));
+    return float(x) * x_sigmoid;
+}
+"""
+swish_bwd_codestring = """
+template <typename T> T swish_bwd(T x, T g) {
+    float x_sigmoid = 1.0f / (1.0f + ::exp(-float(x)));
+    return float(g) * x_sigmoid * (1.0f - float(x) * x_sigmoid + float(x));
+}
+"""
 
-@torch.jit.script
-def swish(x):
-    return F.silu(x)
+swish_fwd = torch.cuda.jiterator._create_jit_fn(swish_fwd_codestring)
+swish_bwd = torch.cuda.jiterator._create_jit_fn(swish_bwd_codestring)
+
+
+class SwishFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        return swish_fwd(x)
+
+    @staticmethod
+    def backward(ctx, dout):
+        x, = ctx.saved_tensors
+        return swish_bwd(x, dout)
+
+
+swish = SwishFunction.apply
 
 # 1/sqrt(2*pi)-> 0.3989423
 # 1/sqrt(2)   -> 0.70710678
