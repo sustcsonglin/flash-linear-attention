@@ -16,6 +16,28 @@ from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.modules.rotary import RotaryEmbedding
 from fla.ops.delta_rule import (fused_chunk_delta_rule,
                                 fused_recurrent_linear_attn_delta_rule)
+from torch.nn import functional as F
+
+
+def simple_norm(x):
+    return F.normalize(x, dim = -1) * x.shape[-1] ** 0.5
+
+
+# @torch.jit.script
+def elu_p1(x):
+    return F.elu(x, 1., False) + 1.
+
+
+# @torch.jit.script
+def sum_norm(x):
+    return x / x.sum(-1, keepdim=True)
+
+# @torch.jit.script
+def elu_norm(x):
+    x =  F.elu(x, 1., False) + 1. 
+    return x / x.sum(-1, keepdim=True)
+
+
 
 
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
@@ -31,6 +53,8 @@ class DeltaNet(nn.Module):
         use_beta: bool = True,
         use_gate: bool = True,
         use_rope: bool = True,
+        use_elu: bool = False,
+        use_q_swish: bool = False,
         use_short_conv: bool = True,
         conv_size: int = 4,
         conv_bias: bool = False,
@@ -69,6 +93,7 @@ class DeltaNet(nn.Module):
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         self.use_beta = use_beta
+        self.use_elu = use_elu
         if self.use_beta:
             self.b_proj = nn.Linear(hidden_size, self.num_heads, bias=False)
 
@@ -142,25 +167,33 @@ class DeltaNet(nn.Module):
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
-
-        if self.use_rope:
-            seqlen_offset = 0
-            if past_key_values is not None:
-                seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
-            q, k = map(lambda x: rearrange(x, 'b l (h d) -> b l h d', h=self.num_heads), (q, k))
-            q, k = self.rotary(q, k, seqlen_offset)
-            q, k = q.transpose(1, 2), k.transpose(1, 2)
-            v = rearrange(v, 'b l (h d) -> b h l d', h=self.num_heads)
+        
+        # There is no relative positional encoding perspective of rope in delta rule. So I intentially disable using rope for delta rule. 
+        # It will be super weird to use rope in delta rule, but nevertheless you can have a try.
+        # if self.use_rope:
+        #     seqlen_offset = 0
+        #     if past_key_values is not None:
+        #         seqlen_offset = past_key_values.get_seq_length()
+        #     q, k = map(lambda x: rearrange(x, 'b l (h d) -> b l h d', h=self.num_heads), (q, k))
+        #     q, k = self.rotary(q, k, seqlen_offset)
+        #     q, k = q.transpose(1, 2), k.transpose(1, 2)
+        #     v = rearrange(v, 'b l (h d) -> b h l d', h=self.num_heads)
+        # else:
+        q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
+        
+        if not self.use_elu:
+            k = torch.nn.functional.normalize(k, p=2, dim=-1)
+            q = torch.nn.functional.normalize(q, p=2, dim=-1)
         else:
-            q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
-
+            q = elu_norm(q)
+            k = elu_norm(k)
+        
         if self.use_beta:
             beta = rearrange(self.b_proj(hidden_states), 'b l h -> b h l').sigmoid()
         else:
             beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
         state = past_key_values[self.layer_idx][-1] if use_cache else None
         if mode == 'fused_recurrent':
-            k = torch.nn.functional.normalize(k, p=2, dim=-1)
             o, recurrent_state = fused_recurrent_linear_attn_delta_rule(q, k, v, beta, state, output_final_state=use_cache)
         elif mode == 'fused_chunk':
             o, recurrent_state = fused_chunk_delta_rule(q, k, v, beta, self.chunk_size, state, output_final_state=use_cache)
@@ -185,7 +218,6 @@ class DeltaNet(nn.Module):
             o = self.norm(o)
         o = rearrange(o, 'b l h d -> b l (h d)')
         o = self.o_proj(o)
-
         return o, None, past_key_values
 
     def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:

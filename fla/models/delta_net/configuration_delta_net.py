@@ -22,8 +22,7 @@ class DeltaNetConfig(PretrainedConfig):
         share_conv_kernel: bool = False,
         use_rope: bool = False,
         use_beta: bool = True,
-        
-        
+        use_elu: bool = False,        
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
@@ -73,6 +72,7 @@ class DeltaNetConfig(PretrainedConfig):
         self.share_conv_kernel = share_conv_kernel
         self.use_rope = use_rope
         self.use_beta = use_beta
+        self.use_elu = use_elu
 
         super().__init__(
             pad_token_id=pad_token_id,

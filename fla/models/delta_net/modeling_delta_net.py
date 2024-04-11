@@ -71,6 +71,7 @@ class DeltaNetBlock(nn.Module):
             use_gate=config.use_gate,
             use_rope=config.use_rope,
             use_beta=config.use_beta,
+            use_elu=config.use_elu,
             use_short_conv=config.use_short_conv,
             conv_size=config.conv_size,
             share_conv_kernel=config.share_conv_kernel,
