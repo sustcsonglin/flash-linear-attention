@@ -139,6 +139,22 @@ def sqrelu_bwd(g, x):
     return (2.0 * g * F.relu(x)).to(dtype=x.dtype)
 
 
+class SquaredReLUFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, input):
+        ctx.save_for_backward(input)
+        return sqrelu_fwd(input)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, = ctx.saved_tensors
+        return sqrelu_bwd(grad_output, input)
+
+
+sqrelu = SquaredReLUFunction.apply
+
+
 swiglu_fwd_codestring = """
 template <typename T> T swiglu_fwd(T x, T y) {
     return float(x) * float(y) / (1.0f + ::exp(-float(x)));
@@ -223,6 +239,7 @@ swiglu_linear = SwiGLULinearFunction.apply
 ACT2FN = {
     'silu': swish,
     'swish': swish,
+    'sqrelu': sqrelu,
     'gelu': fast_gelu_impl,
     'bias_gelu': bias_gelu_impl,
 }
