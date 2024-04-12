@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# "Gated Linear Attention Transformers with Hardware-Efficient Training"[https://arxiv.org/abs/2312.06635]
+# "HGRN2: Gated Linear RNNs with State Expansion"[https://arxiv.org/abs/2404.07904]
 
 from __future__ import annotations
 
@@ -30,8 +30,7 @@ class HGRN2Attention(nn.Module):
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
         layernorm_eps: float = 1e-5,
-        layer_idx: int = None,
-        **kwargs
+        layer_idx: int = None
     ) -> HGRN2Attention:
         super().__init__()
 
