@@ -23,8 +23,8 @@ class HGRN2Attention(nn.Module):
         self,
         mode: str = 'fused_chunk',
         hidden_size: int = 1024,
-        num_heads: int = 4,
-        expand_ratio: Optional[int] = None,
+        num_heads: Optional[int] = None,
+        expand_ratio: Optional[int] = 128,
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
@@ -37,10 +37,14 @@ class HGRN2Attention(nn.Module):
 
         self.mode = mode
         self.hidden_size = hidden_size
-        self.num_heads = num_heads
 
-        if expand_ratio is None:
+        if expand_ratio is None and num_heads is not None:
             expand_ratio = hidden_size // num_heads
+        elif expand_ratio is not None and num_heads is None:
+            num_heads = hidden_size // expand_ratio
+        else:
+            raise RuntimeError("One of `expand_ratio` or `num_heads` should be provided.")
+        self.num_heads = num_heads
         self.expand_ratio = expand_ratio
 
         self.use_short_conv = use_short_conv
