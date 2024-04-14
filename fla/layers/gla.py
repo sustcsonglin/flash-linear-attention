@@ -21,7 +21,7 @@ class GatedLinearAttention(nn.Module):
 
     def __init__(
         self,
-        mode: str = 'fused_chunk',
+        mode: str = 'chunk',
         hidden_size: int = 1024,
         expand_k: float = 1.0,
         expand_v: float = 2.0,
@@ -202,3 +202,16 @@ class GatedLinearAttention(nn.Module):
             if isinstance(module, ShortConvolution):
                 state_size += module.state_size
         return state_size
+
+
+if __name__ == "__main__":
+    batch_size = 2
+    seq_len = 1023
+    hidden_size = 1000
+    dtype = torch.bfloat16
+    layer = GatedLinearAttention(hidden_size=hidden_size).cuda().to(dtype)
+    inputs = torch.randn(batch_size, seq_len, hidden_size).cuda().to(dtype).requires_grad_(True)
+    output = layer(inputs)[0]
+    print(output.shape)
+    output.backward(torch.rand_like(output))
+    print(inputs.grad.shape)

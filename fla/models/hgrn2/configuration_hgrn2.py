@@ -15,7 +15,7 @@ class HGRN2Config(PretrainedConfig):
         vocab_size: int = 32000,
         hidden_size: int = 2048,
         num_hidden_layers: int = 24,
-        attn_mode: str = "fused_chunk",
+        attn_mode: str = "chunk",
         num_heads: Optional[int] = None,
         expand_ratio: Optional[int] = 128,
         use_short_conv: bool = False,

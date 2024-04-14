@@ -21,7 +21,7 @@ class HGRN2Attention(nn.Module):
 
     def __init__(
         self,
-        mode: str = 'fused_chunk',
+        mode: str = 'chunk',
         hidden_size: int = 1024,
         num_heads: Optional[int] = None,
         expand_ratio: Optional[int] = 128,
