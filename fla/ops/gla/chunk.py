@@ -556,7 +556,7 @@ class ChunkGLAFunction(torch.autograd.Function):
             num_warps=num_warps,
             num_stages=num_stages
         )
-        if checkpoint_level == 1:
+        if checkpoint_level >= 1:
             del g
             g = g_org
         if checkpoint_level > 1:
@@ -615,7 +615,7 @@ class ChunkGLAFunction(torch.autograd.Function):
             )
             return dh
 
-        if ctx.checkpoint_level == 1:
+        if ctx.checkpoint_level >= 1:
             # save the original g and compute its fp32 cumsum during the backward pass for memory consideration
             g_org, g = g, torch.zeros_like(g, dtype=torch.float)
             grid = (NK, NT, B * H)
