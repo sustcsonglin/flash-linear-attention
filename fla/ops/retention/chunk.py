@@ -61,6 +61,9 @@ def chunk_retention_fwd_kernel_h(
         # [BT, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BK, BV]
+        if i_t == NT - 1 and (T % BT) != 0:
+            d_b = tl.math.exp2((T % BT) * b_b)
+            d_i = tl.math.exp2(((T % BT) - o_i - 1) * b_b)
         b_h = d_b * b_h + tl.dot(b_k, (b_v * d_i[:, None]).to(b_k.dtype), allow_tf32=False)
 
     if STORE_FINAL_STATE:

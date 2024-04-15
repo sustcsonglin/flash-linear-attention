@@ -70,8 +70,9 @@ def fused_chunk_retention_fwd_kernel(
     if USE_INITIAL_STATE:
         p_h = tl.make_block_ptr(initial_state + i_bh * DK * DV, (DK, DV), (DV, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_h = tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
-
-    for i in range(0, tl.cdiv(T, BT)):
+    
+    NT = tl.cdiv(T, BT)
+    for i in range(0, NT):
         # [BK, BT]
         b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BT, BV]
@@ -89,6 +90,9 @@ def fused_chunk_retention_fwd_kernel(
             b_h = d_b * b_h + tl.dot(b_k, (b_v * d_h[:, None]).to(b_k.dtype), allow_tf32=False)
         else:
             b_o += tl.dot(b_q, b_h.to(b_q.dtype), allow_tf32=False) * d_o[:, None]
+            if i == NT - 1:
+                d_b = tl.math.exp2((T % BT) * b_b)
+                d_h = tl.math.exp2(((T % BT) - o_i - 1) * b_b)
             b_h = d_b * b_h + tl.dot(b_k, (b_v * d_h[:, None]).to(b_k.dtype), allow_tf32=False)
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
