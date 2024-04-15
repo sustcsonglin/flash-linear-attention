@@ -64,7 +64,6 @@ def chunk_gla_fwd_kernel_h(
     STORE_FINAL_STATE: tl.constexpr
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
     if USE_INITIAL_STATE:
         p_h = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
@@ -81,15 +80,15 @@ def chunk_gla_fwd_kernel_h(
         b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BT, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
-        # [BK,]
-        b_gn = tl.load(p_gn, boundary_check=(0,))
-        # [BK, BV]
-        b_h *= tl.exp(b_gn)[:, None]
         # [BK, BT]
         b_g = tl.load(p_g, boundary_check=(0, 1))
+        if i_t < NT - 1:
+            # [BK,]
+            b_gn = tl.load(p_gn, boundary_check=(0,))
+        else:
+            b_gn = tl.min(b_g, axis=1)
+        b_h *= tl.exp(b_gn)[:, None]
         b_k = (b_k * tl.exp(b_gn[:, None] - b_g)).to(b_k.dtype)
-
-        # [BK, BV]
         b_h += tl.dot(b_k, b_v, allow_tf32=False)
 
     if STORE_FINAL_STATE:
@@ -526,7 +525,6 @@ class ChunkGLAFunction(torch.autograd.Function):
             T=T, S=K, BT=BT, BS=BK,
             num_warps=8
         )
-
         h = fwd_inner(
             q=q, k=k, v=v, g=g,
             B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
@@ -689,7 +687,7 @@ def chunk_gla(
     scale: Optional[int] = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
-    checkpoint_level: Optional[int] = 0
+    checkpoint_level: Optional[int] = 2
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
