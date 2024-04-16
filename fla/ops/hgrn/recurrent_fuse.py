@@ -122,9 +122,9 @@ def fused_recurrent_hgrn_bwd_kernel(
         b_dh = b_dh + b_do
         b_dx = b_dh
         b_dg = b_dh * b_o
+        b_dh = b_dh * b_g
         tl.store(p_dx, b_dx.to(p_dx.dtype.element_ty), mask=mask)
         tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), mask=mask)
-        b_dh = b_dh * b_g
 
         p_g -= D
         p_o -= D
@@ -139,15 +139,13 @@ class FusedRecurrentHGRNFunction(torch.autograd.Function):
     @contiguous
     def forward(ctx, x, g, initial_state=None, output_final_state=False):
         B, H, T, D = x.shape
-        BD = min(D, 64)
-        ND = triton.cdiv(D, BD)
 
         final_state = None
         if output_final_state:
             final_state = x.new_empty(B, H, D)
 
         o = torch.empty_like(x)
-        grid = (ND, B * H)
+        def grid(meta): return (triton.cdiv(D, meta['BD']), B * H)
         fused_recurrent_hgrn_fwd_kernel[grid](
             x, g, o, initial_state, final_state,
             T, D,
@@ -162,12 +160,10 @@ class FusedRecurrentHGRNFunction(torch.autograd.Function):
     def backward(ctx, do, dht=None):
         g, o, initial_state = ctx.saved_tensors
         B, H, T, D = do.shape
-        BD = min(D, 64)
-        ND = triton.cdiv(D, BD)
 
         dx = torch.empty_like(o)
         dg = torch.empty_like(g)
-        grid = (ND, B * H)
+        def grid(meta): return (triton.cdiv(D, meta['BD']), B * H)
         fused_recurrent_hgrn_bwd_kernel[grid](
             g, o, dx, dg, do, initial_state,
             T, D,
