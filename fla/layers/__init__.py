@@ -4,6 +4,7 @@ from .abc import ABCAttention
 from .based import BasedLinearAttention
 from .delta_net import DeltaNet
 from .gla import GatedLinearAttention
+from .hgrn import HGRNAttention
 from .hgrn2 import HGRN2Attention
 from .linear_attn import LinearAttention
 from .multiscale_retention import MultiScaleRetention
@@ -14,6 +15,7 @@ __all__ = [
     'BasedLinearAttention',
     'DeltaNet',
     'GatedLinearAttention',
+    'HGRNAttention',
     'HGRN2Attention',
     'LinearAttention',
     'MultiScaleRetention',

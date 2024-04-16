@@ -5,10 +5,10 @@ from fla.layers import (ABCAttention, BasedLinearAttention, DeltaNet,
                         MultiScaleRetention, ReBasedLinearAttention)
 from fla.models import (ABCForCausalLM, ABCModel, DeltaNetForCausalLM,
                         DeltaNetModel, GLAForCausalLM, GLAModel,
-                        HGRN2ForCausalLM, HGRN2Model,
-                        LinearAttentionForCausalLM, LinearAttentionModel,
-                        RetNetForCausalLM, RetNetModel, TransformerForCausalLM,
-                        TransformerModel)
+                        HGRN2ForCausalLM, HGRN2Model, HGRNForCausalLM,
+                        HGRNModel, LinearAttentionForCausalLM,
+                        LinearAttentionModel, RetNetForCausalLM, RetNetModel,
+                        TransformerForCausalLM, TransformerModel)
 from fla.ops import (chunk_gla, chunk_retention, fused_chunk_based,
                      fused_chunk_gla, fused_chunk_retention)
 
@@ -25,6 +25,8 @@ __all__ = [
     'ABCModel',
     'DeltaNetForCausalLM',
     'DeltaNetModel',
+    'HGRNForCausalLM',
+    'HGRNModel',
     'HGRN2ForCausalLM',
     'HGRN2Model',
     'GLAForCausalLM',
