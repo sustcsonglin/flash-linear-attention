@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# "HGRN2: Gated Linear RNNs with State Expansion"[https://arxiv.org/abs/2404.07904]
+# "Hierarchically Gated Recurrent Neural Network for Sequence Modeling" [https://arxiv.org/abs/2311.04823]
 
 from __future__ import annotations
 
