@@ -33,7 +33,7 @@ def naive_recurrent_rwkv6(
         v_i = v[:, :, i, :]
         w_i = w[:, :, i].exp()
         kv_i = k_i[..., None] * v_i[..., None, :]
-        o_i = (h + u[..., None] * kv_i) * q_i[..., None]
+        o_i = (h + u[None, ..., None] * kv_i) * q_i[..., None]
         o[:, :, i] = o_i.sum(-2)
         h = h * w_i[..., None] + kv_i
     return o.to(orig_dtype)
@@ -72,7 +72,7 @@ def naive_recurrent_rwkv6_bwd(
         v_i = v[:, :, i]
         w_i = w[:, :, i].exp()
         kv_i = k_i[..., None] * v_i[..., None, :]
-        h_i = (h + u[..., None] * kv_i)
+        h_i = (h + u[None, ..., None] * kv_i)
         dq_i = (do[:, :, i, None, :] * h_i).sum(-1)
         dq_aux_i = (do[:, :, i, None, :] * h).sum(-1)
         dq[:, :, i] = dq_i
@@ -93,8 +93,8 @@ def naive_recurrent_rwkv6_bwd(
         du += du_i
         dk_i = (dh * v_i[..., None, :]).sum(-1)
         dk_aux[:, :, i] = dk_i
-        dk_i += (d_kv_i * u[..., None] * v_i[..., None, :]).sum(-1)
-        dv_i = (d_kv_i * u[..., None] * k_i[..., None]).sum(-2)
+        dk_i += (d_kv_i * u[None, ..., None] * v_i[..., None, :]).sum(-1)
+        dv_i = (d_kv_i * u[None, ..., None] * k_i[..., None]).sum(-2)
         dv_i += (dh * k_i[..., None]).sum(-2)
 
         dk[:, :, i] = dk_i
@@ -114,12 +114,12 @@ if __name__ == "__main__":
     H = 4
     L = 1024
     D = 100  
-    dtype = torch.bfloat16
+    dtype = torch.float32
     q = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(True)
     k = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(True)
     v = torch.randn(B, H, L, 2*D).cuda().to(dtype).requires_grad_(True)
     w = torch.nn.functional.logsigmoid(torch.randn(B, H, L, D)).cuda().to(torch.float32).requires_grad_(True)
-    u = (torch.randn(B, H, D).cuda().to(dtype)).requires_grad_(True)
+    u = (torch.randn(H, D).cuda().to(dtype)).requires_grad_(True)
     do = torch.rand_like(v).cuda()
     o = naive_recurrent_rwkv6(q, k, v, w, u)
     o.backward(do)
@@ -130,12 +130,12 @@ if __name__ == "__main__":
     du, u.grad = u.grad.clone(), None
     o2, _ = fused_recurrent_rwkv6(q, k, v, w, u)
     o2.backward(do)
-    assert o.allclose(o2, 0, 1e-2), breakpoint()
-    assert q.grad.allclose(dq, 0, 1e-2), breakpoint()
-    assert k.grad.allclose(dk, 0, 1e-2), breakpoint()
-    assert v.grad.allclose(dv, 0, 1e-2), breakpoint()
-    assert u.grad.allclose(du, 0, 1e-2), breakpoint()
-    assert w.grad.allclose(dw, 0, 1e-2), breakpoint()
+    assert o.allclose(o2, 0, 1e-4), breakpoint()
+    assert q.grad.allclose(dq, 0, 1e-4), breakpoint()
+    assert k.grad.allclose(dk, 0, 1e-4), breakpoint()
+    assert v.grad.allclose(dv, 0, 1e-4), breakpoint()
+    assert u.grad.allclose(du, 0, 1e-3), breakpoint()
+    assert w.grad.allclose(dw, 0, 1e-4), breakpoint()
     print("All tests passed!")
     # dq, dk, dv, dw, du = naive_recurrent_rwkv6_bwd(q, k, v, w, u, o, do)
     # assert q.grad.allclose(dq, 0, 1e-5), breakpoint()

@@ -50,6 +50,7 @@ def fused_recurrent_rwkv6_fwd_kernel(
 ):
     # indices
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_h = i_bh % H
 
     p_q = q + i_bh * s_qk_h + i_k * BK + \
         tl.arange(0, BK) + ((T-1) * DK if REVERSE else 0)
@@ -63,7 +64,7 @@ def fused_recurrent_rwkv6_fwd_kernel(
     p_w = w + i_bh * s_qk_h + i_k * BK + \
             tl.arange(0, BK) + ((T-1) * DK if REVERSE else 0)
     
-    p_u = u + i_bh * DK + tl.arange(0, BK) + i_k * BK
+    p_u = u + i_h * DK + tl.arange(0, BK) + i_k * BK
 
     mask_bk = (i_k * BK + tl.arange(0, BK)) < DK
     mask_bv = (i_v * BV + tl.arange(0, BV)) < DV
@@ -142,6 +143,7 @@ def fused_recurrent_rwkv6_bwd_kernel_dq(
     REVERSE: tl.constexpr,  # whether to do autoregressive modeling in the reverse direction
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_h = i_bh % H
     p_k = k + i_bh * s_qk_h + i_k * BK + \
         tl.arange(0, BK) + ((T-1) * DK if REVERSE else 0)
     p_v = v + i_bh * s_vo_h + i_v * BV + \
@@ -154,7 +156,7 @@ def fused_recurrent_rwkv6_bwd_kernel_dq(
         tl.arange(0, BK) + ((T-1) * DK if REVERSE else 0)
     p_w = w + i_bh * s_qk_h + i_k * BK + \
             tl.arange(0, BK) + ((T-1) * DK if REVERSE else 0)
-    p_u = u + i_bh * DK + tl.arange(0, BK) + i_k * BK
+    p_u = u + i_h * DK + tl.arange(0, BK) + i_k * BK
 
     mask_bk = i_k * BK + tl.arange(0, BK) < DK
     mask_bv = i_v * BV + tl.arange(0, BV) < DV
@@ -227,7 +229,7 @@ def fused_recurrent_rwkv6_bwd_kernel_dkv(
     REVERSE: tl.constexpr,  # whether to do autoregressive modeling in the reverse direction
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-
+    i_h = i_bh % H
     p_q = q + i_bh * s_qk_h + i_k * BK + \
         tl.arange(0, BK) + ((T - 1) * DK if not REVERSE else 0)
     p_k = k + i_bh * s_qk_h + i_k * BK + \
@@ -248,7 +250,7 @@ def fused_recurrent_rwkv6_bwd_kernel_dkv(
     mask_bk = i_k * BK + tl.arange(0, BK) < DK
     mask_bv = i_v * BV + tl.arange(0, BV) < DV
 
-    p_u = u + i_bh * DK + tl.arange(0, BK) + i_k * BK
+    p_u = u + i_h * DK + tl.arange(0, BK) + i_k * BK
     _u = tl.load(p_u, mask=mask_bk, other=0).to(tl.float32)
 
     for i in range(T-1, -1, -1):
@@ -284,7 +286,9 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
     @staticmethod
     @contiguous
     @custom_fwd
-    def forward(ctx, q, k, v, w, u, scale=None, initial_state=None, output_final_state=False, reverse=False):
+    def forward(ctx, r, k, v, w, u, scale=None, initial_state=None, output_final_state=False, reverse=False):
+        # alias
+        q = r
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
         # default scale
@@ -371,7 +375,6 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
                          d_head_qk, dtype=torch.float32)
         dv = q.new_empty(NK, batch_size, n_heads, seq_len,
                          d_head_v, dtype=torch.float32)
-        du = u.new_empty(NK, *u.shape)
         grid = (NV, NK, batch_size * n_heads)
 
         fused_recurrent_rwkv6_bwd_kernel_dkv[grid](
@@ -393,13 +396,13 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
         dw = torch.nn.functional.pad(dw, (0, 0, 0, 1, 0, 0, 0, 0), value=0)
         dw = chunk_reversed_cumsum_fwd(dw).to(w)
 
-        du = ((do * v).sum(-1)[..., None] * k * q * scale).sum(-2).to(u)
+        du = ((do * v).sum(-1)[..., None] * k * q * scale).sum([0,-2]).to(u)
         return dq, dk, dv, dw, du, None, None, None, None
 
 
 # if scale is None, use d_head_qk ** -0.5 by default. Otherwise specify the scale yourself. e.g. scale = 1.0
 def fused_recurrent_rwkv6(
-    q: torch.Tensor,
+    r: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     w: torch.Tensor,
@@ -409,9 +412,29 @@ def fused_recurrent_rwkv6(
     output_final_state: bool = False,
     causal: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    r"""
+    Args:
+        r (torch.Tensor):
+            reception of shape `(B, H, T, K)`. Alias: q, query in linear attention.
+        k (torch.Tensor):
+            keys of shape `(B, H, T, K)`
+        v (torch.Tensor):
+            values of shape `(B, H, T, V)`
+        w (torch.Tensor):
+            data-dependent decays of shape `(B, H, T, K)` in log space! Alias: g.
+        u (torch.Tensor):
+            bonus of shape `(H, K)` 
+        scale (Optional[int]):
+            Scale factor for the RWKV6 attention scores.
+            If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
+        initial_state (Optional[torch.Tensor]):
+            Initial state of shape `(B, H, K, V)`. Default: `None`.
+        output_final_state (Optional[bool]):
+            Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
+    """
     if scale == -1:
-        scale = q.shape[-1] ** -0.5
+        scale = r.shape[-1] ** -0.5
     if initial_state is not None:
         initial_state = initial_state.detach()
-    o, final_state = FusedRecurrentRWKV6Function.apply(q, k, v, w, u, scale, initial_state, output_final_state)
+    o, final_state = FusedRecurrentRWKV6Function.apply(r, k, v, w, u, scale, initial_state, output_final_state)
     return o, final_state
