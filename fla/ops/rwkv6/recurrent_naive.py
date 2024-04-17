@@ -20,8 +20,6 @@ def naive_recurrent_rwkv6(
     _, _, _, d_head_v = v.shape
     h = torch.zeros(batch_size, n_heads, d_head_k, d_head_v, dtype=torch.float32, device=q.device)
     o = torch.zeros_like(v)
-    scale = d_head_k ** -0.5
-    q = q * scale
 
     if initial_state is not None:
         h += initial_state
