@@ -11,6 +11,7 @@ from fla.models.linear_attn import (LinearAttentionConfig,
                                     LinearAttentionModel)
 from fla.models.mamba import MambaConfig, MambaForCausalLM, MambaModel
 from fla.models.retnet import RetNetConfig, RetNetForCausalLM, RetNetModel
+from fla.models.rwkv6 import RWKV6Config, RWKV6ForCausalLM, RWKV6Model
 from fla.models.transformer import (TransformerConfig, TransformerForCausalLM,
                                     TransformerModel)
 
@@ -23,5 +24,6 @@ __all__ = [
     'LinearAttentionConfig', 'LinearAttentionForCausalLM', 'LinearAttentionModel',
     'MambaConfig', 'MambaForCausalLM', 'MambaModel',
     'RetNetConfig', 'RetNetForCausalLM', 'RetNetModel',
+    'RWKV6Config', 'RWKV6ForCausalLM', 'RWKV6Model',
     'TransformerConfig', 'TransformerForCausalLM', 'TransformerModel'
 ]

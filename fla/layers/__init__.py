@@ -9,6 +9,7 @@ from .hgrn2 import HGRN2Attention
 from .linear_attn import LinearAttention
 from .multiscale_retention import MultiScaleRetention
 from .rebased import ReBasedLinearAttention
+from .rwkv6 import RWKV6Attention
 
 __all__ = [
     'ABCAttention',
@@ -19,5 +20,6 @@ __all__ = [
     'HGRN2Attention',
     'LinearAttention',
     'MultiScaleRetention',
-    'ReBasedLinearAttention'
+    'ReBasedLinearAttention',
+    'RWKV6Attention'
 ]
