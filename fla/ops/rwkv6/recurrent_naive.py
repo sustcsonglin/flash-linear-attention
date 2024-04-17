@@ -54,8 +54,6 @@ def naive_recurrent_rwkv6_bwd(
     dq = torch.zeros_like(q)
     dq_aux = torch.zeros_like(q)
 
-    scale = d_head_k ** -0.5
-    q = q * scale
     if initial_state is not None:
         h += initial_state
 
@@ -98,7 +96,7 @@ def naive_recurrent_rwkv6_bwd(
     for i in range(seq_len-2, -1, -1):
         dw[:, :, i] = dw[:, :, i+1] + dq_aux[:, :, i+1] * q[:, :, i+1] - dk_aux[:, :, i] * k[:, :, i]
 
-    return dq * scale, dk, dv, dw, du
+    return dq, dk, dv, dw, du
 
 
 if __name__ == "__main__":
@@ -120,7 +118,7 @@ if __name__ == "__main__":
     dv, v.grad = v.grad.clone(), None
     dw, w.grad = w.grad.clone(), None
     du, u.grad = u.grad.clone(), None
-    o2, _ = fused_recurrent_rwkv6(q, k, v, w, u)
+    o2, _ = fused_recurrent_rwkv6(q, k, v, w, u, scale=1.0)
     o2.backward(do)
     assert o.allclose(o2, 0, 1e-4), breakpoint()
     assert q.grad.allclose(dq, 0, 1e-4), breakpoint()
