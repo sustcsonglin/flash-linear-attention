@@ -90,7 +90,7 @@ def fused_chunk_retention_fwd_kernel(
             b_h = d_b * b_h + tl.dot(b_k, (b_v * d_h[:, None]).to(b_k.dtype), allow_tf32=False)
         else:
             b_o += tl.dot(b_q, b_h.to(b_q.dtype), allow_tf32=False) * d_o[:, None]
-            if i == NT - 1 and (T % BT) != 0::
+            if i == NT - 1 and (T % BT) != 0:
                 d_b = tl.math.exp2((T % BT) * b_b)
                 d_h = tl.math.exp2(((T % BT) - o_i - 1) * b_b)
             b_h = d_b * b_h + tl.dot(b_k, (b_v * d_h[:, None]).to(b_k.dtype), allow_tf32=False)

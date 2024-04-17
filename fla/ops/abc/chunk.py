@@ -8,7 +8,7 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.abc.utils import (logcumsumexp_fwd_kernel, softmax_bwd_kernel,
+from fla.ops.utils import (logcumsumexp_fwd_kernel, softmax_bwd_kernel,
                                softmax_fwd_kernel)
 from fla.utils import contiguous
 
