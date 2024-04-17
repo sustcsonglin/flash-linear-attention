@@ -20,7 +20,6 @@ def naive_chunk_rwkv6(
     assert q.shape[-2] % chunk_size == 0
     orig_dtype = q.dtype
     num_chunk = q.shape[-2] // chunk_size
-    q = q * (q.shape[-1] ** -0.5)
     u = u.unsqueeze(0)
 
     q, k, v, w = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c=chunk_size).float(), (q, k, v, w))
@@ -63,7 +62,7 @@ if __name__ == "__main__":
     u = (torch.randn(H, D).cuda().to(dtype)).requires_grad_(require_grad)
     do = torch.rand_like(v).cuda()
     o2, _ = chunk_rwkv6(q, k, v, w.clone(), u)
-    o, _ = fused_recurrent_rwkv6(q, k, v, w, u)
+    o, _ = fused_recurrent_rwkv6(q, k, v, w, u, scale=1.0)
     o.backward(do)
     dq, q.grad = q.grad.clone(), None
     dk, k.grad = k.grad.clone(), None
