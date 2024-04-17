@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 
 import torch
-import torch.nn.functional as F
-from fla.ops.rwkv_6.recurrent_fuse import fused_recurrent_rwkv6
-from fla.ops.rwkv_6.chunk import chunk_rwkv6
 from einops import rearrange
+
+from fla.ops.rwkv6.chunk import chunk_rwkv6
+from fla.ops.rwkv6.recurrent_fuse import fused_recurrent_rwkv6
+
 
 def naive_chunk_rwkv6(
     q,
@@ -22,8 +23,8 @@ def naive_chunk_rwkv6(
     q = q * (q.shape[-1] ** -0.5)
     u = u.unsqueeze(0)
 
-    q, k, v, w = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c = chunk_size).float(), (q, k, v, w))
-    
+    q, k, v, w = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c=chunk_size).float(), (q, k, v, w))
+
     w_cumsum = w.cumsum(-2)
 
     kw = k * (w_cumsum[..., -1, None, :] - w_cumsum).exp()
@@ -33,7 +34,7 @@ def naive_chunk_rwkv6(
 
     for i in range(num_chunk - 1):
         wkv_new[:, :, i+1] = (wkv_new[:, :, i] * w_cumsum[:, :, i, -1, :, None].exp()) + wkv[:, :, i]
-    
+
     o_inter = torch.einsum('b h n d p, b h n c d -> b h n c p', wkv_new, (q * (w_cumsum - w).exp()))
 
     o_intra = torch.zeros_like(o_inter)
@@ -42,10 +43,11 @@ def naive_chunk_rwkv6(
         mask = (torch.arange(0, chunk_size) < i).to(attn.device)
         attn.masked_fill_(~mask, 0)
         intra_inter_o = (attn.unsqueeze(-1) * v).sum(-2)
-        intra_intra_o = (q[:, :, :, i] * u.unsqueeze(2) * k[:, :, :, i]).sum(-1).unsqueeze(-1) * v[:, :, :, i] 
+        intra_intra_o = (q[:, :, :, i] * u.unsqueeze(2) * k[:, :, :, i]).sum(-1).unsqueeze(-1) * v[:, :, :, i]
         o_intra[:, :, :, i] = intra_inter_o + intra_intra_o
     o = o_inter + o_intra
-    return  rearrange(o, 'b h n c d -> b h (n c) d').to(orig_dtype)
+    return rearrange(o, 'b h n c d -> b h (n c) d').to(orig_dtype)
+
 
 if __name__ == "__main__":
     B = 4

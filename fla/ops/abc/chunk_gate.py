@@ -8,8 +8,8 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.abc.utils import (chunk_reversed_cumsum_fwd, softmax_bwd_kernel,
-                               softmax_fwd_kernel)
+from fla.ops.utils import (chunk_reversed_cumsum_fwd, softmax_bwd_kernel,
+                           softmax_fwd_kernel)
 from fla.utils import contiguous
 
 

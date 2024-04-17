@@ -8,7 +8,7 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.abc.utils import chunk_reversed_cumsum_fwd
+from fla.ops.utils import chunk_reversed_cumsum_fwd
 from fla.utils import contiguous
 
 
@@ -16,7 +16,7 @@ from fla.utils import contiguous
 def chunk_rwkv6_fwd_kernel_cum(
     s,
     o,
-    o_minus_s, 
+    o_minus_s,
     s_s_h,
     s_s_t,
     s_s_d,
@@ -39,15 +39,14 @@ def chunk_rwkv6_fwd_kernel_cum(
     tl.store(p_o_minus_s, (b_o - b_s).to(p_o_minus_s.dtype.element_ty), boundary_check=(0, 1))
 
 
-
 @triton.jit
 def post_process_grad(
     q,
-    k, 
+    k,
     v,
     u,
     do,
-    dk, 
+    dk,
     dq,
     du,
     scale,
@@ -59,7 +58,7 @@ def post_process_grad(
     s_v_d,
     H,
     T: tl.constexpr,
-    BT: tl.constexpr,    
+    BT: tl.constexpr,
     K: tl.constexpr,
     V: tl.constexpr,
     BK: tl.constexpr,
@@ -77,28 +76,25 @@ def post_process_grad(
     p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, 0), (BT, BV), (1, 0))
     p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, 0), (BT, BV), (1, 0))
     p_u = tl.make_block_ptr(u + i_h * K, (K,), (1,), (0,), (BK,), (0,))
-    
+
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_k = tl.load(p_k, boundary_check=(0, 1))
     b_v = tl.load(p_v, boundary_check=(0, 1))
     b_do = tl.load(p_do, boundary_check=(0, 1))
     b_u = tl.load(p_u, boundary_check=(0,))
-    
+
     b_vdo = tl.sum(b_v * b_do, axis=1)
     b_du = b_vdo[:, None] * b_k * b_q * scale
     b_dq = b_vdo[:, None] * b_k * b_u[None, :] * scale
     b_dk = b_vdo[:, None] * b_q * b_u[None, :] * scale
-    
+
     b_dq += tl.load(p_dq, boundary_check=(0, 1))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
-    
+
     b_dk += tl.load(p_dk, boundary_check=(0, 1))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
 
     tl.store(p_du, b_du.to(p_du.dtype.element_ty), boundary_check=(0, 1))
-    
-    
-
 
 
 @triton.jit
@@ -213,7 +209,8 @@ def chunk_rwkv6_fwd_kernel_intra(
         p_gs = tl.make_block_ptr(gs + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
         p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
-        p_q_self = tl.make_block_ptr(q + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
+        p_q_self = tl.make_block_ptr(q + i_bh * s_k_h, (T * K,), (s_k_d,),
+                                     ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
         # [BC, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_gs = tl.load(p_gs, boundary_check=(0, 1))
@@ -239,7 +236,7 @@ def chunk_rwkv6_fwd_kernel_intra(
             p_k = tl.advance(p_k, (K,))
             p_q_self = tl.advance(p_q_self, (K,))
             p_gk = tl.advance(p_gk, (K,))
-            
+
 
 @triton.jit
 def chunk_rwkv6_fwd_kernel_inter(
@@ -433,7 +430,7 @@ def chunk_rwkv6_bwd_kernel_inter(
         b_dq += tl.dot(b_do, b_h, allow_tf32=False)
         # [BT, BK]
         b_dk += tl.dot(b_v, tl.trans(b_dh), allow_tf32=False)
-    
+
     b_dq = b_dq * tl.exp(b_gq)
     b_dk = b_dk * b_gn
 
@@ -510,7 +507,7 @@ def chunk_rwkv6_bwd_kernel_intra(
         m_i = o_i[:, None] > j
         # [BC, BK]
         b_dq += tl.where(m_i, b_dA[:, None] * b_kj[None, :] * tl.exp(b_gs - b_gkj[None, :]), 0.)
-        
+
     p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
 
     b_dq = b_dq + tl.load(p_dq, boundary_check=(0, 1))
@@ -563,7 +560,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
     @staticmethod
     @contiguous
     def forward(ctx, r, k, v, g, u, scale, initial_state, output_final_state, checkpoint_level):
-        q = r  #alias
+        q = r  # alias
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT, BC = 64, 16
         BK = min(64, triton.next_power_of_2(K))
@@ -603,23 +600,23 @@ class ChunkRWKV6Function(torch.autograd.Function):
         # g = g_org.cumsum(-2).view(B, H, T, -1)
         # gs = g - g_org
         chunk_rwkv6_fwd_kernel_cum[grid](
-            g_org, g, gs, 
+            g_org, g, gs,
             g.stride(1), g.stride(2), g.stride(3),
             T=T, S=K, BT=BT, BS=BK,
             num_warps=8
         )
         h = fwd_inner(
-                q=q, k=k, v=v, g=g,
-                B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-                h0=initial_state if initial_state is not None else None,
-                ht=final_state if final_state is not None else None
+            q=q, k=k, v=v, g=g,
+            B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
+            h0=initial_state if initial_state is not None else None,
+            ht=final_state if final_state is not None else None
         )
         A = q.new_zeros(NK, B, H, T, BT)
         grid = (NK, NT * NC * NC, B * H)
         chunk_rwkv6_fwd_kernel_intra[grid](
             q, k, g, gs, u, A,
             k.stride(1), k.stride(2), k.stride(3),
-            scale, 
+            scale,
             H=H, T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC, DK=K,
             num_warps=num_warps,
             num_stages=num_stages
@@ -744,7 +741,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
         dv = dv.sum(0, dtype=dv.dtype)
         grid = (NK, NT * NC, B * H)
         chunk_rwkv6_bwd_kernel_intra[grid](
-            q, k, g, gs, dA, dq, dk, 
+            q, k, g, gs, dA, dq, dk,
             k.stride(1), k.stride(2), k.stride(3),
             T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC,
             num_warps=num_warps,
@@ -752,13 +749,13 @@ class ChunkRWKV6Function(torch.autograd.Function):
         )
 
         # TODO: fuse?
-        dg = (dq * q)[:, :, 1:] - (dk * k)[:, :, 0:-1] 
+        dg = (dq * q)[:, :, 1:] - (dk * k)[:, :, 0:-1]
         dg = torch.nn.functional.pad(dg, (0, 0, 0, 1, 0, 0, 0, 0), value=0)
-        dg = chunk_reversed_cumsum_fwd(dg).to(g)    
+        dg = chunk_reversed_cumsum_fwd(dg).to(g)
         # equivalent to the following pytorch code.
         # du = ((do * v).sum(-1)[..., None] * k * q * scale).sum(-2).to(u)
         # dq += ((do * v).sum(-1)[..., None] * k * scale * u[:, :, None, :])
-        # dk += ((do * v).sum(-1)[..., None] * q * scale * u[:, :, None, :])        
+        # dk += ((do * v).sum(-1)[..., None] * q * scale * u[:, :, None, :])
         BT = 64
         grid = (triton.cdiv(T, BT), B * H)
         du = torch.empty_like(g, dtype=torch.float)
@@ -795,7 +792,7 @@ def chunk_rwkv6(
         w (torch.Tensor):
             data-dependent decays of shape `(B, H, T, K)` in log space! Alias: g.
         u (torch.Tensor):
-            bonus of shape `(H, K)` 
+            bonus of shape `(H, K)`
         scale (Optional[int]):
             Scale factor for the RWKV6 attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
@@ -806,7 +803,7 @@ def chunk_rwkv6(
         checkpoint_level (Optional[int]):
             Checkpointing level; higher values will save more memories and do more recomputations during backward.
             Default: `0`:
-            - Level `0`: store forward hidden states for backprop. 
+            - Level `0`: store forward hidden states for backprop.
             - Level `1`: recompute the forward hidden states during backward.
     """
     assert checkpoint_level in [0, 1]

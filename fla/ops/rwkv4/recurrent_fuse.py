@@ -2,6 +2,7 @@
 # adopted from https://github.com/codekansas/rwkv
 
 from typing import Any, cast
+
 import torch
 import triton
 import triton.language as tl
@@ -16,8 +17,9 @@ def get_block_size_c(chans: int) -> int:
         return 64
     return 128
 
+
 @triton.jit
-def fused_recurrent_rwkv_4_forward_kernel(
+def fused_recurrent_rwkv4_forward_kernel(
     # W
     w_ptr,
     w_s_c,
@@ -104,7 +106,7 @@ def fused_recurrent_rwkv_4_forward_kernel(
         tl.store(eps_out_ptr + t * state_out_s_t + cs * state_out_s_c, eps, mask=cmask)
 
 
-def fused_recurrent_rwkv_4_forward(
+def fused_recurrent_rwkv4_forward(
     w: Tensor,
     u: Tensor,
     k: Tensor,
@@ -123,7 +125,7 @@ def fused_recurrent_rwkv_4_forward(
     def grid(meta: dict[str, Any]) -> tuple[int, ...]:
         return (bsz, triton.cdiv(chans, meta["BLOCK_SIZE_C"]))
 
-    fused_recurrent_rwkv_4_forward_kernel[grid](
+    fused_recurrent_rwkv4_forward_kernel[grid](
         # W
         w,
         w.stride(0),
@@ -168,7 +170,7 @@ def fused_recurrent_rwkv_4_forward(
 
 
 @triton.jit
-def fused_recurrent_rwkv_4_backward_kernel(
+def fused_recurrent_rwkv4_backward_kernel(
     # W
     w_ptr,
     w_s_c,
@@ -351,7 +353,7 @@ def fused_recurrent_rwkv_4_backward_kernel(
     tl.store(gu_ptr + gu_s_c * cs, gu_temp, mask=cmask)
 
 
-def fused_recurrent_rwkv_4_backward(
+def fused_recurrent_rwkv4_backward(
     w: Tensor,
     u: Tensor,
     k: Tensor,
@@ -360,20 +362,20 @@ def fused_recurrent_rwkv_4_backward(
     grad_wkv: Tensor,
     grad_state: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    (bsz, tsz, chans), device = k.shape, k.device
+    bsz, tsz, chans = k.shape
 
-    gw = torch.zeros_like(w) # New tensors to output.
+    gw = torch.zeros_like(w)  # New tensors to output.
     gu = torch.zeros_like(u)
     gk = torch.empty_like(k)
     gv = torch.empty_like(v)
     gstate = k.new_empty(bsz, 3, 1, chans)
 
-    block_size_c = get_block_size_c(chans) # Constants.
+    block_size_c = get_block_size_c(chans)  # Constants.
 
     def grid(meta: dict[str, Any]) -> tuple[int, ...]:
         return (bsz, triton.cdiv(chans, meta["BLOCK_SIZE_C"]))
 
-    fused_recurrent_rwkv_4_backward_kernel[grid](
+    fused_recurrent_rwkv4_backward_kernel[grid](
         # W
         w,
         w.stride(0),
@@ -466,7 +468,7 @@ class FusedRecurrentRWKV4Function(Function):
         u = u.contiguous()
         k = k.contiguous()
         v = v.contiguous()
-        wkv, state_out = fused_recurrent_rwkv_4_forward(w, u, k, v, state)
+        wkv, state_out = fused_recurrent_rwkv4_forward(w, u, k, v, state)
         ctx.save_for_backward(w, u, k, v, state_out[:, :, :-1])
         return wkv, state_out[:, :, -1:]
 
@@ -474,9 +476,9 @@ class FusedRecurrentRWKV4Function(Function):
     @once_differentiable
     def backward(ctx: FunctionCtx, gwkv: Tensor, gstate: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         w, u, k, v, state = cast(tuple[Tensor, ...], ctx.saved_tensors)
-        gw, gu, gk, gv, gstate = fused_recurrent_rwkv_4_backward(w, u, k, v, state, gwkv, gstate)
+        gw, gu, gk, gv, gstate = fused_recurrent_rwkv4_backward(w, u, k, v, state, gwkv, gstate)
         return gw, gu, gk, gv, gstate
 
 
-def fused_recurrent_rwkv_4(w: Tensor, u: Tensor, k: Tensor, v: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
+def fused_recurrent_rwkv4(w: Tensor, u: Tensor, k: Tensor, v: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
     return FusedRecurrentRWKV4Function.apply(w, u, k, v, state)

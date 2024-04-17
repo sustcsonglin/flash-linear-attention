@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 import torch
-import torch.nn.functional as F
-from fla.ops.rwkv_6.recurrent_fuse import fused_recurrent_rwkv6
+
+from fla.ops.rwkv6.recurrent_fuse import fused_recurrent_rwkv6
 
 
 def naive_recurrent_rwkv6(
@@ -12,8 +12,7 @@ def naive_recurrent_rwkv6(
     w,
     u,
     initial_state=None,
-    output_final_state=False,
-    causal=True
+    output_final_state=False
 ):
     orig_dtype = q.dtype
     q, k, v, w, u = map(lambda x: x.float(), (q, k, v, w, u))
@@ -23,12 +22,12 @@ def naive_recurrent_rwkv6(
     o = torch.zeros_like(v)
     scale = d_head_k ** -0.5
     q = q * scale
-    
+
     if initial_state is not None:
         h += initial_state
 
     for i in range(seq_len):
-        q_i = q[:, :, i, :] 
+        q_i = q[:, :, i, :]
         k_i = k[:, :, i]
         v_i = v[:, :, i, :]
         w_i = w[:, :, i].exp()
@@ -37,8 +36,6 @@ def naive_recurrent_rwkv6(
         o[:, :, i] = o_i.sum(-2)
         h = h * w_i[..., None] + kv_i
     return o.to(orig_dtype)
-
-
 
 
 def naive_recurrent_rwkv6_bwd(
@@ -50,10 +47,8 @@ def naive_recurrent_rwkv6_bwd(
     o,
     do,
     initial_state=None,
-    output_final_state=False,
-    causal=True
+    output_final_state=False
 ):
-    orig_dtype = q.dtype
     q, k, v, w, u, o, do = map(lambda x: x.float(), (q, k, v, w, u, o, do))
     batch_size, n_heads, seq_len, d_head_k = q.shape
     _, _, _, d_head_v = v.shape
@@ -67,7 +62,6 @@ def naive_recurrent_rwkv6_bwd(
         h += initial_state
 
     for i in range(seq_len):
-        # q_i = q[:, :, i, :]  
         k_i = k[:, :, i]
         v_i = v[:, :, i]
         w_i = w[:, :, i].exp()
@@ -100,20 +94,20 @@ def naive_recurrent_rwkv6_bwd(
         dk[:, :, i] = dk_i
         dv[:, :, i] = dv_i
         dh = dh * w[:, :, i, :, None].exp() + d_kv_i
-    
+
     # dw = q * dq_aux - k * dk_aux
     dw = torch.zeros_like(w)
     for i in range(seq_len-2, -1, -1):
-        dw[:, :, i] = dw[:, :, i+1] + dq_aux[:, :, i+1] * q[:, :, i+1] - dk_aux[:, :, i] * k[:, :, i]        
+        dw[:, :, i] = dw[:, :, i+1] + dq_aux[:, :, i+1] * q[:, :, i+1] - dk_aux[:, :, i] * k[:, :, i]
 
     return dq * scale, dk, dv, dw, du
-        
-        
+
+
 if __name__ == "__main__":
     B = 4
     H = 4
     L = 1024
-    D = 100  
+    D = 100
     dtype = torch.float32
     q = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(True)
     k = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(True)
