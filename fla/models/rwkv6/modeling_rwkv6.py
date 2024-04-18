@@ -71,21 +71,20 @@ class RWKV6Block(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.eps)
         self.attn = RWKV6Attention(
             mode=config.attn_mode,
             hidden_size=config.hidden_size,
             expand_k=config.expand_k,
             expand_v=config.expand_v,
             num_heads=config.num_heads,
-            use_short_conv=config.use_short_conv,
-            conv_size=config.conv_size,
-            share_conv_kernel=config.share_conv_kernel,
-            layernorm_eps=config.rms_norm_eps,
+            proj_low_rank_dim=config.proj_low_rank_dim,
+            gate_low_rank_dim=config.gate_low_rank_dim,
+            eps=config.eps,
             fuse_norm=config.fuse_norm,
             layer_idx=layer_idx
         )
-        self.ffn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.ffn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.eps)
         self.ffn = RWKV6FeedForward(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -173,7 +172,7 @@ class RWKV6Model(RWKV6PreTrainedModel):
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([RWKV6Block(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(config.hidden_size, eps=config.eps)
 
         self.gradient_checkpointing = False
 

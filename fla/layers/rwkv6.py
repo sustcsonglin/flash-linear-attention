@@ -12,8 +12,9 @@ from einops import rearrange
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 
-from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
+from fla.modules import FusedRMSNormSwishGate, RMSNorm
 from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
+from fla.utils import checkpoint
 
 
 class RWKV6Attention(nn.Module):
@@ -25,15 +26,12 @@ class RWKV6Attention(nn.Module):
         expand_k: float = 1.0,
         expand_v: float = 2.0,
         num_heads: int = 4,
-        use_short_conv: bool = False,
-        conv_size: int = 4,
-        conv_bias: bool = False,
-        share_conv_kernel: bool = True,
         gate_fn: str = 'swish',
-        layernorm_eps: float = 1e-5,
-        gate_low_rank_dim: int = 32,
+        proj_low_rank_dim: int = 32,
+        gate_low_rank_dim: int = 64,
         fuse_norm: bool = True,
         layer_idx: int = None,
+        eps: float = 1e-5,
         **kwargs
     ) -> RWKV6Attention:
         super().__init__()
@@ -43,11 +41,8 @@ class RWKV6Attention(nn.Module):
         self.expand_k = expand_k
         self.expand_v = expand_v
         self.num_heads = num_heads
-
-        self.use_short_conv = use_short_conv
-        self.conv_size = conv_size
-        self.conv_bias = conv_bias
-        self.share_conv_kernel = share_conv_kernel
+        self.proj_low_rank_dim = proj_low_rank_dim
+        self.gate_low_rank_dim = gate_low_rank_dim
 
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
@@ -59,33 +54,29 @@ class RWKV6Attention(nn.Module):
 
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
+        self.eps = eps
 
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
+        self.x_proj = nn.Sequential(
+            LerpLinear(hidden_size, proj_low_rank_dim * 5, bias=False),
+            nn.Tanh(),
+            nn.Linear(proj_low_rank_dim * 5, hidden_size)
+        )
         self.r_proj = LerpLinear(hidden_size, self.key_dim, bias=False)
+        self.w_proj = LerpLinear(hidden_size, self.key_dim, low_rank_dim=gate_low_rank_dim, bias=False)
         self.k_proj = LerpLinear(hidden_size, self.key_dim, bias=False)
         self.v_proj = LerpLinear(hidden_size, self.value_dim, bias=False)
-        self.w_proj = nn.Sequential(DDLerp(hidden_size, hidden_size, gate_low_rank_dim, bias=False),
-                                    LoRA(hidden_size, self.key_dim, gate_low_rank_dim, bias=False))
-        self.bonus = nn.Parameter(torch.randn(num_heads, self.head_qk_dim))
         self.g_proj = LerpLinear(hidden_size, self.value_dim, bias=False)
-
-        if use_short_conv:
-            self.conv_size = conv_size
-            if share_conv_kernel:
-                self.h_conv1d = ShortConvolution(hidden_size, conv_size, activation='silu')
-            else:
-                self.r_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
-                self.k_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
-                self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
+        self.bonus = nn.Parameter(torch.randn(num_heads, self.head_qk_dim))
 
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if gate_fn == 'swish' and fuse_norm:
-            self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
+            self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=eps)
             self.fuse_norm_and_gate = True
         else:
             self.fuse_norm_and_gate = False
-            self.g_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
+            self.g_norm = RMSNorm(self.head_v_dim, eps=eps)
             self.gate_fn = ACT2FN[gate_fn]
 
         self.apply(self._initialize_weights)
@@ -110,42 +101,29 @@ class RWKV6Attention(nn.Module):
         output_attentions: Optional[bool] = False,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
+        batch_size, seq_len, hidden_size = hidden_states.size()
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
         delta = self.time_shift(hidden_states) - hidden_states
-        last_state = past_key_values[self.layer_idx] if use_cache else None
-        if self.use_short_conv:
-            conv_state = last_state[0] if use_cache else None
-            if self.share_conv_kernel:
-                # conv state is updated inplace
-                hidden_states = self.h_conv1d(hidden_states, attention_mask, conv_state)
-                r = self.r_proj(hidden_states, delta)
-                k = self.k_proj(hidden_states, delta)
-                v = self.v_proj(hidden_states, delta)
-            else:
-                conv_state_q = last_state[0] if use_cache else None
-                conv_state_k = last_state[1] if use_cache else None
-                conv_state_v = last_state[2] if use_cache else None
-                r = self.r_proj(hidden_states, delta)
-                k = self.k_proj(hidden_states, delta)
-                v = self.v_proj(hidden_states, delta)
-                r = self.r_conv1d(r, attention_mask, conv_state_q)
-                k = self.k_conv1d(k, attention_mask, conv_state_k)
-                v = self.v_conv1d(v, attention_mask, conv_state_v)
-        else:
-            r = self.r_proj(hidden_states, delta)
-            k = self.k_proj(hidden_states, delta)
-            v = self.v_proj(hidden_states, delta)
+        x = self.x_proj[0](hidden_states, delta).view(batch_size, seq_len, -1, self.proj_low_rank_dim)
+        r, w, k, v, g = torch.einsum('b l n r, n r d-> b l n d',
+                                     self.x_proj[1](x),
+                                     self.x_proj[2].weight.view(5, -1, hidden_size)).unbind(-2)
+        r = self.r_proj(r, delta)
+        w = self.w_proj(w, delta)
+        k = self.k_proj(k, delta)
+        v = self.v_proj(v, delta)
+        g = self.g_proj(g, delta)
 
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
-        r, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (r, k, v))
-        w = rearrange(self.w_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
-        w = -torch.exp(w.float()).type_as(w)
+        r, w, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (r, w, k, v))
+        w = -torch.exp(w.float()).type_as(w) + self.eps
         u = self.bonus
 
+        last_state = past_key_values[self.layer_idx] if use_cache else None
         state = last_state[-1] if use_cache else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_rwkv6(r, k, v, w, u, initial_state=state, output_final_state=use_cache)
@@ -155,17 +133,9 @@ class RWKV6Attention(nn.Module):
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
-            if self.use_short_conv:
-                if self.share_conv_kernel:
-                    last_state = (conv_state, recurrent_state)
-                else:
-                    last_state = (conv_state_q, conv_state_k, conv_state_v, recurrent_state)
-            else:
-                last_state = (recurrent_state,)
-            past_key_values.update(last_state, self.layer_idx, r.shape[2])
+            past_key_values.update((recurrent_state,), self.layer_idx, r.shape[2])
 
         o = rearrange(o, 'b h l d -> b l h d')
-        g = self.g_proj(hidden_states, delta)
         if self.fuse_norm_and_gate:
             g = rearrange(g, 'b l (h d) -> b l h d', h=self.num_heads)
             o = self.g_norm_swish_gate(o, g)
@@ -180,22 +150,11 @@ class RWKV6Attention(nn.Module):
 
     def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
         param = next(self.parameters())
-        state = tuple()
-        if self.use_short_conv:
-            if self.share_conv_kernel:
-                state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
-            else:
-                state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                          param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                          param.new_zeros(batch_size, self.value_dim, self.conv_size))
-        state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
+        state = (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
         return state
 
     def state_size(self, **kwargs) -> int:
         state_size = self.key_dim * self.head_v_dim
-        for module in self.children():
-            if isinstance(module, ShortConvolution):
-                state_size += module.state_size
         return state_size
 
 
@@ -205,20 +164,27 @@ class LerpLinear(nn.Module):
         self,
         input_dim: int,
         output_dim: int,
-        bias: bool = False
+        low_rank_dim: Optional[int] = None,
+        bias: Optional[bool] = False
     ):
         super().__init__()
 
         self.input_dim = input_dim
         self.output_dim = output_dim
+        self.low_rank_dim = low_rank_dim
         self.bias = bias
 
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-        self.linear = nn.Linear(input_dim, output_dim, bias=bias)
+        if low_rank_dim is None:
+            self.linear = nn.Linear(input_dim, output_dim, bias=bias)
+        else:
+            self.linear = LoRA(input_dim, output_dim, low_rank_dim, bias=bias)
         self.mu = nn.Parameter(torch.zeros(input_dim))
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.input_dim}, {self.output_dim}"
+        if self.low_rank_dim is not None:
+            s += f", low_rank_dim={self.low_rank_dim}"
         if not self.bias:
             s += f", bias={self.bias}"
         s += ")"
@@ -252,7 +218,7 @@ class LoRA(nn.Module):
         self.lora = nn.Sequential(
             nn.Linear(input_dim, low_rank_dim, bias=bias),
             nn.Tanh(),
-            nn.Linear(low_rank_dim, output_dim, bias=bias)
+            nn.Linear(low_rank_dim, output_dim)
         )
         self.lamda = nn.Parameter(torch.zeros(output_dim))
 
@@ -263,6 +229,7 @@ class LoRA(nn.Module):
         s += ")"
         return s
 
+    @checkpoint
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.lora(x) + self.lamda
 

@@ -21,12 +21,11 @@ class RWKV6Config(PretrainedConfig):
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
         num_heads: int = 4,
-        use_short_conv: bool = False,
-        conv_size: int = 4,
-        share_conv_kernel: bool = True,
+        proj_low_rank_dim: int = 32,
+        gate_low_rank_dim: int = 64,
         hidden_act: str = "sqrelu",
         max_position_embeddings: int = 2048,
-        rms_norm_eps: float = 1e-6,
+        eps: float = 1e-6,
         use_cache: bool = True,
         pad_token_id: int = None,
         bos_token_id: int = 1,
@@ -46,16 +45,15 @@ class RWKV6Config(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
         self.num_heads = num_heads
+        self.proj_low_rank_dim = proj_low_rank_dim
+        self.gate_low_rank_dim = gate_low_rank_dim
         self.attn_mode = attn_mode
         self.hidden_act = hidden_act
-        self.rms_norm_eps = rms_norm_eps
+        self.eps = eps
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         self.fuse_norm = fuse_norm
         self.fuse_cross_entropy = fuse_cross_entropy
-        self.use_short_conv = use_short_conv
-        self.conv_size = conv_size
-        self.share_conv_kernel = share_conv_kernel
 
         super().__init__(
             pad_token_id=pad_token_id,
