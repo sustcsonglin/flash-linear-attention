@@ -17,7 +17,7 @@ from transformers.utils import logging
 from fla.layers.rwkv6 import LerpLinear, RWKV6Attention
 from fla.models.rwkv6.configuration_rwkv6 import RWKV6Config
 from fla.models.utils import RecurrentCache
-from fla.modules import FusedCrossEntropyLoss, RMSNorm
+from fla.modules import FusedCrossEntropyLoss, LayerNorm
 from fla.modules.activations import ACT2FN
 
 logger = logging.get_logger(__name__)
@@ -71,7 +71,7 @@ class RWKV6Block(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.eps)
+        self.attn_norm = LayerNorm(hidden_size=config.hidden_size, eps=config.eps)
         self.attn = RWKV6Attention(
             mode=config.attn_mode,
             hidden_size=config.hidden_size,
@@ -84,7 +84,7 @@ class RWKV6Block(nn.Module):
             fuse_norm=config.fuse_norm,
             layer_idx=layer_idx
         )
-        self.ffn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.eps)
+        self.ffn_norm = LayerNorm(hidden_size=config.hidden_size, eps=config.eps)
         self.ffn = RWKV6FeedForward(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -141,6 +141,8 @@ class RWKV6PreTrainedModel(PreTrainedModel):
             nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Parameter):
+            nn.init.normal_(module, mean=0.0, std=self.config.initializer_range)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
             if module.padding_idx is not None:
@@ -172,7 +174,7 @@ class RWKV6Model(RWKV6PreTrainedModel):
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([RWKV6Block(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, eps=config.eps)
+        self.norm = LayerNorm(config.hidden_size, eps=config.eps)
 
         self.gradient_checkpointing = False
 

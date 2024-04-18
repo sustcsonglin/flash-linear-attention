@@ -12,7 +12,7 @@ from einops import rearrange
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 
-from fla.modules import FusedRMSNormSwishGate, RMSNorm
+from fla.modules import FusedLayerNormSwishGate, LayerNorm
 from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
 from fla.utils import checkpoint
 
@@ -72,11 +72,11 @@ class RWKV6Attention(nn.Module):
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if gate_fn == 'swish' and fuse_norm:
-            self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=eps)
+            self.g_norm_swish_gate = FusedLayerNormSwishGate(self.head_v_dim, eps=eps)
             self.fuse_norm_and_gate = True
         else:
             self.fuse_norm_and_gate = False
-            self.g_norm = RMSNorm(self.head_v_dim, eps=eps)
+            self.g_norm = LayerNorm(self.head_v_dim, eps=eps)
             self.gate_fn = ACT2FN[gate_fn]
 
         self.apply(self._initialize_weights)
@@ -261,6 +261,7 @@ class DDLerp(nn.Module):
         s += ")"
         return s
 
+    @checkpoint
     def forward(self, x: torch.Tensor, delta: Optional[torch.Tensor] = None) -> torch.Tensor:
         if delta is None:
             shifted = self.time_shift(x)
