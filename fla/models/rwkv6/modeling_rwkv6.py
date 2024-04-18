@@ -46,9 +46,9 @@ class RWKV6FeedForward(nn.Module):
 
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
 
-        self.key = LerpLinear(hidden_size, intermediate_size, bias=False)
-        self.value = nn.Linear(intermediate_size, hidden_size, bias=False)
-        self.receptance = LerpLinear(hidden_size, hidden_size, bias=False)
+        self.key = LerpLinear(hidden_size, intermediate_size)
+        self.value = nn.Linear(intermediate_size, hidden_size)
+        self.receptance = LerpLinear(hidden_size, hidden_size)
         self.act_fn = ACT2FN[hidden_act]
 
         self.layer_idx = layer_idx
