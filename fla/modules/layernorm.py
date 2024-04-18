@@ -12,11 +12,11 @@
 import math
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import custom_fwd, custom_bwd
-
 import triton
 import triton.language as tl
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 
 def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
@@ -484,21 +484,47 @@ def layer_norm_fn(
     return LayerNormFn.apply(x, weight, bias, residual, eps, prenorm, residual_in_fp32, is_rms_norm)
 
 
-def rms_norm_fn(x, weight, bias, residual=None, prenorm=False, residual_in_fp32=False, eps=1e-6):
+def rms_norm_fn(
+    x,
+    weight,
+    bias,
+    residual=None,
+    prenorm=False,
+    residual_in_fp32=False,
+    eps=1e-6
+):
     return LayerNormFn.apply(x, weight, bias, residual, eps, prenorm, residual_in_fp32, True)
 
 
-class RMSNorm(torch.nn.Module):
-    def __init__(self, hidden_size, eps=1e-5):
-        # factory_kwargs = {"device": device, "dtype": dtype}
-        super().__init__()
-        self.eps = eps
-        self.weight = torch.nn.Parameter(torch.empty(hidden_size))
-        self.register_parameter("bias", None)
-        self.reset_parameters()
+class LayerNorm(nn.Module):
 
-    def reset_parameters(self):
-        torch.nn.init.ones_(self.weight)
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.register_parameter("bias", None)
+
+    def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
+        return layer_norm_fn(
+            x,
+            self.weight,
+            self.bias,
+            residual=residual,
+            eps=self.eps,
+            prenorm=prenorm,
+            residual_in_fp32=residual_in_fp32
+        )
+
+
+class RMSNorm(nn.Module):
+
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.register_parameter("bias", None)
 
     def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
         return rms_norm_fn(

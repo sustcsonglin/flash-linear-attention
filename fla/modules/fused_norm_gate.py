@@ -12,6 +12,7 @@
 import math
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import triton
 import triton.language as tl
@@ -511,21 +512,44 @@ class LayerNormFn(torch.autograd.Function):
         )
 
 
+def layer_norm_fn(x, o, weight, bias, residual=None, prenorm=False, residual_in_fp32=False, eps=1e-6):
+    return LayerNormFn.apply(x, o, weight, bias, residual, eps, prenorm, residual_in_fp32, False)
+
+
 def rms_norm_fn(x, o, weight, bias, residual=None, prenorm=False, residual_in_fp32=False, eps=1e-6):
     return LayerNormFn.apply(x, o, weight, bias, residual, eps, prenorm, residual_in_fp32, True)
 
 
-class FusedRMSNormSwishGate(torch.nn.Module):
-    def __init__(self, hidden_size, eps=1e-5):
-        # factory_kwargs = {"device": device, "dtype": dtype}
-        super().__init__()
-        self.eps = eps
-        self.weight = torch.nn.Parameter(torch.empty(hidden_size))
-        self.register_parameter("bias", None)
-        self.reset_parameters()
+class FusedLayerNormSwishGate(nn.Module):
 
-    def reset_parameters(self):
-        torch.nn.init.ones_(self.weight)
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.register_parameter("bias", None)
+
+    def forward(self, x, o, residual=None, prenorm=False, residual_in_fp32=False):
+        return layer_norm_fn(
+            x,
+            o,
+            self.weight,
+            self.bias,
+            residual=residual,
+            eps=self.eps,
+            prenorm=prenorm,
+            residual_in_fp32=residual_in_fp32
+        )
+
+
+class FusedRMSNormSwishGate(nn.Module):
+
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.register_parameter("bias", None)
 
     def forward(self, x, o, residual=None, prenorm=False, residual_in_fp32=False):
         return rms_norm_fn(
@@ -536,5 +560,5 @@ class FusedRMSNormSwishGate(torch.nn.Module):
             residual=residual,
             eps=self.eps,
             prenorm=prenorm,
-            residual_in_fp32=residual_in_fp32,
+            residual_in_fp32=residual_in_fp32
         )

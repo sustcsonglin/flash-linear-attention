@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from fla.modules.rmsnorm import layer_norm_fn
+from fla.modules.layernorm import layer_norm_fn
 from fla.utils import checkpoint
 
 
