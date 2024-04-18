@@ -12,6 +12,20 @@ from fla.ops.utils import chunk_reversed_cumsum_fwd
 from fla.utils import contiguous
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({'BS': 16}, num_warps=2),
+        triton.Config({'BS': 16}, num_warps=4),
+        triton.Config({'BS': 16}, num_warps=8),
+        triton.Config({'BS': 32}, num_warps=2),
+        triton.Config({'BS': 32}, num_warps=4),
+        triton.Config({'BS': 32}, num_warps=8),
+        triton.Config({'BS': 64}, num_warps=2),
+        triton.Config({'BS': 64}, num_warps=4),
+        triton.Config({'BS': 64}, num_warps=8),
+    ],
+    key=['S']
+)
 @triton.jit
 def chunk_rwkv6_fwd_kernel_cum(
     s,
@@ -593,7 +607,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
             final_state = q.new_empty(B, H, K, V, dtype=torch.float)
 
         g_org, g, gs = g, torch.empty_like(g, dtype=torch.float), torch.empty_like(g, dtype=torch.float)
-        grid = (NK, NT, B * H)
+        def grid(meta): return ((triton.cdiv(meta['S'], meta['BS']), NT, B * H))
         # keep cummulative normalizer in fp32
         # this kernel is equivalent to
         # g_org = g_org.view(B, H, NT, BT, -1)
@@ -602,8 +616,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
         chunk_rwkv6_fwd_kernel_cum[grid](
             g_org, g, gs,
             g.stride(1), g.stride(2), g.stride(3),
-            T=T, S=K, BT=BT, BS=BK,
-            num_warps=8
+            T=T, S=K, BT=BT
         )
         h = fwd_inner(
             q=q, k=k, v=v, g=g,
@@ -697,15 +710,14 @@ class ChunkRWKV6Function(torch.autograd.Function):
 
         # recompute cumulative log decays.
         g_org, g, gs = g, torch.empty_like(g, dtype=torch.float), torch.empty_like(g, dtype=torch.float)
-        grid = (NK, NT, B * H)
+        def grid(meta): return ((triton.cdiv(meta['S'], meta['BS']), NT, B * H))
         # keep cummulative normalizer in fp32
         # this kernel is equivalent to
         # g = g.view(B, H, NT, BT, -1).cumsum(-2).view(B, H, T, -1)
         chunk_rwkv6_fwd_kernel_cum[grid](
             g_org, g, gs,
             g.stride(1), g.stride(2), g.stride(3),
-            T=T, S=K, BT=BT, BS=BK,
-            num_warps=8
+            T=T, S=K, BT=BT
         )
 
         # rerun the forward pass to get h if checkpoint_level >= 1
