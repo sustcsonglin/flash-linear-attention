@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2023, Tri Dao.
+# Copyright (c) 2023-2024, Tri Dao, Yu Zhang, Songlin Yang.
 
 import torch
 import torch.nn.functional as F
@@ -35,6 +35,36 @@ class SigmoidFunction(torch.autograd.Function):
 
 
 sigmoid = SigmoidFunction.apply
+
+logsigmoid_fwd_codestring = """
+template <typename T> T logsigmoid_fwd(T x) {
+    return -::log(1.0f + ::exp(-float(x)));
+}
+"""
+logsigmoid_bwd_codestring = """
+template <typename T> T logsigmoid_bwd(T x, T g) {
+    return float(g) * (1.0f - 1.0f / (1.0f + ::exp(-float(x))));
+}
+"""
+
+logsigmoid_fwd = torch.cuda.jiterator._create_jit_fn(logsigmoid_fwd_codestring)
+logsigmoid_bwd = torch.cuda.jiterator._create_jit_fn(logsigmoid_bwd_codestring)
+
+
+class LogSigmoidFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        return logsigmoid_fwd(x)
+
+    @staticmethod
+    def backward(ctx, dout):
+        x, = ctx.saved_tensors
+        return logsigmoid_bwd(x, dout)
+
+
+logsigmoid = LogSigmoidFunction.apply
 
 swish_fwd_codestring = """
 template <typename T> T swish_fwd(T x) {
@@ -269,6 +299,7 @@ swiglu_linear = SwiGLULinearFunction.apply
 
 ACT2FN = {
     'sigmoid': sigmoid,
+    'logsigmoid': logsigmoid,
     'silu': swish,
     'swish': swish,
     'sqrelu': sqrelu,
