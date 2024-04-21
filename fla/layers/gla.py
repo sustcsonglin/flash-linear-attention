@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 
-# "Gated Linear Attention Transformers with Hardware-Efficient Training"[https://arxiv.org/abs/2312.06635]
 
 from __future__ import annotations
 
@@ -10,21 +9,58 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
+from fla.modules.activations import ACT2FN
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
 
 class GatedLinearAttention(nn.Module):
+    r"""
+    The layer implementaion for [Gated Linear Attention Transformers with Hardware-Efficient Training](https://arxiv.org/abs/2312.06635).  # noqa
+
+    Args:
+        mode (str, Optional):
+            Which GLA kernel to use. Currently available ones are `chunk`, `fused_recurrent`, and `fused_chunk`. Default: `chunk`.
+        hidden_size (int, Optional):
+            The hidden size of the input. Default: 1024.
+        expand_k (float, Optional):
+            The expansion ratio for the key dim. Default: 0.5.
+        expand_v (float, Optional):
+            The expansion ratio for the value dim. Default: 1.0.
+        num_heads (int, Optional):
+            The number of heads. Default: 4.
+        use_short_conv (bool, Optional):
+            Whether to use short convolutions. Default: False.
+        conv_size (int, Optional):
+            The kernel size of the short convolution, only used when `use_short_conv` is True. Default: 4.
+        conv_bias (bool, Optional):
+            Whether to use bias in the short convolution, only used when `use_short_conv` is True. Default: False.
+        share_conv_kernel (bool, Optional):
+            Whether to apply convolutions berfore q/k/v mapping, only taking effects when `use_short_conv`. Default: True.
+        gate_fn (str, Optional):
+            The activation function for the output gate. Default: `swish`.
+        layernorm_eps (float, Optional):
+            The epsilon value for the layernorm/rmsnorm layer. Default: 1e-5.
+        gate_logit_normalizer (int, Optional):
+            The normalizer for the gate logits, appied after `logsigmoid`. Default: 16.
+        gate_low_rank_dim (int, Optional):
+            The low rank dim for the gate projection. Default: 16.
+        clamp_min (float, Optional):
+            The minimum value for the gate logits. Default: None.
+        fuse_norm (bool, Optional):
+            Whether to fuse the norm and the output gate for better memory footprint. Default: True.
+        layer_idx (int, Optional):
+            The index of the layer. Default: None.
+    """
 
     def __init__(
         self,
         mode: str = 'chunk',
         hidden_size: int = 1024,
-        expand_k: float = 1.0,
-        expand_v: float = 2.0,
+        expand_k: float = 0.5,
+        expand_v: float = 1.0,
         num_heads: int = 4,
         use_short_conv: bool = False,
         conv_size: int = 4,
@@ -37,7 +73,6 @@ class GatedLinearAttention(nn.Module):
         clamp_min: Optional[float] = None,
         fuse_norm: bool = True,
         layer_idx: int = None,
-        **kwargs
     ) -> GatedLinearAttention:
         super().__init__()
 
