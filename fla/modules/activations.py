@@ -4,6 +4,10 @@
 
 import torch
 import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+from fla.utils import contiguous
 
 sigmoid_fwd_codestring = """
 template <typename T> T sigmoid_fwd(T x) {
@@ -36,32 +40,113 @@ class SigmoidFunction(torch.autograd.Function):
 
 sigmoid = SigmoidFunction.apply
 
-logsigmoid_fwd_codestring = """
-template <typename T> T logsigmoid_fwd(T x) {
-    return -::log(1.0f + ::exp(-float(x)));
-}
-"""
-logsigmoid_bwd_codestring = """
-template <typename T> T logsigmoid_bwd(T x, T g) {
-    return float(g) * (1.0f - 1.0f / (1.0f + ::exp(-float(x))));
-}
-"""
 
-logsigmoid_fwd = torch.cuda.jiterator._create_jit_fn(logsigmoid_fwd_codestring)
-logsigmoid_bwd = torch.cuda.jiterator._create_jit_fn(logsigmoid_bwd_codestring)
+@triton.autotune(
+    configs=[
+        triton.Config({'BT': 16}, num_warps=2),
+        triton.Config({'BT': 16}, num_warps=4),
+        triton.Config({'BT': 16}, num_warps=8),
+        triton.Config({'BT': 32}, num_warps=2),
+        triton.Config({'BT': 32}, num_warps=4),
+        triton.Config({'BT': 32}, num_warps=8),
+        triton.Config({'BT': 64}, num_warps=2),
+        triton.Config({'BT': 64}, num_warps=4),
+        triton.Config({'BT': 64}, num_warps=8),
+        triton.Config({'BT': 128}, num_warps=2),
+        triton.Config({'BT': 128}, num_warps=4),
+        triton.Config({'BT': 128}, num_warps=8),
+        triton.Config({'BT': 256}, num_warps=2),
+        triton.Config({'BT': 256}, num_warps=4),
+        triton.Config({'BT': 256}, num_warps=8)
+    ],
+    key=['D']
+)
+@triton.jit
+def logsigmoid_fwd_kernel(
+    x,
+    y,
+    T: tl.constexpr,
+    D: tl.constexpr,
+    BT: tl.constexpr
+):
+    i = tl.program_id(0)
+    o_i = i * BT + tl.arange(0, BT)
+
+    p_x = x + o_i
+    p_y = y + o_i
+    mask = o_i < T
+
+    # [D,]
+    b_x = tl.load(p_x, mask=mask, other=0.).to(tl.float32)
+    b_m = tl.minimum(0., b_x)
+    b_z = 1. + tl.exp(-tl.abs(b_x))
+    b_y = b_m - tl.log(b_z)
+    tl.store(p_y, b_y.to(p_y.dtype.element_ty), mask=mask)
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BT': 16}, num_warps=2),
+        triton.Config({'BT': 16}, num_warps=4),
+        triton.Config({'BT': 16}, num_warps=8),
+        triton.Config({'BT': 32}, num_warps=2),
+        triton.Config({'BT': 32}, num_warps=4),
+        triton.Config({'BT': 32}, num_warps=8),
+        triton.Config({'BT': 64}, num_warps=2),
+        triton.Config({'BT': 64}, num_warps=4),
+        triton.Config({'BT': 64}, num_warps=8),
+        triton.Config({'BT': 128}, num_warps=2),
+        triton.Config({'BT': 128}, num_warps=4),
+        triton.Config({'BT': 128}, num_warps=8),
+        triton.Config({'BT': 256}, num_warps=2),
+        triton.Config({'BT': 256}, num_warps=4),
+        triton.Config({'BT': 256}, num_warps=8)
+    ],
+    key=['D']
+)
+@triton.jit
+def logsigmoid_bwd_kernel(
+    x,
+    dx,
+    dy,
+    T: tl.constexpr,
+    D: tl.constexpr,
+    BT: tl.constexpr
+):
+    i = tl.program_id(0)
+    o_i = i * BT + tl.arange(0, BT)
+
+    p_x = x + o_i
+    p_dx = dx + o_i
+    p_dy = dy + o_i
+    mask = o_i < T
+
+    # [D,]
+    b_x = tl.load(p_x, mask=mask, other=0.).to(tl.float32)
+    b_dy = tl.load(p_dy, mask=mask, other=0.).to(tl.float32)
+    b_dx = b_dy * (1. - tl.sigmoid(b_x))
+    tl.store(p_dx, b_dx.to(p_dx.dtype.element_ty), mask=mask)
 
 
 class LogSigmoidFunction(torch.autograd.Function):
 
     @staticmethod
+    @contiguous
     def forward(ctx, x):
-        ctx.save_for_backward(x)
-        return logsigmoid_fwd(x)
+        T, D = x.numel(), x.shape[-1]
+        y = torch.empty_like(x)
+        logsigmoid_fwd_kernel[lambda meta: (triton.cdiv(meta['T'], meta['D']),)](x, y, T=T, D=D)
+        ctx.save_for_backward(x,)
+        return y
 
     @staticmethod
-    def backward(ctx, dout):
+    @contiguous
+    def backward(ctx, dy):
         x, = ctx.saved_tensors
-        return logsigmoid_bwd(x, dout)
+        T, D = x.numel(), x.shape[-1]
+        dx = torch.empty_like(x)
+        logsigmoid_bwd_kernel[lambda meta: (triton.cdiv(meta['T'], meta['D']),)](x, dx, dy, T=T, D=D)
+        return dx
 
 
 logsigmoid = LogSigmoidFunction.apply
