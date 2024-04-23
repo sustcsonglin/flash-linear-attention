@@ -9,6 +9,8 @@
 # This is faster for dimensions up to 8k, but after that it's much slower due to register spilling.
 # The models we train have hidden dim up to 8k anyway (e.g. Llama 70B), so this is fine.
 
+from __future__ import annotations
+
 import math
 
 import torch
@@ -17,6 +19,8 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+from fla.utils import contiguous
 
 
 def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
@@ -85,7 +89,8 @@ def _layer_norm_fwd_1pass_kernel(
     BLOCK_N: tl.constexpr,
     HAS_RESIDUAL: tl.constexpr,
     STORE_RESIDUAL_OUT: tl.constexpr,
-    HAS_BIAS: tl.constexpr,
+    HAS_WEIGHT: tl.constexpr,
+    HAS_BIAS: tl.constexpr
 ):
     # Map the program id to the row of X and Y it should compute.
     row = tl.program_id(0)
@@ -116,11 +121,15 @@ def _layer_norm_fwd_1pass_kernel(
     tl.store(Rstd + row, rstd)
     # Normalize and apply linear transformation
     mask = cols < N
-    w = tl.load(W + cols, mask=mask).to(tl.float32)
+    if HAS_WEIGHT:
+        w = tl.load(W + cols, mask=mask).to(tl.float32)
     if HAS_BIAS:
         b = tl.load(B + cols, mask=mask).to(tl.float32)
     x_hat = (x - mean) * rstd if not IS_RMS_NORM else x * rstd
-    y = x_hat * w + b if HAS_BIAS else x_hat * w
+
+    y = x_hat * w if HAS_WEIGHT else x_hat
+    if HAS_BIAS:
+        y = y + b
     # Write output
     tl.store(Y + cols, y, mask=mask)
 
@@ -135,8 +144,9 @@ def _layer_norm_fwd(
     if residual is not None:
         assert residual.stride(-1) == 1
         assert residual.shape == (M, N)
-    assert weight.shape == (N,)
-    assert weight.stride(-1) == 1
+    if weight is not None:
+        assert weight.shape == (N,)
+        assert weight.stride(-1) == 1
     if bias is not None:
         assert bias.stride(-1) == 1
         assert bias.shape == (N,)
@@ -178,6 +188,7 @@ def _layer_norm_fwd(
             BLOCK_N,
             residual is not None,
             residual_out is not None,
+            weight is not None,
             bias is not None,
         )
     # residual_out is None if residual is None and residual_dtype == input_dtype
@@ -227,6 +238,7 @@ def _layer_norm_bwd_kernel(
     BLOCK_N: tl.constexpr,
     HAS_DRESIDUAL: tl.constexpr,
     STORE_DRESIDUAL: tl.constexpr,
+    HAS_WEIGHT: tl.constexpr,
     HAS_BIAS: tl.constexpr,
     RECOMPUTE_OUTPUT: tl.constexpr,
 ):
@@ -244,10 +256,11 @@ def _layer_norm_bwd_kernel(
     DX += row_start * stride_dx_row
     if RECOMPUTE_OUTPUT:
         Y += row_start * stride_y_row
-    w = tl.load(W + cols, mask=mask).to(tl.float32)
+    if HAS_WEIGHT:
+        w = tl.load(W + cols, mask=mask).to(tl.float32)
+        dw = tl.zeros((BLOCK_N,), dtype=tl.float32)
     if RECOMPUTE_OUTPUT and HAS_BIAS:
         b = tl.load(B + cols, mask=mask, other=0.0).to(tl.float32)
-    dw = tl.zeros((BLOCK_N,), dtype=tl.float32)
     if HAS_BIAS:
         db = tl.zeros((BLOCK_N,), dtype=tl.float32)
     row_end = min((row_block_id + 1) * rows_per_program, M)
@@ -262,10 +275,14 @@ def _layer_norm_bwd_kernel(
         xhat = (x - mean) * rstd if not IS_RMS_NORM else x * rstd
         xhat = tl.where(mask, xhat, 0.0)
         if RECOMPUTE_OUTPUT:
-            y = xhat * w + b if HAS_BIAS else xhat * w
+            y = xhat * w if HAS_WEIGHT else xhat
+            if HAS_BIAS:
+                y = y + b
             tl.store(Y + cols, y, mask=mask)
-        wdy = w * dy
-        dw += dy * xhat
+        wdy = dy
+        if HAS_WEIGHT:
+            wdy = dy * w
+            dw += dy * xhat
         if HAS_BIAS:
             db += dy
         if not IS_RMS_NORM:
@@ -292,7 +309,8 @@ def _layer_norm_bwd_kernel(
             Y += stride_y_row
         DY += stride_dy_row
         DX += stride_dx_row
-    tl.store(DW + row_block_id * N + cols, dw, mask=mask)
+    if HAS_WEIGHT:
+        tl.store(DW + row_block_id * N + cols, dw, mask=mask)
     if HAS_BIAS:
         tl.store(DB + row_block_id * N + cols, db, mask=mask)
 
@@ -318,8 +336,9 @@ def _layer_norm_bwd(
     if dresidual is not None:
         assert dresidual.stride(-1) == 1
         assert dresidual.shape == (M, N)
-    assert weight.shape == (N,)
-    assert weight.stride(-1) == 1
+    if weight is not None:
+        assert weight.shape == (N,)
+        assert weight.stride(-1) == 1
     if bias is not None:
         assert bias.stride(-1) == 1
         assert bias.shape == (N,)
@@ -341,7 +360,11 @@ def _layer_norm_bwd(
         raise RuntimeError(
             "This layer norm doesn't support feature dim >= 64KB.")
     sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
-    _dw = torch.empty((sm_count, N), dtype=torch.float32, device=weight.device)
+    _dw = (
+        torch.empty((sm_count, N), dtype=torch.float32, device=weight.device)
+        if weight is not None
+        else None
+    )
     _db = (
         torch.empty((sm_count, N), dtype=torch.float32, device=bias.device)
         if bias is not None
@@ -377,9 +400,10 @@ def _layer_norm_bwd(
             BLOCK_N,
             dresidual is not None,
             dresidual_in is not None,
+            weight is not None,
             bias is not None,
         )
-    dw = _dw.sum(0).to(weight.dtype)
+    dw = _dw.sum(0).to(weight.dtype) if weight is not None else None
     db = _db.sum(0).to(bias.dtype) if bias is not None else None
     # Don't need to compute dresidual_in separately in this case
     if has_residual and dx.dtype == x.dtype:
@@ -388,7 +412,9 @@ def _layer_norm_bwd(
 
 
 class LayerNormFn(torch.autograd.Function):
+
     @staticmethod
+    @contiguous
     def forward(
         ctx,
         x,
@@ -410,7 +436,8 @@ class LayerNormFn(torch.autograd.Function):
             residual = residual.reshape(-1, residual.shape[-1])
             if residual.stride(-1) != 1:
                 residual = residual.contiguous()
-        weight = weight.contiguous()
+        if weight is not None:
+            weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
         residual_dtype = (
@@ -432,6 +459,7 @@ class LayerNormFn(torch.autograd.Function):
         return y if not prenorm else (y, residual_out.reshape(x_shape_og))
 
     @staticmethod
+    @contiguous
     def backward(ctx, dy, *args):
         x, weight, bias, mean, rstd = ctx.saved_tensors
         dy = dy.reshape(-1, dy.shape[-1])
@@ -498,11 +526,21 @@ def rms_norm_fn(
 
 class LayerNorm(nn.Module):
 
-    def __init__(self, hidden_size, eps=1e-5):
+    def __init__(
+        self,
+        hidden_size: int,
+        elementwise_affine: bool = True,
+        eps: float = 1e-5
+    ) -> LayerNorm:
         super().__init__()
 
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.elementwise_affine = elementwise_affine
+
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
         self.register_parameter("bias", None)
 
     def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
@@ -519,11 +557,21 @@ class LayerNorm(nn.Module):
 
 class RMSNorm(nn.Module):
 
-    def __init__(self, hidden_size, eps=1e-5):
+    def __init__(
+        self,
+        hidden_size: int,
+        elementwise_affine: bool = True,
+        eps: float = 1e-5
+    ) -> RMSNorm:
         super().__init__()
 
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.elementwise_affine = elementwise_affine
+
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
         self.register_parameter("bias", None)
 
     def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
