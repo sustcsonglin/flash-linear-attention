@@ -13,8 +13,22 @@ from fla.ops.utils import (chunk_reversed_cumsum_fwd, softmax_bwd_kernel,
 from fla.utils import contiguous
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({'BS': 16}, num_warps=2),
+        triton.Config({'BS': 16}, num_warps=4),
+        triton.Config({'BS': 16}, num_warps=8),
+        triton.Config({'BS': 32}, num_warps=2),
+        triton.Config({'BS': 32}, num_warps=4),
+        triton.Config({'BS': 32}, num_warps=8),
+        triton.Config({'BS': 64}, num_warps=2),
+        triton.Config({'BS': 64}, num_warps=4),
+        triton.Config({'BS': 64}, num_warps=8),
+    ],
+    key=['S']
+)
 @triton.jit
-def chunk_abc_fwd_kernel_cum(
+def chunk_gated_abc_fwd_kernel_cum(
     s,
     o,
     s_s_h,
@@ -32,13 +46,13 @@ def chunk_abc_fwd_kernel_cum(
     p_s = tl.make_block_ptr(s + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
     p_o = tl.make_block_ptr(o + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
     # [BT, BS]
-    b_s = tl.load(p_s, boundary_check=(0, 1))
+    b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
     b_o = tl.dot(m_s, b_s, allow_tf32=False)
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
-def chunk_abc_fwd_kernel_h(
+def chunk_gated_abc_fwd_kernel_h(
     k,
     v,
     g,
@@ -61,7 +75,7 @@ def chunk_abc_fwd_kernel_h(
     BK: tl.constexpr,
     BV: tl.constexpr,
     NT: tl.constexpr,
-    NORMK: tl.constexpr,
+    GATEK: tl.constexpr,
     USE_INITIAL_STATE: tl.constexpr,
     STORE_FINAL_STATE: tl.constexpr
 ):
@@ -81,7 +95,7 @@ def chunk_abc_fwd_kernel_h(
         b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BT, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
-        if NORMK:
+        if GATEK:
             p_g = tl.make_block_ptr(g + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
             p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + BT - 1) * K + i_k * BK,), (BK,), (0,))
             # [BK,]
@@ -110,7 +124,7 @@ def chunk_abc_fwd_kernel_h(
 
 
 @triton.jit
-def chunk_abc_fwd_kernel_intra_K(
+def chunk_gated_abc_fwd_kernel_intra_K(
     v,
     g,
     o,
@@ -165,11 +179,13 @@ def chunk_abc_fwd_kernel_intra_K(
         m_i = o_i[:, None] >= j
         b_o += tl.where(m_i, b_A[:, None] * b_vg, 0.)
     p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+
+    b_o += tl.load(p_o, boundary_check=(0, 1))
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
-def chunk_abc_fwd_kernel_K(
+def chunk_gated_abc_fwd_kernel_K(
     q,
     k,
     h,
@@ -231,7 +247,7 @@ def chunk_abc_fwd_kernel_K(
 
 
 @triton.jit
-def chunk_abc_fwd_kernel_intra_V(
+def chunk_gated_abc_fwd_kernel_intra_V(
     q,
     k,
     g,
@@ -297,7 +313,7 @@ def chunk_abc_fwd_kernel_intra_V(
 
 
 @triton.jit
-def chunk_abc_fwd_kernel_V(
+def chunk_gated_abc_fwd_kernel_V(
     q,
     v,
     g,
@@ -354,7 +370,7 @@ def chunk_abc_fwd_kernel_V(
 
 
 @triton.jit
-def chunk_abc_bwd_kernel_dh(
+def chunk_gated_abc_bwd_kernel_dh(
     q,
     g,
     do,
@@ -376,7 +392,7 @@ def chunk_abc_bwd_kernel_dh(
     BK: tl.constexpr,
     BV: tl.constexpr,
     NT: tl.constexpr,
-    NORMK: tl.constexpr
+    GATEK: tl.constexpr
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
@@ -393,7 +409,7 @@ def chunk_abc_bwd_kernel_dh(
         b_do = tl.load(p_do, boundary_check=(0, 1))
 
         tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
-        if NORMK:
+        if GATEK:
             p_g = tl.make_block_ptr(g + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
             p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + BT - 1) * K + i_k * BK,), (BK,), (0,))
             # [BK,]
@@ -418,7 +434,7 @@ def chunk_abc_bwd_kernel_dh(
 
 
 @triton.jit
-def chunk_abc_bwd_kernel_V(
+def chunk_gated_abc_bwd_kernel_V(
     k,
     v,
     h,
@@ -513,13 +529,14 @@ def chunk_abc_bwd_kernel_V(
 
 
 @triton.jit
-def chunk_abc_bwd_kernel_intra_V(
+def chunk_gated_abc_bwd_kernel_intra_V(
     q,
     k,
     g,
     dA,
     dq,
     dk,
+    dg,
     s_k_h,
     s_k_t,
     s_k_d,
@@ -528,7 +545,8 @@ def chunk_abc_bwd_kernel_intra_V(
     BT: tl.constexpr,
     BC: tl.constexpr,
     BK: tl.constexpr,
-    NC: tl.constexpr
+    NC: tl.constexpr,
+    OVERWRITE: tl.constexpr
 ):
     i_k, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_t, i_i = i_c // NC, i_c % NC
@@ -570,6 +588,8 @@ def chunk_abc_bwd_kernel_intra_V(
         # [BC, BK]
         b_dq += tl.where(m_i, b_dA[:, None] * b_kj[None, :] * tl.exp(b_g - b_gkj[None, :]), 0.)
     p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+
+    b_dq = b_dq + tl.load(p_dq, boundary_check=(0, 1))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
 
     tl.debug_barrier()
@@ -608,12 +628,22 @@ def chunk_abc_bwd_kernel_intra_V(
         # [BC, BK]
         m_i = o_i[:, None] <= j
         b_dk += tl.where(m_i, b_dA[:, None] * b_qj[None, :] * tl.exp(b_gqj[None, :] - b_gk), 0.)
+    p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     p_dk = tl.make_block_ptr(dk + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+    p_dg = tl.make_block_ptr(dg + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+
+    b_q = tl.load(p_q, boundary_check=(0, 1)).to(tl.float32)
+    b_dk = b_dk + tl.load(p_dk, boundary_check=(0, 1)).to(tl.float32)
+    b_dg = b_q * b_dq - b_k * b_dk
+    if not OVERWRITE:
+        b_dg = b_dg + tl.load(p_dg, boundary_check=(0, 1)).to(tl.float32)
+
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
+    tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
-def chunk_abc_bwd_kernel_intra_K(
+def chunk_gated_abc_bwd_kernel_intra_K(
     v,
     g,
     do,
@@ -679,7 +709,7 @@ def chunk_abc_bwd_kernel_intra_K(
 
 
 @triton.jit
-def chunk_abc_bwd_kernel_K(
+def chunk_gated_abc_bwd_kernel_K(
     q,
     k,
     v,
@@ -773,11 +803,14 @@ def chunk_abc_bwd_kernel_K(
 
 
 @triton.jit
-def chunk_abc_bwd_kernel_intra_KV(
+def chunk_gated_abc_bwd_kernel_intra_KV(
+    v,
     g,
+    o,
     A,
     do,
     dv,
+    dg,
     s_v_h,
     s_v_t,
     s_v_d,
@@ -786,7 +819,8 @@ def chunk_abc_bwd_kernel_intra_KV(
     BT: tl.constexpr,
     BC: tl.constexpr,
     BV: tl.constexpr,
-    NC: tl.constexpr
+    NC: tl.constexpr,
+    OVERWRITE: tl.constexpr
 ):
     i_v, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_t, i_i = i_c // NC, i_c % NC
@@ -824,287 +858,421 @@ def chunk_abc_bwd_kernel_intra_KV(
         # [BC, BV]
         m_i = o_i[:, None] <= j
         b_dv += tl.where(m_i, tl.exp(b_g[None, :] - b_gv) * b_A[:, None] * b_do[None, :], 0.)
+    p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
     p_dv = tl.make_block_ptr(dv + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_dg = tl.make_block_ptr(dg + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+
+    b_o = tl.load(p_o, boundary_check=(0, 1)).to(tl.float32)
+    b_v = tl.load(p_v, boundary_check=(0, 1)).to(tl.float32)
+    b_do = tl.load(p_do, boundary_check=(0, 1)).to(tl.float32)
+    b_dv = b_dv + tl.load(p_dv, boundary_check=(0, 1)).to(tl.float32)
+    b_dg = b_o * b_do - b_v * b_dv
+    if not OVERWRITE:
+        b_dg = b_dg + tl.load(p_dg, boundary_check=(0, 1)).to(tl.float32)
     tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
+    tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0, 1))
 
 
-class ChunkABCFunction(torch.autograd.Function):
+def fwd_pre(g, B, H, T, S, BT):
+    NT = triton.cdiv(T, BT)
+    g_org, g = g, torch.empty_like(g, dtype=torch.float)
+    def grid(meta): return (triton.cdiv(meta['S'], meta['BS']), NT, B * H)
+    # keep cummulative normalizer in fp32
+    # this kernel is equivalent to
+    # g = g.view(B, H, NT, BT, -1).cumsum(-2).view(B, H, T, -1)
+    chunk_gated_abc_fwd_kernel_cum[grid](
+        g_org, g,
+        g.stride(1), g.stride(2), g.stride(3),
+        T=T, S=S, BT=BT
+    )
+    return g
+
+
+def fwd_inner(q, k, v, g, B, H, T, K, V, BT, BK, BV, gatek=False, h0=None, ht=None):
+    NT = triton.cdiv(T, BT)
+    NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
+    num_warps = 4 if BK == 64 else 2
+    num_stages = 1
+
+    h = q.new_empty(B, H, NT * K, V)
+    grid = (NV, NK, B * H)
+    chunk_gated_abc_fwd_kernel_h[grid](
+        k, v, g, h, h0, ht,
+        k.stride(1), k.stride(2), k.stride(3),
+        v.stride(1), v.stride(2), v.stride(3),
+        h.stride(1), h.stride(2), h.stride(3),
+        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
+        GATEK=gatek,
+        USE_INITIAL_STATE=h0 is not None,
+        STORE_FINAL_STATE=ht is not None,
+        num_warps=num_warps,
+        num_stages=num_stages
+    )
+    return h
+
+
+def fwd_v(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, ht=None, scale=1.):
+    NT = triton.cdiv(T, BT)
+    NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
+    NC = triton.cdiv(BT, BC)
+    num_warps = 4 if BK == 64 else 2
+    num_stages = 1
+
+    h = fwd_inner(
+        q=q, k=k, v=v, g=g,
+        B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+        gatek=True,
+        h0=h0,
+        ht=ht
+    )
+    A = q.new_zeros(NK, B, H, T, BT)
+    grid = (NK, NT * NC * NC, B * H)
+    chunk_gated_abc_fwd_kernel_intra_V[grid](
+        q, k, g, A,
+        k.stride(1), k.stride(2), k.stride(3),
+        scale,
+        T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC,
+        num_warps=2,
+        num_stages=num_stages
+    )
+    A = A.sum(0, dtype=A.dtype)
+    o = torch.empty_like(v)
+    grid = (NV, NT, B * H)
+    chunk_gated_abc_fwd_kernel_V[grid](
+        q, v, g, h, o, A,
+        k.stride(1), k.stride(2), k.stride(3),
+        v.stride(1), v.stride(2), v.stride(3),
+        h.stride(1), h.stride(2), h.stride(3),
+        scale,
+        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+        num_warps=num_warps,
+        num_stages=num_stages
+    )
+    return o, h, A
+
+
+def fwd_k(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, ht=None, scale=1.):
+    NT = triton.cdiv(T, BT)
+    NV = triton.cdiv(V, BV)
+    NC = triton.cdiv(BT, BC)
+    num_warps = 4 if BK == 64 else 2
+    num_stages = 1
+
+    h = fwd_inner(
+        q=q, k=k, v=v, g=g,
+        B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+        gatek=False,
+        h0=h0,
+        ht=ht
+    )
+    o = torch.empty_like(v)
+    A = q.new_empty(B, H, T, BT)
+    grid = (NV, NT, B * H)
+    chunk_gated_abc_fwd_kernel_K[grid](
+        q, k, h, g, o, A,
+        k.stride(1), k.stride(2), k.stride(3),
+        v.stride(1), v.stride(2), v.stride(3),
+        h.stride(1), h.stride(2), h.stride(3),
+        scale,
+        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+        num_warps=num_warps,
+        num_stages=num_stages
+    )
+    grid = (NV, NT * NC, B * H)
+    chunk_gated_abc_fwd_kernel_intra_K[grid](
+        v, g, o, A,
+        v.stride(1), v.stride(2), v.stride(3),
+        T=T, V=V, BT=BT, BC=BC, BV=BV, NC=NC,
+        num_warps=2,
+        num_stages=num_stages
+    )
+    return o, h, A
+
+
+def bwd_inner(q, g, do, B, H, T, K, V, BT, BK, BV, scale, gatek=False):
+    NT = triton.cdiv(T, BT)
+    NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
+    num_warps = 4 if BK == 64 else 2
+    num_stages = 1
+
+    dh = q.new_empty(B, H, NT * K, V)
+    grid = (NK, NV, B * H)
+    chunk_gated_abc_bwd_kernel_dh[grid](
+        q, g, do, dh,
+        q.stride(1), q.stride(2), q.stride(3),
+        do.stride(1), do.stride(2), do.stride(3),
+        dh.stride(1), dh.stride(2), dh.stride(3),
+        scale,
+        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
+        GATEK=gatek,
+        num_warps=num_warps,
+        num_stages=num_stages
+    )
+    return dh
+
+
+def bwd_v(q, k, v, g, h, A, do, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
+    NT = triton.cdiv(T, BT)
+    NK = triton.cdiv(K, BK)
+    NC = triton.cdiv(BT, BC)
+    num_warps = 4 if BK == 64 else 2
+    num_stages = 1
+
+    overwrite_dg = dg is None
+    dh = bwd_inner(
+        q, g, do,
+        B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+        scale=scale,
+        gatek=True
+    )
+    dq = torch.empty_like(q, dtype=torch.float)
+    dk = torch.empty_like(k, dtype=torch.float)
+    dv = v.new_empty(NK, *v.shape)
+    dg = torch.empty_like(g, dtype=torch.float) if dg is None else dg
+    dA = v.new_zeros(B, H, T, BT)
+
+    grid = (NK, NT, B * H)
+    chunk_gated_abc_bwd_kernel_V[grid](
+        k, v, h, g, A, do, dh, dq, dk, dv, dA,
+        k.stride(1), k.stride(2), k.stride(3),
+        v.stride(1), v.stride(2), v.stride(3),
+        h.stride(1), h.stride(2), h.stride(3),
+        scale,
+        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+        num_warps=num_warps,
+        num_stages=num_stages
+    )
+    dv = dv.sum(0, dtype=dv.dtype)
+    grid = (NK, NT * NC, B * H)
+    chunk_gated_abc_bwd_kernel_intra_V[grid](
+        q, k, g, dA, dq, dk, dg,
+        k.stride(1), k.stride(2), k.stride(3),
+        T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC,
+        OVERWRITE=overwrite_dg,
+        num_warps=num_warps,
+        num_stages=num_stages
+    )
+    return dq, dk, dv, dg
+
+
+def bwd_k(q, k, v, g, h, o, do, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
+    NT = triton.cdiv(T, BT)
+    NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
+    NC = triton.cdiv(BT, BC)
+    num_warps = 4 if BK == 64 else 2
+    num_stages = 1
+
+    overwrite_dg = dg is None
+    dh = bwd_inner(
+        q, g, do,
+        B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+        scale=scale,
+        gatek=False
+    )
+    dA = q.new_zeros(NV, B, H, T, BT)
+    grid = (NV, NT * NC * NC, B * H)
+    chunk_gated_abc_bwd_kernel_intra_K[grid](
+        v, g, do, dA,
+        v.stride(1), v.stride(2), v.stride(3),
+        scale,
+        T=T, V=V, BT=BT, BC=BC, BV=BV, NC=NC,
+        num_warps=num_warps,
+        num_stages=num_stages
+    )
+    dA = dA.sum(0, dtype=dA.dtype)
+
+    A = do.new_zeros(NK, B, H, T, BT)
+    dq = torch.empty_like(q)
+    dk = torch.empty_like(k)
+    dv = v.new_empty(NK, *v.shape)
+    dg = torch.empty_like(g, dtype=torch.float) if dg is None else dg
+    grid = (NK, NT, B * H)
+    chunk_gated_abc_bwd_kernel_K[grid](
+        q, k, v, h, g, A, do, dh, dq, dk, dv, dA,
+        q.stride(1), q.stride(2), q.stride(3),
+        v.stride(1), v.stride(2), v.stride(3),
+        h.stride(1), h.stride(2), h.stride(3),
+        scale,
+        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+        num_warps=num_warps,
+        num_stages=num_stages
+    )
+    A = A.sum(0, dtype=A.dtype)
+    dv = dv.sum(0, dtype=dv.dtype)
+    grid = (NV, NT * NC, B * H)
+    chunk_gated_abc_bwd_kernel_intra_KV[grid](
+        v, g, o, A, do, dv, dg,
+        v.stride(1), v.stride(2), v.stride(3),
+        T=T, V=V, BT=BT, BC=BC, BV=BV, NC=NC,
+        OVERWRITE=overwrite_dg,
+        num_warps=num_warps,
+        num_stages=num_stages
+    )
+    return dq, dk, dv, dg
+
+
+class ChunkGatedABCFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    def forward(ctx, q, k, v, s, g, initial_state, output_final_state):
+    def forward(ctx, q, k, v, s, g, initial_state, output_final_state, checkpoint_level):
         B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
         BT, BC = 64, 16
         BK = min(64, triton.next_power_of_2(K))
         BV = min(64, triton.next_power_of_2(V))
         BM = min(64, triton.next_power_of_2(M))
-        NT, NC = triton.cdiv(T, BT), triton.cdiv(BT, BC)
-        NV, NM = triton.cdiv(V, BV), triton.cdiv(M, BM)
-        num_warps = 4 if BK == 64 else 2
-        num_stages = 1
-
-        def fwd_inner(q, k, v, g, B, H, T, K, V, BT, BK, BV, NT, normk=False, h0=None, ht=None):
-            NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
-            h = q.new_empty(B, H, NT * K, V)
-            grid = (NV, NK, B * H)
-            chunk_abc_fwd_kernel_h[grid](
-                k, v, g, h, h0, ht,
-                k.stride(1), k.stride(2), k.stride(3),
-                v.stride(1), v.stride(2), v.stride(3),
-                h.stride(1), h.stride(2), h.stride(3),
-                T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-                NORMK=normk,
-                USE_INITIAL_STATE=h0 is not None,
-                STORE_FINAL_STATE=ht is not None,
-                num_warps=num_warps,
-                num_stages=num_stages
-            )
-            return h
 
         final_state = None
         if output_final_state:
             final_state = (q.new_empty(B, H, K, M, dtype=torch.float),
                            q.new_empty(B, H, M, V, dtype=torch.float))
 
-        gc = torch.empty_like(g, dtype=torch.float)
-        grid = (NM, NT, B * H)
-        # keep cummulative normalizer in fp32
-        # this kernel is equivalent to
-        # g = g.view(B, H, NT, BT, -1).cumsum(-2).view(B, H, T, -1)
-        chunk_abc_fwd_kernel_cum[grid](
-            g, gc,
-            g.stride(1), g.stride(2), g.stride(3),
-            T=T, S=M, BT=BT, BS=BM,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        g = gc
-
-        scale = K ** -0.5
-        hk = fwd_inner(
+        g_org, g = g, fwd_pre(g, B, H, T, M, BT)
+        ok, hk, _ = fwd_k(
             q=q, k=k, v=s, g=g,
-            B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, NT=NT,
-            normk=False,
+            B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, BC=BC,
             h0=initial_state[0] if initial_state is not None else None,
-            ht=final_state[0] if final_state is not None else None
+            ht=final_state[0] if final_state is not None else None,
+            scale=K ** -0.5
         )
-        ok1 = torch.empty_like(s)
-        Ak = q.new_empty(B, H, T, BT)
-        grid = (NM, NT, B * H)
-        chunk_abc_fwd_kernel_K[grid](
-            q, k, hk, g, ok1, Ak,
-            k.stride(1), k.stride(2), k.stride(3),
-            s.stride(1), s.stride(2), s.stride(3),
-            hk.stride(1), hk.stride(2), hk.stride(3),
-            scale,
-            T=T, K=K, V=M, BT=BT, BK=BK, BV=BM,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        ok0 = torch.empty_like(s)
-        grid = (NM, NT * NC, B * H)
-        chunk_abc_fwd_kernel_intra_K[grid](
-            s, g, ok0, Ak,
-            s.stride(1), s.stride(2), s.stride(3),
-            T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        ok = ok0.add_(ok1)
 
-        scale = 1.
         # equivalent to:
         # p = ok.softmax(-1, torch.float)
         # p is kept in fp32 for safe softmax backward
         p = torch.empty_like(ok, dtype=torch.float)
-        grid = (NT, B * H)
+        def grid(meta): return (triton.cdiv(meta['T'], meta['BT']), B * H)
         softmax_fwd_kernel[grid](
             ok, p,
             s.stride(1), s.stride(2), s.stride(3),
             T=T, S=M, BT=BT
         )
-        qv = p.to(q.dtype)
 
-        hv = fwd_inner(
-            q=qv, k=s, v=v, g=g,
-            B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
-            normk=True,
+        ov, hv, Av = fwd_v(
+            q=p.to(q.dtype), k=s, v=v, g=g,
+            B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, BC=BC,
             h0=initial_state[1] if initial_state is not None else None,
             ht=final_state[1] if final_state is not None else None
         )
-        Av = q.new_zeros(NM, B, H, T, BT)
-        grid = (NM, NT * NC * NC, B * H)
-        chunk_abc_fwd_kernel_intra_V[grid](
-            qv, s, g, Av,
-            s.stride(1), s.stride(2), s.stride(3),
-            scale,
-            T=T, K=M, BT=BT, BC=BC, BK=BM, NC=NC,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        Av = Av.sum(0)
-        ov = torch.empty_like(v)
-        grid = (NV, NT, B * H)
-        chunk_abc_fwd_kernel_V[grid](
-            qv, v, g, hv, ov, Av,
-            s.stride(1), s.stride(2), s.stride(3),
-            v.stride(1), v.stride(2), v.stride(3),
-            hv.stride(1), hv.stride(2), hv.stride(3),
-            scale,
-            T=T, K=M, V=V, BT=BT, BK=BM, BV=BV,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        ctx.save_for_backward(q, k, v, s, g, ok, p, hk, hv, Av)
+
+        if checkpoint_level >= 1:
+            del g
+            g = g_org
+        if checkpoint_level > 1:
+            del hk
+            del hv
+            hk, hv = None, None
+            initial_state = tuple() if initial_state is None else initial_state
+        else:
+            initial_state = tuple()
+
+        ctx.save_for_backward(q, k, v, s, g, ok, p, hk, hv, Av, *initial_state)
+        ctx.checkpoint_level = checkpoint_level
         ctx.BT = BT
         return ov, final_state
 
     @staticmethod
     @contiguous
     def backward(ctx, dov, dht=None):
-        q, k, v, s, g, ok, p, hk, hv, Av = ctx.saved_tensors
+        q, k, v, s, g, ok, p, hk, hv, Av, *initial_state = ctx.saved_tensors
+        qv = p.to(q.dtype)
         B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
         BT, BC = ctx.BT, 16
         BK = min(64, triton.next_power_of_2(K))
         BV = min(64, triton.next_power_of_2(V))
         BM = min(64, triton.next_power_of_2(M))
-        NT, NC = triton.cdiv(T, BT), triton.cdiv(BT, BC)
-        NK, NM = triton.cdiv(K, BK), triton.cdiv(M, BM)
-        num_warps = 4 if BK == 64 else 2
-        num_stages = 1
 
-        def bwd_inner(q, g, do, B, H, T, K, V, BT, BK, BV, NT, scale, normk=False):
-            NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
-            dh = q.new_empty(B, H, NT * K, V)
-            grid = (NK, NV, B * H)
-            chunk_abc_bwd_kernel_dh[grid](
-                q, g, do, dh,
-                q.stride(1), q.stride(2), q.stride(3),
-                do.stride(1), do.stride(2), do.stride(3),
-                dh.stride(1), dh.stride(2), dh.stride(3),
-                scale,
-                T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-                NORMK=normk,
-                num_warps=num_warps,
-                num_stages=num_stages
+        if ctx.checkpoint_level >= 1:
+            g = fwd_pre(g, B, H, T, M, BT)
+
+        # rerun the forward pass to get h if checkpoint_level >= 1
+        if ctx.checkpoint_level > 1:
+            hk = fwd_inner(
+                q=q, k=k, v=s, g=g,
+                B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM,
+                gatek=False,
+                h0=initial_state[0] if len(initial_state) > 0 else None,
+                ht=None
             )
-            return dh
+            hv = fwd_inner(
+                q=qv, k=s, v=v, g=g,
+                B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV,
+                gatek=True,
+                h0=initial_state[1] if len(initial_state) > 0 else None,
+                ht=None
+            )
 
-        scale = 1.
-        qv = p.to(q.dtype)
-        dhv = bwd_inner(
-            qv, g, dov,
-            B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, NT=NT,
-            scale=scale,
-            normk=True
+        dp, dsv, dv, dg = bwd_v(
+            q=qv, k=s, v=v, g=g, h=hv, A=Av, do=dov, dg=None,
+            B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, BC=BC
         )
-        dp1 = torch.empty_like(p)
-        dsv1 = torch.empty_like(s)
-        dv = v.new_empty(NM, *v.shape)
-        dAv = q.new_zeros(B, H, T, BT)
-        grid = (NM, NT, B * H)
-        chunk_abc_bwd_kernel_V[grid](
-            s, v, hv, g, Av, dov, dhv, dp1, dsv1, dv, dAv,
-            s.stride(1), s.stride(2), s.stride(3),
-            v.stride(1), v.stride(2), v.stride(3),
-            hv.stride(1), hv.stride(2), hv.stride(3),
-            scale,
-            T=T, K=M, V=V, BT=BT, BK=BM, BV=BV,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        dv = dv.sum(0)
-        dp0 = torch.empty_like(p)
-        dsv0 = s.new_zeros(s.shape)
-        grid = (NM, NT * NC, B * H)
-        chunk_abc_bwd_kernel_intra_V[grid](
-            qv, s, g, dAv, dp0, dsv0,
-            s.stride(1), s.stride(2), s.stride(3),
-            T=T, K=M, BT=BT, BC=BC, BK=BM, NC=NC,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        dp = dp1.add_(dp0)
 
-        dsv = dsv1.add_(dsv0).float()
         # softmax gradient, equivalent to:
         # dok = p * (dp - (p * dp).sum(-1, True))
         dok = torch.empty_like(ok)
-        grid = (NT, B * H)
+        def grid(meta): return (triton.cdiv(meta['T'], meta['BT']), B * H)
         softmax_bwd_kernel[grid](
             p, dp, dok,
             s.stride(1), s.stride(2), s.stride(3),
             T=T, S=M, BT=BT
         )
 
-        scale = K ** -0.5
-        dhk = bwd_inner(
-            q, g, dok,
-            B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, NT=NT,
-            scale=scale,
-            normk=False
+        dq, dk, dsk, dg = bwd_k(
+            q=q, k=k, v=s, g=g, h=hk, o=ok, do=dok, dg=dg,
+            B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, BC=BC,
+            scale=K ** -0.5
         )
-        dAk = q.new_zeros(NM, B, H, T, BT)
-        grid = (NM, NT * NC * NC, B * H)
-        chunk_abc_bwd_kernel_intra_K[grid](
-            s, g, dok, dAk,
-            s.stride(1), s.stride(2), s.stride(3),
-            scale,
-            T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        dAk = dAk.sum(0)
 
-        Ak = q.new_zeros(NK, B, H, T, BT)
-        dq = torch.empty_like(q)
-        dk = torch.empty_like(k)
-        dsk1 = s.new_empty(NK, *s.shape)
-        grid = (NK, NT, B * H)
-        chunk_abc_bwd_kernel_K[grid](
-            q, k, s, hk, g, Ak, dok, dhk, dq, dk, dsk1, dAk,
-            q.stride(1), q.stride(2), q.stride(3),
-            s.stride(1), s.stride(2), s.stride(3),
-            hk.stride(1), hk.stride(2), hk.stride(3),
-            scale,
-            T=T, K=K, V=M, BT=BT, BK=BK, BV=BM,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        Ak = Ak.sum(0)
-        dsk1 = dsk1.sum(0)
-        dsk0 = torch.empty_like(s)
-        grid = (NM, NT * NC, B * H)
-        chunk_abc_bwd_kernel_intra_KV[grid](
-            g, Ak, dok, dsk0,
-            s.stride(1), s.stride(2), s.stride(3),
-            T=T, V=M, BT=BT, BC=BC, BV=BM, NC=NC,
-            num_warps=num_warps,
-            num_stages=num_stages
-        )
-        ds = dsv.add_(dsk1.add_(dsk0))
+        ds = dsv.add_(dsk)
         # reversed cumsum, equivalent to:
         #
         # def reversed_cumsum(x, dim=-1):
         #     c = x.cumsum(dim)
         #     return x + c.index_select(dim, x.new_tensor([c.shape[dim]-1], dtype=torch.long)) - c
-        dg = chunk_reversed_cumsum_fwd(ok * dok + p * dp - s * ds).to(s.dtype)
-        return dq, dk, dv, ds, dg, None, None
+        dg = chunk_reversed_cumsum_fwd(dg).to(s.dtype)
+        return dq, dk, dv, ds, dg, None, None, None
 
 
-def gated_chunk_abc(
+def chunk_gated_abc(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     s: torch.Tensor,
-    initial_state: Optional[torch.Tensor] = None,
-    output_final_state: Optional[bool] = False
+    g: Optional[torch.Tensor] = None,
+    initial_state: Optional[Tuple[torch.Tensor]] = None,
+    output_final_state: Optional[bool] = False,
+    checkpoint_level: Optional[int] = 2
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    r"""
+    Args:
+        q (torch.Tensor):
+            queries of shape `(B, H, T, K)`
+        k (torch.Tensor):
+            keys of shape `(B, H, T, K)`
+        v (torch.Tensor):
+            values of shape `(B, H, T, V)`
+        g (torch.Tensor):
+            Forget gates of shape `(B, H, T, K)` applied to keys.
+            If not provided, this function is equivalent to vanilla ABC.
+        initial_state (Optional[Tuple[torch.Tensor]]):
+            Initial state tuple having tensors of shape `(B, H, K, V)`. Default: `None`.
+        output_final_state (Optional[bool]):
+            Whether to output the final state tuple, having tensors of shape `(B, H, K, V)`. Default: `False`.
+        checkpoint_level (Optional[int]):
+            Checkpointing level; higher values will save more memories and do more recomputations during backward.
+            Default: `2`:
+            - Level `0`: no memory saved, no recomputation.
+            - Level `1`: recompute the fp32 cumulative values during backward.
+            - Level `2`: recompute the fp32 cumulative values and forward hidden states during backward.
+    """
+    assert checkpoint_level in [0, 1, 2]
     if initial_state is not None:
         initial_state = tuple(i.detach() for i in initial_state)
-    # TODO: this 3 steps took huge amount of time, ought to be optimized
-    z = s.float().logcumsumexp(2)
-    g = torch.cat((z[:, :, :1], z[:, :, :-1]), 2) - z
-    s = torch.exp(s - z).to(k.dtype)
-    ov, final_state = ChunkABCFunction.apply(q, k, v, s, g, initial_state, output_final_state)
+    if g is None:
+        # TODO: this 3 steps took huge amount of time, ought to be optimized
+        z = s.float().logcumsumexp(2)
+        g = torch.cat((z[:, :, :1], z[:, :, :-1]), 2) - z
+        s = torch.exp(s - z).to(k.dtype)
+    ov, final_state = ChunkGatedABCFunction.apply(q, k, v, s, g, initial_state, output_final_state, checkpoint_level)
     return ov, final_state
