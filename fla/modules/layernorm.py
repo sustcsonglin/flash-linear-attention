@@ -534,14 +534,23 @@ class LayerNorm(nn.Module):
     ) -> LayerNorm:
         super().__init__()
 
-        self.eps = eps
+        self.hidden_size = hidden_size
         self.elementwise_affine = elementwise_affine
+        self.eps = eps
 
         if elementwise_affine:
             self.weight = nn.Parameter(torch.ones(hidden_size))
         else:
             self.register_parameter("weight", None)
         self.register_parameter("bias", None)
+
+    def __repr__(self) -> str:
+        s = f"{self.__class__.__name__}({self.hidden_size}"
+        if not self.elementwise_affine:
+            s += f", elementwise_affine={self.elementwise_affine}"
+        s += f", eps={self.eps}"
+        s += ")"
+        return s
 
     def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
         return layer_norm_fn(
@@ -565,14 +574,23 @@ class RMSNorm(nn.Module):
     ) -> RMSNorm:
         super().__init__()
 
-        self.eps = eps
+        self.hidden_size = hidden_size
         self.elementwise_affine = elementwise_affine
+        self.eps = eps
 
         if elementwise_affine:
             self.weight = nn.Parameter(torch.ones(hidden_size))
         else:
             self.register_parameter("weight", None)
         self.register_parameter("bias", None)
+
+    def __repr__(self) -> str:
+        s = f"{self.__class__.__name__}({self.hidden_size}"
+        if not self.elementwise_affine:
+            s += f", elementwise_affine={self.elementwise_affine}"
+        s += f", eps={self.eps}"
+        s += ")"
+        return s
 
     def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
         return rms_norm_fn(
