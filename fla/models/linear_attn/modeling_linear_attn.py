@@ -61,7 +61,7 @@ class LinearAttentionBlock(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.attn = LinearAttention(
             hidden_size=config.hidden_size,
             expand_k=config.expand_k,
@@ -73,9 +73,11 @@ class LinearAttentionBlock(nn.Module):
             norm_q=config.norm_q,
             norm_k=config.norm_k,
             do_feature_map_norm=config.norm_feature_map,
+            elementwise_affine=config.elementwise_affine,
+            norm_eps=config.norm_eps,
             layer_idx=layer_idx
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = LinearAttentionMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -168,7 +170,7 @@ class LinearAttentionModel(LinearAttentionPreTrainedModel):
         self.layers = nn.ModuleList(
             [LinearAttentionBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(config.hidden_size, eps=config.norm_eps)
 
         self.gradient_checkpointing = False
 

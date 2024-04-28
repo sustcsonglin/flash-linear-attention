@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
@@ -23,15 +24,16 @@ class RWKV6Attention(nn.Module):
         self,
         mode: str = 'chunk',
         hidden_size: int = 1024,
-        expand_k: float = 1.0,
-        expand_v: float = 2.0,
+        expand_k: float = 0.5,
+        expand_v: float = 1.0,
         num_heads: int = 4,
         gate_fn: str = 'swish',
         proj_low_rank_dim: int = 32,
         gate_low_rank_dim: int = 64,
         fuse_norm: bool = True,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-5,
         layer_idx: int = None,
-        eps: float = 1e-5,
         **kwargs
     ) -> RWKV6Attention:
         super().__init__()
@@ -54,7 +56,6 @@ class RWKV6Attention(nn.Module):
 
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
-        self.eps = eps
 
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
         self.x_proj = nn.Sequential(
@@ -72,11 +73,11 @@ class RWKV6Attention(nn.Module):
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if gate_fn == 'swish' and fuse_norm:
-            self.g_norm_swish_gate = FusedLayerNormSwishGate(self.head_v_dim, eps=eps)
+            self.g_norm_swish_gate = FusedLayerNormSwishGate(self.head_v_dim, elementwise_affine, norm_eps)
             self.fuse_norm_and_gate = True
         else:
             self.fuse_norm_and_gate = False
-            self.g_norm = LayerNorm(self.head_v_dim, eps=eps)
+            self.g_norm = LayerNorm(self.head_v_dim, elementwise_affine, norm_eps)
             self.gate_fn = ACT2FN[gate_fn]
 
         self.apply(self._initialize_weights)
@@ -120,7 +121,8 @@ class RWKV6Attention(nn.Module):
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
         r, w, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (r, w, k, v))
-        w = -torch.exp(w.float()).type_as(w) + self.eps
+        # we use sigmoid for now, as exp(-exp(x)) may affect the training stability
+        w = F.logsigmoid(w)
         u = self.bonus
 
         last_state = past_key_values[self.layer_idx] if use_cache else None
@@ -164,22 +166,25 @@ class LoRA(nn.Module):
         self,
         input_dim: int,
         output_dim: int,
-        low_rank_dim: int
+        low_rank_dim: int,
+        bias: Optional[bool] = True
     ):
         super().__init__()
 
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.low_rank_dim = low_rank_dim
+        self.bias = bias
 
         self.lora = nn.Sequential(
             nn.Linear(input_dim, low_rank_dim, bias=False),
             nn.Tanh(),
-            nn.Linear(low_rank_dim, output_dim, bias=True)
+            nn.Linear(low_rank_dim, output_dim, bias=bias)
         )
 
     def __repr__(self) -> str:
-        s = f"{self.__class__.__name__}({self.input_dim}, {self.output_dim}, low_rank_dim={self.low_rank_dim}"
+        s = f"{self.__class__.__name__}("
+        s += f"input_dim={self.input_dim}, low_rank_dim={self.low_rank_dim}, output_dim={self.output_dim}"
         if not self.bias:
             s += f", bias={self.bias}"
         s += ")"

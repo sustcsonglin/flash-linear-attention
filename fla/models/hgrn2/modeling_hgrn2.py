@@ -61,7 +61,7 @@ class HGRN2Block(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.attn = HGRN2Attention(
             mode=config.attn_mode,
             hidden_size=config.hidden_size,
@@ -70,10 +70,11 @@ class HGRN2Block(nn.Module):
             use_short_conv=config.use_short_conv,
             conv_size=config.conv_size,
             share_conv_kernel=config.share_conv_kernel,
-            layernorm_eps=config.rms_norm_eps,
+            elementwise_affine=config.elementwise_affine,
+            norm_eps=config.norm_eps,
             layer_idx=layer_idx
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = HGRN2MLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -164,7 +165,7 @@ class HGRN2Model(HGRN2PreTrainedModel):
         if config.use_lower_bound:
             self.lower_bounds = nn.Parameter(torch.zeros(config.num_hidden_layers, config.hidden_size))
         self.layers = nn.ModuleList([HGRN2Block(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(config.hidden_size, eps=config.norm_eps)
 
         self.gradient_checkpointing = False
 

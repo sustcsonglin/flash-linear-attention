@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
-# "Gated Linear Attention Transformers with Hardware-Efficient Training"[https://arxiv.org/abs/2312.06635]
-
 from __future__ import annotations
+
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -15,19 +15,50 @@ from fla.ops.simple_gla import chunk_simple_gla
 
 
 class SimpleGatedLinearAttention(nn.Module):
+    r"""
+    The layer implementaion for [Gated Linear Attention Transformers with Hardware-Efficient Training](https://arxiv.org/abs/2312.06635).  # noqa
+    This layer calls the simplified GLA kernel in which the gating is head-wise instead of elementwise.
+
+    Args:
+        mode (str, Optional):
+            Which GLA kernel to use.
+            Currently available: `chunk`.
+            Default: `chunk`.
+        hidden_size (int, Optional):
+            The hidden size of the input. Default: 1024.
+        expand_k (float, Optional):
+            The expansion ratio for the key dim. Default: 0.5.
+        expand_v (float, Optional):
+            The expansion ratio for the value dim. Default: 1.0.
+        num_heads (int, Optional):
+            The number of heads. Default: 4.
+        gate_fn (str, Optional):
+            The activation function for the output gate. Default: `swish`.
+        elementwise_affine (bool, Optional):
+            If `True`, applies elementwise affine to LayerNorm with learnable parameters. Default: `True`.
+        norm_eps (float, Optional):
+            The epsilon value for the layernorm/rmsnorm layer. Default: 1e-5.
+        gate_logit_normalizer (int, Optional):
+            The normalizer for the gate logits, appied after `logsigmoid`. Default: 16.
+        fuse_norm (bool, Optional):
+            Whether to fuse the norm and the output gate for better memory footprint. Default: `True`.
+        layer_idx (int, Optional):
+            The index of the layer. Default: None.
+    """
 
     def __init__(
         self,
+        mode: str = 'chunk',
         hidden_size: int = 1024,
         expand_k: float = 1.0,
         expand_v: float = 2.0,
         num_heads: int = 4,
         gate_fn: str = 'swish',
-        layernorm_eps: float = 1e-5,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-5,
         gate_logit_normalizer: int = 16,
-        mode: str = 'fused_chunk',
         fuse_norm: bool = True,
-        *args, **kwargs
+        **kwargs
     ) -> SimpleGatedLinearAttention:
         super().__init__()
         self.hidden_size = hidden_size
@@ -52,11 +83,11 @@ class SimpleGatedLinearAttention(nn.Module):
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if gate_fn == 'swish' and fuse_norm:
-            self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
+            self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, elementwise_affine, norm_eps)
             self.fuse_norm_and_gate = True
         else:
             self.fuse_norm_and_gate = False
-            self.g_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
+            self.g_norm = RMSNorm(self.head_v_dim, elementwise_affine, norm_eps)
 
         self.gate_logit_normalizer = gate_logit_normalizer
 

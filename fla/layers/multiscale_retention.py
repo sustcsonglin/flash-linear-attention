@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 
-# Retentive Network: A Successor to Transformer for Large Language Models"[https://arxiv.org/pdf/2307.08621.pdf]
-
 from __future__ import annotations
 
 from typing import Optional, Tuple
@@ -19,6 +17,41 @@ from fla.ops.retention import (chunk_retention, fused_chunk_retention,
 
 
 class MultiScaleRetention(nn.Module):
+    r"""
+    The layer implementaion for [Retentive Network: A Successor to Transformer for Large Language Models](https://arxiv.org/pdf/2307.08621.pdf).  # noqa
+
+    Args:
+        mode (str, Optional):
+            Which Retention kernel to use.
+            Currently available: `chunk`, `fused_recurrent`, `parallel`, and `fused_chunk`.
+            Default: `fused_chunk`.
+        hidden_size (int, Optional):
+            The hidden size of the input. Default: 1024.
+        expand_k (float, Optional):
+            The expansion ratio for the key dim. Default: 1.0.
+        expand_v (float, Optional):
+            The expansion ratio for the value dim. Default: 2.0.
+        num_heads (int, Optional):
+            The number of heads. Default: 8.
+        use_short_conv (bool, Optional):
+            Whether to use short convolutions. Default: `False`.
+        conv_size (int, Optional):
+            The kernel size of the short convolution, only used when `use_short_conv` is `True`. Default: 4.
+        conv_bias (bool, Optional):
+            Whether to use bias in the short convolution, only used when `use_short_conv` is `True`. Default: `False`.
+        share_conv_kernel (bool, Optional):
+            Whether to apply convolutions berfore q/k/v mapping, only taking effects when `use_short_conv`. Default: `True`.
+        gate_fn (str, Optional):
+            The activation function for the output gate. Default: `swish`.
+        elementwise_affine (bool, Optional):
+            If `True`, applies elementwise affine to LayerNorm with learnable parameters. Default: `True`.
+        norm_eps (float, Optional):
+            The epsilon value for the layernorm/rmsnorm layer. Default: 1e-5.
+        fuse_norm (bool, Optional):
+            Whether to fuse the norm and the output gate for better memory footprint. Default: `True`.
+        layer_idx (int, Optional):
+            The index of the layer. Default: None.
+    """
 
     def __init__(
         self,
@@ -32,7 +65,8 @@ class MultiScaleRetention(nn.Module):
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
         gate_fn: str = 'swish',
-        layernorm_eps: float = 1e-5,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-5,
         fuse_norm: bool = True,
         layer_idx: int = None,
         **kwargs
@@ -78,11 +112,11 @@ class MultiScaleRetention(nn.Module):
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if gate_fn == 'swish' and fuse_norm:
-            self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
+            self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, elementwise_affine, norm_eps)
             self.fuse_norm_and_gate = True
         else:
             self.fuse_norm_and_gate = False
-            self.g_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
+            self.g_norm = RMSNorm(self.head_v_dim, elementwise_affine, norm_eps)
             self.gate_fn = ACT2FN[gate_fn]
 
         # TODO: fix this issue

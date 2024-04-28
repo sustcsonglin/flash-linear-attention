@@ -22,7 +22,7 @@ class DeltaNetConfig(PretrainedConfig):
         share_conv_kernel: bool = False,
         use_rope: bool = False,
         use_beta: bool = True,
-        use_elu: bool = False,        
+        use_elu: bool = False,
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
@@ -36,7 +36,8 @@ class DeltaNetConfig(PretrainedConfig):
         norm_feature_map: bool = False,
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
-        rms_norm_eps: float = 1e-6,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-6,
         use_cache: bool = True,
         pad_token_id: int = None,
         bos_token_id: int = 1,
@@ -62,7 +63,8 @@ class DeltaNetConfig(PretrainedConfig):
         self.norm_k = norm_k
         self.norm_feature_map = norm_feature_map
         self.hidden_act = hidden_act
-        self.rms_norm_eps = rms_norm_eps
+        self.elementwise_affine = elementwise_affine
+        self.norm_eps = norm_eps
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         self.fuse_cross_entropy = fuse_cross_entropy

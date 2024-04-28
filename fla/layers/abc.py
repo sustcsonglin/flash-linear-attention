@@ -30,7 +30,8 @@ class ABCAttention(nn.Module):
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
         num_slots: Optional[int] = None,
-        layernorm_eps: float = 1e-5,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-5,
         gate_low_rank_dim: int = 16,
         gate_logit_normalizer: int = 16,
         use_input_gate: bool = False,
@@ -68,7 +69,7 @@ class ABCAttention(nn.Module):
             num_slots = self.head_k_dim
         self.num_slots = num_slots
 
-        self.layernorm_eps = layernorm_eps
+        self.norm_eps = norm_eps
 
         self.clamp_min = clamp_min
         self.clamp_max = clamp_max
@@ -100,9 +101,13 @@ class ABCAttention(nn.Module):
                 self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
 
         if self.use_norm:
-            self.g_norm = FusedRMSNormSwishGate(self.head_v_dim) if self.use_output_gate else RMSNorm(self.head_v_dim)
+            if self.use_output_gate:
+                self.g_norm = FusedRMSNormSwishGate(self.head_v_dim, elementwise_affine, norm_eps)
+            else:
+                self.g_norm = RMSNorm(self.head_v_dim, elementwise_affine, norm_eps)
 
-        self.rotary = RotaryEmbedding(self.head_k_dim)
+        if self.use_rope:
+            self.rotary = RotaryEmbedding(self.head_k_dim)
 
         self.apply(self._initialize_weights)
 
@@ -140,22 +145,22 @@ class ABCAttention(nn.Module):
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
 
-        # dealing with left-padding
-        if attention_mask is not None:
-            v = v.mul_(attention_mask.unsqueeze(-1))
-
-        q = rearrange(q, '... (h d) -> ... h d', h=self.num_heads)
-        k = rearrange(k, '... (h d) -> ... h d', h=self.num_heads)
-        v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_heads)
-
         if self.use_input_gate:
             q, k, v = map(lambda x: swish(x), (q, k, v))
 
-        seqlen_offset = 0
-        if past_key_values is not None:
-            seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
-        q, k = self.rotary(q, k, seqlen_offset)
-        q, k = q.transpose(1, 2), k.transpose(1, 2)
+        if self.use_rope:
+            q = rearrange(q, '... (h d) -> ... h d', h=self.num_heads)
+            k = rearrange(k, '... (h d) -> ... h d', h=self.num_heads)
+            seqlen_offset = 0
+            if past_key_values is not None:
+                seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
+            q, k = self.rotary(q, k, seqlen_offset)
+            q = rearrange(q, 'b n h d -> b h n d', h=self.num_heads)
+            k = rearrange(k, 'b n h d -> b h n d', h=self.num_heads)
+        else:
+            q = rearrange(q, 'b n (h d) -> b h n d', h=self.num_heads)
+            k = rearrange(k, 'b n (h d) -> b h n d', h=self.num_heads)
+        v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_heads)
 
         # [batch_size, n_heads, seq_len, num_slots]
         s = rearrange(self.s_proj(hidden_states), 'b t (h m) -> b h t m', h=self.num_heads)

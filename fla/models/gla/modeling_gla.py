@@ -61,7 +61,7 @@ class GLABlock(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.attn = GatedLinearAttention(
             mode=config.attn_mode,
             hidden_size=config.hidden_size,
@@ -72,12 +72,13 @@ class GLABlock(nn.Module):
             conv_size=config.conv_size,
             share_conv_kernel=config.share_conv_kernel,
             gate_fn=config.hidden_act,
-            layernorm_eps=config.rms_norm_eps,
+            elementwise_affine=config.elementwise_affine,
+            norm_eps=config.norm_eps,
             clamp_min=config.clamp_min,
             fuse_norm=config.fuse_norm,
             layer_idx=layer_idx
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = GLAMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -164,7 +165,7 @@ class GLAModel(GLAPreTrainedModel):
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([GLABlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(config.hidden_size, eps=config.norm_eps)
 
         self.gradient_checkpointing = False
 

@@ -27,7 +27,8 @@ class GLAConfig(PretrainedConfig):
         clamp_min: Optional[float] = None,
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
-        rms_norm_eps: float = 1e-6,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-6,
         use_gk: bool = True,
         use_gv: bool = False,
         use_cache: bool = True,
@@ -52,7 +53,8 @@ class GLAConfig(PretrainedConfig):
         self.attn_mode = attn_mode
         self.clamp_min = clamp_min
         self.hidden_act = hidden_act
-        self.rms_norm_eps = rms_norm_eps
+        self.elementwise_affine = elementwise_affine
+        self.norm_eps = norm_eps
         self.use_gk = use_gk
         self.use_gv = use_gv
         self.use_cache = use_cache

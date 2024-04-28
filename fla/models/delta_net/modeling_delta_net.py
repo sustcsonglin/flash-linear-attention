@@ -61,7 +61,7 @@ class DeltaNetBlock(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.attn = DeltaNet(
             mode=config.attn_mode,
             hidden_size=config.hidden_size,
@@ -80,9 +80,11 @@ class DeltaNetBlock(nn.Module):
             norm_q=config.norm_q,
             norm_k=config.norm_k,
             do_feature_map_norm=config.norm_feature_map,
+            elementwise_affine=config.elementwise_affine,
+            norm_eps=config.norm_eps,
             layer_idx=layer_idx
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = DeltaNetMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -171,7 +173,7 @@ class DeltaNetModel(DeltaNetPreTrainedModel):
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([DeltaNetBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(config.hidden_size, eps=config.norm_eps)
 
         self.gradient_checkpointing = False
 
@@ -343,7 +345,7 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
             # Ref: https://github.com/huggingface/transformers/pull/29114
             # TODO: use `next_tokens` directly instead.
             model_inputs = {'input_ids': input_ids.contiguous()}
-        
+
         model_inputs.update({
             'past_key_values': past_key_values,
             'use_cache': kwargs.get('use_cache'),

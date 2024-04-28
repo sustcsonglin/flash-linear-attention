@@ -21,7 +21,8 @@ class TransformerConfig(PretrainedConfig):
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
         initializer_range: float = 0.02,
-        rms_norm_eps: float = 1e-6,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-6,
         use_cache: bool = True,
         pad_token_id: int = None,
         bos_token_id: int = 1,
@@ -42,7 +43,8 @@ class TransformerConfig(PretrainedConfig):
 
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
-        self.rms_norm_eps = rms_norm_eps
+        self.elementwise_affine = elementwise_affine
+        self.norm_eps = norm_eps
         self.use_cache = use_cache
         self.attention_bias = attention_bias
         self.fuse_cross_entropy = fuse_cross_entropy

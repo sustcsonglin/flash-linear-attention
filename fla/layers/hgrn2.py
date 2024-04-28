@@ -29,7 +29,8 @@ class HGRN2Attention(nn.Module):
         conv_size: int = 4,
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
-        layernorm_eps: float = 1e-5,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-5,
         layer_idx: int = None
     ) -> HGRN2Attention:
         super().__init__()
@@ -75,7 +76,7 @@ class HGRN2Attention(nn.Module):
                 self.f_conv1d = ShortConvolution(self.forget_dim, conv_size, activation='silu')
                 self.i_conv1d = ShortConvolution(self.input_dim, conv_size, activation='silu')
 
-        self.g_norm = RMSNorm(self.hidden_size, eps=layernorm_eps)
+        self.g_norm = RMSNorm(self.hidden_size, elementwise_affine, norm_eps)
         self.o_proj = nn.Linear(self.input_dim, hidden_size, bias=False)
 
         self.apply(self._initialize_weights)

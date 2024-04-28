@@ -26,7 +26,8 @@ class LinearAttention(nn.Module):
         norm_k: bool = False,
         # standard linear attention normalization
         do_feature_map_norm: bool = False,
-        *args,
+        elementwise_affine: bool = True,
+        norm_eps: float = 1e-5,
         **kwargs,
     ):
         super().__init__()
@@ -91,7 +92,7 @@ class LinearAttention(nn.Module):
 
         self.do_feature_map_norm = do_feature_map_norm
         if output_norm == 'rmsnorm':
-            self.norm = RMSNorm(self.head_v_dim)
+            self.norm = RMSNorm(self.head_v_dim, elementwise_affine, norm_eps)
         elif output_norm == 'identity':
             self.norm = nn.Identity()
         else:

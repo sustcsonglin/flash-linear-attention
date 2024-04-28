@@ -10,17 +10,17 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from einops import rearrange
+from torch.nn import functional as F
 from transformers.cache_utils import Cache
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.modules.rotary import RotaryEmbedding
 from fla.ops.delta_rule import (fused_chunk_delta_rule,
                                 fused_recurrent_linear_attn_delta_rule)
-from torch.nn import functional as F
 
 
 def simple_norm(x):
-    return F.normalize(x, dim = -1) * x.shape[-1] ** 0.5
+    return F.normalize(x, dim=-1) * x.shape[-1] ** 0.5
 
 
 # @torch.jit.script
@@ -32,12 +32,11 @@ def elu_p1(x):
 def sum_norm(x):
     return x / x.sum(-1, keepdim=True)
 
+
 # @torch.jit.script
 def elu_norm(x):
-    x =  F.elu(x, 1., False) + 1. 
+    x = F.elu(x, 1., False) + 1.
     return x / x.sum(-1, keepdim=True)
-
-
 
 
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
@@ -59,6 +58,8 @@ class DeltaNet(nn.Module):
         conv_size: int = 4,
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-5,
         layer_idx: int = None,
         **kwargs
     ) -> DeltaNet:
@@ -94,6 +95,8 @@ class DeltaNet(nn.Module):
 
         self.use_beta = use_beta
         self.use_elu = use_elu
+        self.use_rope = use_rope
+
         if self.use_beta:
             self.b_proj = nn.Linear(hidden_size, self.num_heads, bias=False)
 
@@ -108,13 +111,12 @@ class DeltaNet(nn.Module):
 
         if use_gate:
             self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
-            self.norm = FusedRMSNormSwishGate(self.head_v_dim)
+            self.norm = FusedRMSNormSwishGate(self.head_v_dim, elementwise_affine, norm_eps)
         else:
-            self.norm = RMSNorm(self.head_v_dim)
+            self.norm = RMSNorm(self.head_v_dim, elementwise_affine, norm_eps)
 
-        self.use_rope = use_rope
         if use_rope:
-            self.rotary = RotaryEmbedding(dim=self.head_qk_dim, interleaved=False)
+            self.rotary = RotaryEmbedding(dim=self.head_qk_dim)
 
         self.apply(self._initialize_weights)
 
@@ -167,8 +169,9 @@ class DeltaNet(nn.Module):
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
-        
-        # There is no relative positional encoding perspective of rope in delta rule. So I intentially disable using rope for delta rule. 
+
+        # There is no relative positional encoding perspective of rope in delta rule.
+        # So I intentially disable using rope for delta rule.
         # It will be super weird to use rope in delta rule, but nevertheless you can have a try.
         # if self.use_rope:
         #     seqlen_offset = 0
@@ -180,14 +183,14 @@ class DeltaNet(nn.Module):
         #     v = rearrange(v, 'b l (h d) -> b h l d', h=self.num_heads)
         # else:
         q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
-        
+
         if not self.use_elu:
             k = torch.nn.functional.normalize(k, p=2, dim=-1)
             q = torch.nn.functional.normalize(q, p=2, dim=-1)
         else:
             q = elu_norm(q)
             k = elu_norm(k)
-        
+
         if self.use_beta:
             beta = rearrange(self.b_proj(hidden_states), 'b l h -> b h l').sigmoid()
         else:

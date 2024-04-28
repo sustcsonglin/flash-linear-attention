@@ -21,7 +21,7 @@ class ABCConfig(PretrainedConfig):
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
         num_heads: int = 4,
-        num_slots: Optional[int] = None,
+        num_slots: Optional[int] = 64,
         use_short_conv: bool = True,
         conv_size: int = 4,
         share_conv_kernel: bool = True,
@@ -29,7 +29,8 @@ class ABCConfig(PretrainedConfig):
         exapnd_v: float = 1,
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
-        rms_norm_eps: float = 1e-6,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-6,
         use_cache: bool = True,
         pad_token_id: int = None,
         bos_token_id: int = 1,
@@ -57,7 +58,8 @@ class ABCConfig(PretrainedConfig):
         self.expand_k = exapnd_k
         self.expand_v = exapnd_v
         self.hidden_act = hidden_act
-        self.rms_norm_eps = rms_norm_eps
+        self.elementwise_affine = elementwise_affine
+        self.norm_eps = norm_eps
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         self.fuse_cross_entropy = fuse_cross_entropy

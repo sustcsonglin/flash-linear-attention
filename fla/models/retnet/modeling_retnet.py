@@ -61,7 +61,7 @@ class RetNetBlock(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.attn = MultiScaleRetention(
             mode=config.attn_mode,
             hidden_size=config.hidden_size,
@@ -69,11 +69,12 @@ class RetNetBlock(nn.Module):
             expand_v=config.expand_v,
             num_heads=config.num_heads,
             gate_fn=config.hidden_act,
-            layernorm_eps=config.rms_norm_eps,
+            elementwise_affine=config.elementwise_affine,
+            norm_eps=config.norm_eps,
             fuse_norm=config.fuse_norm,
             layer_idx=layer_idx
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = RetNetMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -164,7 +165,7 @@ class RetNetModel(RetNetPreTrainedModel):
         self.layers = nn.ModuleList(
             [RetNetBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(config.hidden_size, eps=config.norm_eps)
 
         self.gradient_checkpointing = False
 

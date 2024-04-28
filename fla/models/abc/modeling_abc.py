@@ -61,7 +61,7 @@ class ABCBlock(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.attn = ABCAttention(
             hidden_size=config.hidden_size,
             expand_k=config.expand_k,
@@ -72,13 +72,14 @@ class ABCBlock(nn.Module):
             conv_size=config.conv_size,
             share_conv_kernel=config.share_conv_kernel,
             gate_fn=config.hidden_act,
-            layernorm_eps=config.rms_norm_eps,
+            elementwise_affine=config.elementwise_affine,
+            norm_eps=config.norm_eps,
             clamp_min=config.clamp_min,
             clamp_max=config.clamp_max,
             fuse_norm=config.fuse_norm,
             layer_idx=layer_idx
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = ABCMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -89,6 +90,7 @@ class ABCBlock(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
@@ -100,6 +102,7 @@ class ABCBlock(nn.Module):
         hidden_states = self.attn_norm(hidden_states)
         hidden_states, attentions, past_key_values = self.attn(
             hidden_states=hidden_states,
+            attention_mask=attention_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_attentions=output_attentions
@@ -165,7 +168,7 @@ class ABCModel(ABCPreTrainedModel):
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([ABCBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(config.hidden_size, eps=config.norm_eps)
 
         self.gradient_checkpointing = False
 
@@ -200,9 +203,9 @@ class ABCModel(ABCPreTrainedModel):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
-            batch_size, seq_len = input_ids.shape[:2]
+            batch_size = input_ids.shape[0]
         elif inputs_embeds is not None:
-            batch_size, seq_len = inputs_embeds.shape[:2]
+            batch_size = inputs_embeds.shape[0]
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
@@ -233,6 +236,7 @@ class ABCModel(ABCPreTrainedModel):
                 hidden_states, attentions, past_key_values = self._gradient_checkpointing_func(
                     layer.__call__,
                     hidden_states,
+                    attention_mask,
                     past_key_values,
                     use_cache,
                     output_attentions
@@ -240,6 +244,7 @@ class ABCModel(ABCPreTrainedModel):
             else:
                 hidden_states, attentions, past_key_values = layer(
                     hidden_states,
+                    attention_mask,
                     past_key_values=past_key_values,
                     use_cache=use_cache,
                     output_attentions=output_attentions

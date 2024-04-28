@@ -22,7 +22,9 @@ class GatedLinearAttention(nn.Module):
 
     Args:
         mode (str, Optional):
-            Which GLA kernel to use. Currently available ones are `chunk`, `fused_recurrent`, and `fused_chunk`. Default: `chunk`.
+            Which GLA kernel to use.
+            Currently available: `chunk`, `fused_recurrent`, and `fused_chunk`.
+            Default: `chunk`.
         hidden_size (int, Optional):
             The hidden size of the input. Default: 1024.
         expand_k (float, Optional):
@@ -32,16 +34,18 @@ class GatedLinearAttention(nn.Module):
         num_heads (int, Optional):
             The number of heads. Default: 4.
         use_short_conv (bool, Optional):
-            Whether to use short convolutions. Default: False.
+            Whether to use short convolutions. Default: `False`.
         conv_size (int, Optional):
-            The kernel size of the short convolution, only used when `use_short_conv` is True. Default: 4.
+            The kernel size of the short convolution, only used when `use_short_conv` is `True`. Default: 4.
         conv_bias (bool, Optional):
-            Whether to use bias in the short convolution, only used when `use_short_conv` is True. Default: False.
+            Whether to use bias in the short convolution, only used when `use_short_conv` is `True`. Default: `False`.
         share_conv_kernel (bool, Optional):
-            Whether to apply convolutions berfore q/k/v mapping, only taking effects when `use_short_conv`. Default: True.
+            Whether to apply convolutions berfore q/k/v mapping, only taking effects when `use_short_conv`. Default: `True`.
         gate_fn (str, Optional):
             The activation function for the output gate. Default: `swish`.
-        layernorm_eps (float, Optional):
+        elementwise_affine (bool, Optional):
+            If `True`, applies elementwise affine to LayerNorm with learnable parameters. Default: `True`.
+        norm_eps (float, Optional):
             The epsilon value for the layernorm/rmsnorm layer. Default: 1e-5.
         gate_logit_normalizer (int, Optional):
             The normalizer for the gate logits, appied after `logsigmoid`. Default: 16.
@@ -50,7 +54,7 @@ class GatedLinearAttention(nn.Module):
         clamp_min (float, Optional):
             The minimum value for the gate logits. Default: None.
         fuse_norm (bool, Optional):
-            Whether to fuse the norm and the output gate for better memory footprint. Default: True.
+            Whether to fuse the norm and the output gate for better memory footprint. Default: `True`.
         layer_idx (int, Optional):
             The index of the layer. Default: None.
     """
@@ -67,7 +71,8 @@ class GatedLinearAttention(nn.Module):
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
         gate_fn: str = 'swish',
-        layernorm_eps: float = 1e-5,
+        elementwise_affine: Optional[bool] = True,
+        norm_eps: float = 1e-5,
         gate_logit_normalizer: int = 16,
         gate_low_rank_dim: int = 16,
         clamp_min: Optional[float] = None,
@@ -118,11 +123,11 @@ class GatedLinearAttention(nn.Module):
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if gate_fn == 'swish' and fuse_norm:
-            self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, eps=layernorm_eps)
+            self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, elementwise_affine, norm_eps)
             self.fuse_norm_and_gate = True
         else:
             self.fuse_norm_and_gate = False
-            self.g_norm = RMSNorm(self.head_v_dim, eps=layernorm_eps)
+            self.g_norm = RMSNorm(self.head_v_dim, elementwise_affine, norm_eps)
             self.gate_fn = ACT2FN[gate_fn]
 
         self.gate_logit_normalizer = gate_logit_normalizer
