@@ -436,7 +436,7 @@ def _layer_norm_bwd(
     return (dx, do, dw, db, dresidual_in) if not recompute_output else (dx, do, dw, db, dresidual_in, y)
 
 
-class LayerNormFn(torch.autograd.Function):
+class LayerNormSwishGateFn(torch.autograd.Function):
 
     @staticmethod
     @contiguous
@@ -518,12 +518,207 @@ class LayerNormFn(torch.autograd.Function):
         )
 
 
-def layer_norm_fn(x, o, weight, bias, residual=None, prenorm=False, residual_in_fp32=False, eps=1e-6):
-    return LayerNormFn.apply(x, o, weight, bias, residual, eps, prenorm, residual_in_fp32, False)
+class LayerNormSwishGateLinearFn(torch.autograd.Function):
+
+    @staticmethod
+    @contiguous
+    def forward(
+        ctx,
+        x,
+        o,
+        norm_weight,
+        norm_bias,
+        linear_weight,
+        linear_bias,
+        residual=None,
+        eps=1e-6,
+        prenorm=False,
+        residual_in_fp32=False,
+        is_rms_norm=False,
+    ):
+        x_shape_og = x.shape
+        o_shape_og = o.shape
+        # reshape input data into 2D tensor
+        x = x.reshape(-1, x.shape[-1])
+        o = o.reshape(-1, o.shape[-1])
+        if residual is not None:
+            assert residual.shape == x_shape_og
+            residual = residual.reshape(-1, residual.shape[-1])
+        residual_dtype = (
+            residual.dtype
+            if residual is not None
+            else (torch.float32 if residual_in_fp32 else None)
+        )
+        y, mean, rstd, residual_out = _layer_norm_fwd(
+            x,
+            o,
+            norm_weight,
+            norm_bias,
+            eps,
+            residual,
+            residual_dtype=residual_dtype,
+            is_rms_norm=is_rms_norm
+        )
+        y = y.reshape(x_shape_og)
+        dtype = torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else y.dtype
+        linear_weight = linear_weight.to(dtype)
+        linear_bias = linear_bias.to(dtype) if linear_bias is not None else None
+        out = F.linear(y.to(linear_weight.dtype), linear_weight, linear_bias)
+        # We don't store y, will be recomputed in the backward pass to save memory
+        ctx.save_for_backward(residual_out, o, norm_weight, norm_bias, linear_weight, mean, rstd)
+        ctx.x_shape_og = x_shape_og
+        ctx.o_shape_og = o_shape_og
+        ctx.eps = eps
+        ctx.is_rms_norm = is_rms_norm
+        ctx.has_residual = residual is not None
+        ctx.prenorm = prenorm
+        ctx.x_dtype = x.dtype
+        ctx.linear_bias_is_none = linear_bias is None
+        return out if not prenorm else (out, residual_out.reshape(x_shape_og))
+
+    @staticmethod
+    @contiguous
+    def backward(ctx, dout, *args):
+        x, o, norm_weight, norm_bias, linear_weight, mean, rstd = ctx.saved_tensors
+        dout = dout.reshape(-1, dout.shape[-1])
+        dy = F.linear(dout, linear_weight.t())
+        dlinear_bias = None if ctx.linear_bias_is_none else dout.sum(0)
+        assert dy.shape == x.shape
+        if ctx.prenorm:
+            dresidual = args[0]
+            dresidual = dresidual.reshape(-1, dresidual.shape[-1])
+            assert dresidual.shape == x.shape
+        else:
+            dresidual = None
+        dx, do, dnorm_weight, dnorm_bias, dresidual_in, y = _layer_norm_bwd(
+            dy,
+            x,
+            o,
+            norm_weight,
+            norm_bias,
+            ctx.eps,
+            mean,
+            rstd,
+            dresidual=dresidual,
+            has_residual=ctx.has_residual,
+            is_rms_norm=ctx.is_rms_norm,
+            x_dtype=ctx.x_dtype,
+            recompute_output=True,
+        )
+        dlinear_weight = torch.einsum("bo,bi->oi", dout, y)
+        return (
+            dx.reshape(ctx.x_shape_og),
+            do.reshape(ctx.o_shape_og),
+            dnorm_weight,
+            dnorm_bias,
+            dlinear_weight,
+            dlinear_bias,
+            dresidual_in.reshape(ctx.x_shape_og) if ctx.has_residual else None,
+            None,
+            None,
+            None,
+            None,
+        )
 
 
-def rms_norm_fn(x, o, weight, bias, residual=None, prenorm=False, residual_in_fp32=False, eps=1e-6):
-    return LayerNormFn.apply(x, o, weight, bias, residual, eps, prenorm, residual_in_fp32, True)
+def layer_norm_swish_gate_fn(
+    x,
+    o,
+    weight,
+    bias,
+    residual=None,
+    prenorm=False,
+    residual_in_fp32=False,
+    eps=1e-6
+):
+    return LayerNormSwishGateFn.apply(
+        x,
+        o,
+        weight,
+        bias,
+        residual,
+        eps,
+        prenorm,
+        residual_in_fp32,
+        False
+    )
+
+
+def rms_norm_swish_gate_fn(
+    x,
+    o,
+    weight,
+    bias,
+    residual=None,
+    prenorm=False,
+    residual_in_fp32=False,
+    eps=1e-6
+):
+    return LayerNormSwishGateFn.apply(
+        x,
+        o,
+        weight,
+        bias,
+        residual,
+        eps,
+        prenorm,
+        residual_in_fp32,
+        True
+    )
+
+
+def layer_norm_swish_gate_linear_fn(
+    x,
+    o,
+    norm_weight,
+    norm_bias,
+    linear_weight,
+    linear_bias,
+    residual=None,
+    prenorm=False,
+    residual_in_fp32=False,
+    eps=1e-6
+):
+    return LayerNormSwishGateLinearFn.apply(
+        x,
+        o,
+        norm_weight,
+        norm_bias,
+        linear_weight,
+        linear_bias,
+        residual,
+        eps,
+        prenorm,
+        residual_in_fp32,
+        False
+    )
+
+
+def rms_norm_swish_gate_linear_fn(
+    x,
+    o,
+    norm_weight,
+    norm_bias,
+    linear_weight,
+    linear_bias,
+    residual=None,
+    prenorm=False,
+    residual_in_fp32=False,
+    eps=1e-6
+):
+    return LayerNormSwishGateLinearFn.apply(
+        x,
+        o,
+        norm_weight,
+        norm_bias,
+        linear_weight,
+        linear_bias,
+        residual,
+        eps,
+        prenorm,
+        residual_in_fp32,
+        True
+    )
 
 
 class FusedLayerNormSwishGate(nn.Module):
@@ -555,7 +750,7 @@ class FusedLayerNormSwishGate(nn.Module):
         return s
 
     def forward(self, x, o, residual=None, prenorm=False, residual_in_fp32=False):
-        return layer_norm_fn(
+        return layer_norm_swish_gate_fn(
             x,
             o,
             self.weight,
@@ -596,11 +791,97 @@ class FusedRMSNormSwishGate(nn.Module):
         return s
 
     def forward(self, x, o, residual=None, prenorm=False, residual_in_fp32=False):
-        return rms_norm_fn(
+        return rms_norm_swish_gate_fn(
             x,
             o,
             self.weight,
             self.bias,
+            residual=residual,
+            eps=self.eps,
+            prenorm=prenorm,
+            residual_in_fp32=residual_in_fp32
+        )
+
+
+class FusedLayerNormSwishGateLinear(nn.Module):
+
+    def __init__(
+        self,
+        hidden_size,
+        elementwise_affine: bool = True,
+        eps=1e-5
+    ) -> FusedLayerNormSwishGateLinear:
+        super().__init__()
+
+        self.hidden_size = hidden_size
+        self.elementwise_affine = elementwise_affine
+        self.eps = eps
+
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
+        self.register_parameter("bias", None)
+
+    def __repr__(self) -> str:
+        s = f"{self.__class__.__name__}({self.hidden_size}"
+        if not self.elementwise_affine:
+            s += f", elementwise_affine={self.elementwise_affine}"
+        s += f", eps={self.eps}"
+        s += ")"
+        return s
+
+    def forward(self, x, o, weight, bias, residual=None, prenorm=False, residual_in_fp32=False):
+        return layer_norm_swish_gate_linear_fn(
+            x,
+            o,
+            self.weight,
+            self.bias,
+            weight,
+            bias,
+            residual=residual,
+            eps=self.eps,
+            prenorm=prenorm,
+            residual_in_fp32=residual_in_fp32
+        )
+
+
+class FusedRMSNormSwishGateLinear(nn.Module):
+
+    def __init__(
+        self,
+        hidden_size,
+        elementwise_affine: bool = True,
+        eps=1e-5
+    ) -> FusedRMSNormSwishGateLinear:
+        super().__init__()
+
+        self.hidden_size = hidden_size
+        self.elementwise_affine = elementwise_affine
+        self.eps = eps
+
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
+        self.register_parameter("bias", None)
+
+    def __repr__(self) -> str:
+        s = f"{self.__class__.__name__}({self.hidden_size}"
+        if not self.elementwise_affine:
+            s += f", elementwise_affine={self.elementwise_affine}"
+        s += f", eps={self.eps}"
+        s += ")"
+        return s
+
+    def forward(self, x, o, weight, bias, residual=None, prenorm=False, residual_in_fp32=False):
+        return rms_norm_swish_gate_linear_fn(
+            x,
+            o,
+            self.weight,
+            self.bias,
+            weight,
+            bias,
             residual=residual,
             eps=self.eps,
             prenorm=prenorm,

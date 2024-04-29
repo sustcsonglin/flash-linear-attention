@@ -737,3 +737,89 @@ def layer_norm_linear_fn(
         residual_in_fp32,
         is_rms_norm,
     )
+
+
+class LayerNormLinear(nn.Module):
+
+    def __init__(
+        self,
+        hidden_size,
+        elementwise_affine: bool = True,
+        eps=1e-5
+    ) -> LayerNormLinear:
+        super().__init__()
+
+        self.hidden_size = hidden_size
+        self.elementwise_affine = elementwise_affine
+        self.eps = eps
+
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
+        self.register_parameter("bias", None)
+
+    def __repr__(self) -> str:
+        s = f"{self.__class__.__name__}({self.hidden_size}"
+        if not self.elementwise_affine:
+            s += f", elementwise_affine={self.elementwise_affine}"
+        s += f", eps={self.eps}"
+        s += ")"
+        return s
+
+    def forward(self, x, weight, bias, residual=None, prenorm=False, residual_in_fp32=False):
+        return layer_norm_linear_fn(
+            x,
+            self.weight,
+            self.bias,
+            weight,
+            bias,
+            residual=residual,
+            eps=self.eps,
+            prenorm=prenorm,
+            residual_in_fp32=residual_in_fp32,
+            is_rms_norm=False
+        )
+
+
+class RMSNormLinear(nn.Module):
+
+    def __init__(
+        self,
+        hidden_size,
+        elementwise_affine: bool = True,
+        eps=1e-5
+    ) -> RMSNormLinear:
+        super().__init__()
+
+        self.hidden_size = hidden_size
+        self.elementwise_affine = elementwise_affine
+        self.eps = eps
+
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
+        self.register_parameter("bias", None)
+
+    def __repr__(self) -> str:
+        s = f"{self.__class__.__name__}({self.hidden_size}"
+        if not self.elementwise_affine:
+            s += f", elementwise_affine={self.elementwise_affine}"
+        s += f", eps={self.eps}"
+        s += ")"
+        return s
+
+    def forward(self, x, weight, bias, residual=None, prenorm=False, residual_in_fp32=False):
+        return layer_norm_linear_fn(
+            x,
+            self.weight,
+            self.bias,
+            weight,
+            bias,
+            residual=residual,
+            eps=self.eps,
+            prenorm=prenorm,
+            residual_in_fp32=residual_in_fp32,
+            is_rms_norm=True
+        )
