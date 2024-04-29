@@ -181,8 +181,8 @@ def chunk_hgrn_bwd_kernel_h(
 
 @triton.jit
 def chunk_hgrn_bwd_kernel_o(
-    gc,
     g,
+    gc,
     o,
     dx,
     dg,
@@ -199,8 +199,8 @@ def chunk_hgrn_bwd_kernel_o(
     mask = o_d < D
 
     for i_t in range(tl.cdiv(T, BT) - 1, -1, -1):
-        p_gc = tl.make_block_ptr(gc + i_bh * s_h, (T, D), (s_t, s_d), (i_t * BT, i_d * BD), (BT, BD), (1, 0))
         p_g = tl.make_block_ptr(g + i_bh * s_h, (T, D), (s_t, s_d), (i_t * BT, i_d * BD), (BT, BD), (1, 0))
+        p_gc = tl.make_block_ptr(gc + i_bh * s_h, (T, D), (s_t, s_d), (i_t * BT, i_d * BD), (BT, BD), (1, 0))
         p_o = tl.make_block_ptr(o + i_bh * s_h, (T, D), (s_t, s_d), (i_t * BT - 1, i_d * BD), (BT, BD), (1, 0))
         p_dx = tl.make_block_ptr(dx + i_bh * s_h, (T, D), (s_t, s_d), (i_t * BT, i_d * BD), (BT, BD), (1, 0))
         p_dg = tl.make_block_ptr(dg + i_bh * s_h, (T, D), (s_t, s_d), (i_t * BT, i_d * BD), (BT, BD), (1, 0))
@@ -209,8 +209,8 @@ def chunk_hgrn_bwd_kernel_o(
         mask_t = mask & ((i_t + 1) * BT < T)
         b_ht = tl.load(dx + i_bh * T * D + (i_t + 1) * BT * D + o_d, mask=mask_t, other=0).to(tl.float32)
         # [BT, BD]
-        b_gc = tl.load(p_gc, boundary_check=(0, 1)).to(tl.float32)
         b_g = tl.load(p_g, boundary_check=(0, 1)).to(tl.float32)
+        b_gc = tl.load(p_gc, boundary_check=(0, 1)).to(tl.float32)
         b_o = tl.load(p_o, boundary_check=(0, 1)).to(tl.float32)
         b_dx = tl.load(p_dx, boundary_check=(0, 1)).to(tl.float32)
         b_dg = tl.load(p_dg, boundary_check=(0, 1)).to(tl.float32)
@@ -230,7 +230,7 @@ class ChunkHGRNFunction(torch.autograd.Function):
         num_warps = 8 if BD == 64 else 4
 
         gc = torch.empty_like(g, dtype=torch.float)
-        o = torch.empty_like(x)
+        o = torch.empty_like(x, dtype=torch.float)
         def grid(meta): return (triton.cdiv(D, meta['BD']), triton.cdiv(T, meta['BT']), B * H)
         chunk_hgrn_fwd_kernel_h[grid](
             x, g, gc, o, initial_state,
@@ -249,6 +249,7 @@ class ChunkHGRNFunction(torch.autograd.Function):
         final_state = None
         if output_final_state:
             final_state = o[:, :, -1].clone()
+        o = o.to(x.dtype)
         ctx.save_for_backward(g, o, initial_state)
         return o, final_state
 
@@ -271,7 +272,7 @@ class ChunkHGRNFunction(torch.autograd.Function):
         )
         def grid(meta): return (triton.cdiv(D, meta['BD']), B * H)
         chunk_hgrn_bwd_kernel_o[grid](
-            gc, g, o, dx, dg,
+            g, gc, o, dx, dg,
             o.stride(1), o.stride(2), o.stride(3),
             T, D,
             BT=BT, BD=BD,
@@ -298,6 +299,7 @@ def chunk_hgrn(
 if __name__ == '__main__':
     import torch.nn.functional as F
 
+    from fla.ops.hgrn.naive import naive_recurrent_hgrn
     from fla.ops.hgrn.recurrent_fuse import fused_recurrent_hgrn
     B, H, T, D = 8, 4, 512, 128
     dtype = torch.bfloat16
@@ -312,12 +314,12 @@ if __name__ == '__main__':
     print(f"DTYPE:\t{x.dtype}")
     do = torch.randn_like(x)
     h0 = torch.randn_like(x[:, :, 0])
-    ref, ref_ht = fused_recurrent_hgrn(x, g, h0, output_final_state=True)
+    ref, ref_ht = naive_recurrent_hgrn(x, g, h0, output_final_state=True)
     ref.backward(do)
     ref_dx, x.grad = x.grad.clone(), None
     ref_dg, g.grad = g.grad.clone(), None
 
-    tri, tri_ht = chunk_hgrn(x, g, h0, output_final_state=True)
+    tri, tri_ht = fused_recurrent_hgrn(x, g, h0, output_final_state=True)
     tri.backward(do)
     tri_dx, x.grad = x.grad.clone(), None
     tri_dg, g.grad = g.grad.clone(), None
