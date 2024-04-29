@@ -56,7 +56,7 @@ def fused_recurrent_hgrn_fwd_kernel(
     for _ in range(0, T):
         b_x = tl.load(p_x, mask=mask, other=0).to(tl.float32)
         b_g = tl.load(p_g, mask=mask, other=0).to(tl.float32)
-        b_h = b_g * b_h + b_x
+        b_h = tl.exp(b_g) * b_h + b_x
         tl.store(p_o, b_h.to(p_o.dtype.element_ty), mask=mask)
 
         p_x += D
@@ -121,8 +121,8 @@ def fused_recurrent_hgrn_bwd_kernel(
 
         b_dh = b_dh + b_do
         b_dx = b_dh
+        b_dh = b_dh * tl.exp(b_g)
         b_dg = b_dh * b_o
-        b_dh = b_dh * b_g
         tl.store(p_dx, b_dx.to(p_dx.dtype.element_ty), mask=mask)
         tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), mask=mask)
 

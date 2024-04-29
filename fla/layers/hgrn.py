@@ -8,19 +8,20 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 from transformers.cache_utils import Cache
 
 from fla.modules import FusedRMSNormSwishGate, ShortConvolution
 from fla.modules.activations import swiglu
-from fla.ops.hgrn.recurrent_fuse import fused_recurrent_hgrn
+from fla.ops.hgrn import chunk_hgrn, fused_recurrent_hgrn
 
 
 class HGRNAttention(nn.Module):
 
     def __init__(
         self,
-        mode: str = 'fused_recurrent',
+        mode: str = 'chunk',
         hidden_size: int = 1024,
         num_heads: Optional[int] = None,
         expand_ratio: Optional[int] = 1,
@@ -48,7 +49,7 @@ class HGRNAttention(nn.Module):
 
         self.layer_idx = layer_idx
 
-        assert mode in ['fused_recurrent'], f"Not suppoerted mode `{mode}`."
+        assert mode in ['chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
         assert self.hidden_size % num_heads == 0, f"hidden size must be divisible by num_heads of {num_heads}"
 
         self.i_proj = nn.Linear(hidden_size, self.input_dim, bias=False)
@@ -108,18 +109,22 @@ class HGRNAttention(nn.Module):
             i = self.i_proj(hidden_states)
             f = self.f_proj(hidden_states)
 
-        f = f.sigmoid()
         # the lower bound for the first layer is zero
-        if lower_bound is not None and self.layer_idx > 0:
-            f = lower_bound + (1 - lower_bound) * f
-        i = swiglu(i, 1 - f)
+        if lower_bound is None or self.layer_idx == 0:
+            i, f = swiglu(i, 1 - f.sigmoid()), F.logsigmoid(f)
+        else:
+            g = lower_bound + (1 - lower_bound) * f.sigmoid()
+            i, f = swiglu(i, 1 - g), g.log()
+
         # dealing with left-padding
         if attention_mask is not None:
             i = i.mul_(attention_mask.unsqueeze(-1))
         i, f = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (i, f))
 
         recurrent_state = last_state[-1] if use_cache else None
-        if mode == 'fused_recurrent':
+        if mode == 'chunk':
+            o, recurrent_state = chunk_hgrn(i, f, initial_state=recurrent_state, output_final_state=use_cache)
+        elif mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_hgrn(i, f, initial_state=recurrent_state, output_final_state=use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")

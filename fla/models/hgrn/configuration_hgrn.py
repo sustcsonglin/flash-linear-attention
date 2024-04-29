@@ -12,10 +12,10 @@ class HGRNConfig(PretrainedConfig):
 
     def __init__(
         self,
+        attn_mode: str = "chunk",
         vocab_size: int = 32000,
         hidden_size: int = 2048,
         num_hidden_layers: int = 24,
-        attn_mode: str = "fused_recurrent",
         num_heads: Optional[int] = 1,
         expand_ratio: Optional[int] = 1,
         use_short_conv: bool = False,
@@ -37,11 +37,11 @@ class HGRNConfig(PretrainedConfig):
         fuse_cross_entropy: bool = True,
         **kwargs
     ):
+        self.attn_mode = attn_mode
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
-        self.attn_mode = attn_mode
         self.num_heads = num_heads
         self.expand_ratio = expand_ratio
         self.use_short_conv = use_short_conv

@@ -23,7 +23,7 @@ def naive_recurrent_hgrn(
         h += initial_state.detach()
 
     for i in range(T):
-        h = g[:, :, i] * h + x[:, :, i]
+        h = g[:, :, i].exp() * h + x[:, :, i]
         o[:, :, i] = h
 
     if output_final_state:
