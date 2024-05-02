@@ -18,7 +18,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
 from fla.utils import contiguous
 
@@ -429,17 +428,9 @@ class LayerNormFn(torch.autograd.Function):
         x_shape_og = x.shape
         # reshape input data into 2D tensor
         x = x.reshape(-1, x.shape[-1])
-        if x.stride(-1) != 1:
-            x = x.contiguous()
         if residual is not None:
             assert residual.shape == x_shape_og
             residual = residual.reshape(-1, residual.shape[-1])
-            if residual.stride(-1) != 1:
-                residual = residual.contiguous()
-        if weight is not None:
-            weight = weight.contiguous()
-        if bias is not None:
-            bias = bias.contiguous()
         residual_dtype = (
             residual.dtype
             if residual is not None
@@ -463,14 +454,10 @@ class LayerNormFn(torch.autograd.Function):
     def backward(ctx, dy, *args):
         x, weight, bias, mean, rstd = ctx.saved_tensors
         dy = dy.reshape(-1, dy.shape[-1])
-        if dy.stride(-1) != 1:
-            dy = dy.contiguous()
         assert dy.shape == x.shape
         if ctx.prenorm:
             dresidual = args[0]
             dresidual = dresidual.reshape(-1, dresidual.shape[-1])
-            if dresidual.stride(-1) != 1:
-                dresidual = dresidual.contiguous()
             assert dresidual.shape == x.shape
         else:
             dresidual = None
@@ -605,8 +592,9 @@ class RMSNorm(nn.Module):
 
 
 class LayerNormLinearFn(torch.autograd.Function):
+
     @staticmethod
-    @custom_fwd
+    @contiguous
     def forward(
         ctx,
         x,
@@ -623,16 +611,9 @@ class LayerNormLinearFn(torch.autograd.Function):
         x_shape_og = x.shape
         # reshape input data into 2D tensor
         x = x.reshape(-1, x.shape[-1])
-        if x.stride(-1) != 1:
-            x = x.contiguous()
         if residual is not None:
             assert residual.shape == x_shape_og
             residual = residual.reshape(-1, residual.shape[-1])
-            if residual.stride(-1) != 1:
-                residual = residual.contiguous()
-        norm_weight = norm_weight.contiguous()
-        if norm_bias is not None:
-            norm_bias = norm_bias.contiguous()
         residual_dtype = (
             residual.dtype
             if residual is not None
@@ -667,20 +648,16 @@ class LayerNormLinearFn(torch.autograd.Function):
         return out if not prenorm else (out, residual_out.reshape(x_shape_og))
 
     @staticmethod
-    @custom_bwd
+    @contiguous
     def backward(ctx, dout, *args):
         x, norm_weight, norm_bias, linear_weight, mean, rstd = ctx.saved_tensors
         dout = dout.reshape(-1, dout.shape[-1])
         dy = F.linear(dout, linear_weight.t())
         dlinear_bias = None if ctx.linear_bias_is_none else dout.sum(0)
-        if dy.stride(-1) != 1:
-            dy = dy.contiguous()
         assert dy.shape == x.shape
         if ctx.prenorm:
             dresidual = args[0]
             dresidual = dresidual.reshape(-1, dresidual.shape[-1])
-            if dresidual.stride(-1) != 1:
-                dresidual = dresidual.contiguous()
             assert dresidual.shape == x.shape
         else:
             dresidual = None
