@@ -24,6 +24,10 @@ class RetNetConfig(PretrainedConfig):
         num_heads: int = 8,
         attn_mode: str = "fused_chunk",
         hidden_act: str = "swish",
+        use_short_conv: bool = False,
+        conv_size: int = 4,
+        share_conv_kernel: bool = True,
+        use_output_gate: bool = True,
         max_position_embeddings: int = 2048,
         elementwise_affine: Optional[bool] = True,
         norm_eps: float = 1e-6,
@@ -48,6 +52,10 @@ class RetNetConfig(PretrainedConfig):
         self.num_heads = num_heads
         self.attn_mode = attn_mode
         self.hidden_act = hidden_act
+        self.use_short_conv = use_short_conv
+        self.conv_size = conv_size
+        self.share_conv_kernel = share_conv_kernel
+        self.use_output_gate = use_output_gate
         self.elementwise_affine = elementwise_affine
         self.norm_eps = norm_eps
         self.use_cache = use_cache

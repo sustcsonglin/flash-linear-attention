@@ -24,6 +24,7 @@ class GLAConfig(PretrainedConfig):
         use_short_conv: bool = False,
         conv_size: int = 4,
         share_conv_kernel: bool = True,
+        use_output_gate: bool = True,
         clamp_min: Optional[float] = None,
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
@@ -64,6 +65,7 @@ class GLAConfig(PretrainedConfig):
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
         self.share_conv_kernel = share_conv_kernel
+        self.use_output_gate = use_output_gate
 
         super().__init__(
             pad_token_id=pad_token_id,

@@ -41,6 +41,8 @@ class MultiScaleRetention(nn.Module):
             Whether to use bias in the short convolution, only used when `use_short_conv` is `True`. Default: `False`.
         share_conv_kernel (bool, Optional):
             Whether to apply convolutions berfore q/k/v mapping, only taking effects when `use_short_conv`. Default: `True`.
+        use_output_gate (bool, Optional):
+            Whether to use output gate. Default: `True`.
         gate_fn (str, Optional):
             The activation function for the output gate. Default: `swish`.
         elementwise_affine (bool, Optional):
@@ -64,6 +66,7 @@ class MultiScaleRetention(nn.Module):
         conv_size: int = 4,
         conv_bias: bool = False,
         share_conv_kernel: bool = True,
+        use_output_gate: bool = True,
         gate_fn: str = 'swish',
         elementwise_affine: Optional[bool] = True,
         norm_eps: float = 1e-5,
@@ -83,6 +86,7 @@ class MultiScaleRetention(nn.Module):
         self.conv_size = conv_size
         self.conv_bias = conv_bias
         self.share_conv_kernel = share_conv_kernel
+        self.use_output_gate = use_output_gate
 
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
@@ -98,7 +102,8 @@ class MultiScaleRetention(nn.Module):
         self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
-        self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
+        if self.use_output_gate:
+            self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
 
         if use_short_conv:
             self.conv_size = conv_size
@@ -111,7 +116,7 @@ class MultiScaleRetention(nn.Module):
 
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
-        if gate_fn == 'swish' and fuse_norm:
+        if gate_fn == 'swish' and fuse_norm and use_output_gate:
             self.g_norm_swish_gate = FusedRMSNormSwishGate(self.head_v_dim, elementwise_affine, norm_eps)
             self.fuse_norm_and_gate = True
         else:
@@ -207,15 +212,17 @@ class MultiScaleRetention(nn.Module):
             past_key_values.update(last_state, self.layer_idx, q.shape[2])
 
         o = rearrange(o, 'b h l d -> b l h d')
-        g = self.g_proj(hidden_states)
-        if self.fuse_norm_and_gate:
-            g = rearrange(g, 'b l (h d) -> b l h d', h=self.num_heads)
-            o = self.g_norm_swish_gate(o, g)
-            o = rearrange(o, 'b l h d -> b l (h d)')
+        if self.use_output_gate:
+            g = self.g_proj(hidden_states)
+            if self.fuse_norm_and_gate:
+                g = rearrange(g, 'b l (h d) -> b l h d', h=self.num_heads)
+                o = self.g_norm_swish_gate(o, g)
+                o = rearrange(o, 'b l h d -> b l (h d)')
+            else:
+                o = rearrange(self.g_norm(o), 'b l h d -> b l (h d)')
+                o = o * self.gate_fn(g)
         else:
-            o = self.g_norm(o)
-            o = rearrange(o, 'b l h d -> b l (h d)')
-            o = o * self.gate_fn(g)
+            o = rearrange(self.g_norm(o), 'b l h d -> b l (h d)')
         o = self.o_proj(o)
 
         return o, None, past_key_values

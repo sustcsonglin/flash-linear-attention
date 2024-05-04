@@ -71,6 +71,7 @@ class GLABlock(nn.Module):
             use_short_conv=config.use_short_conv,
             conv_size=config.conv_size,
             share_conv_kernel=config.share_conv_kernel,
+            use_output_gate=config.use_output_gate,
             gate_fn=config.hidden_act,
             elementwise_affine=config.elementwise_affine,
             norm_eps=config.norm_eps,
