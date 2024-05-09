@@ -272,11 +272,9 @@ class RotaryEmbedding(torch.nn.Module):
         """
         seqlen = q.shape[1]
         if max_seqlen is not None:
-            self._update_cos_sin_cache(
-                max_seqlen, device=q.device, dtype=q.dtype)
+            self._update_cos_sin_cache(max_seqlen, device=q.device, dtype=q.dtype)
         elif isinstance(seqlen_offset, int):
-            self._update_cos_sin_cache(
-                seqlen + seqlen_offset, device=q.device, dtype=q.dtype)
+            self._update_cos_sin_cache(seqlen + seqlen_offset, device=q.device, dtype=q.dtype)
         if self.scale is None:
             q = apply_rotary_emb_func(
                 q,

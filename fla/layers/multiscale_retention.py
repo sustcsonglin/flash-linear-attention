@@ -180,11 +180,14 @@ class MultiScaleRetention(nn.Module):
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
+        q, k = map(lambda x: rearrange(x, '... (h d) -> ... h d', h=self.num_heads), (q, k))
 
         seqlen_offset = 0
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
-        q, k = map(lambda x: rearrange(x, '... (h d) -> ... h d', h=self.num_heads), (q, k))
+        if attention_mask is not None:
+            # to deliminate the offsets of padding tokens
+            seqlen_offset = seqlen_offset + attention_mask.sum(-1) - attention_mask.shape[-1]
         q, k = self.rotary(q, k, seqlen_offset)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
         v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_heads)
