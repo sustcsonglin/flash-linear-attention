@@ -209,8 +209,6 @@ $ python -m evals.harness --model hf \
 We've made `fla` compatible with hf-style evaluations, you can call [evals.harness](evals/harness.py) to finish the evaluations.
 Running the command above will provide the task results reported in the GLA paper.
 
-You may need to install the [extended harness libriary](https://github.com/HazyResearch/based-evaluation-harness) if you'd like to examine the performance of information retrieval on SWDE and FDA (as reported in Based).
-
 > [!Tip]
 > If you are using `lm-evaluation-harness` as an external library and can't find (almost) any tasks available, before calling `lm_eval.evaluate()` or `lm_eval.simple_evaluate()`, simply run the following to load the library's stock tasks!
 ```py
