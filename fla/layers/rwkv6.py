@@ -8,14 +8,12 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from einops import rearrange
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 
 from fla.modules import FusedLayerNormSwishGate, LayerNorm
 from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
-from fla.utils import checkpoint
 
 
 class RWKV6Attention(nn.Module):
@@ -121,8 +119,7 @@ class RWKV6Attention(nn.Module):
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
         r, w, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (r, w, k, v))
-        # we use sigmoid for now, as exp(-exp(x)) may affect the training stability
-        w = F.logsigmoid(w)
+        w = -torch.exp(w)
         u = self.bonus
 
         last_state = past_key_values[self.layer_idx] if use_cache else None
@@ -190,7 +187,6 @@ class LoRA(nn.Module):
         s += ")"
         return s
 
-    @checkpoint
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.lora(x)
 
@@ -259,7 +255,6 @@ class DDLerpLinear(nn.Module):
         s += ")"
         return s
 
-    @checkpoint
     def forward(self, x: torch.Tensor, mu: torch.Tensor, delta: Optional[torch.Tensor] = None) -> torch.Tensor:
         if delta is None:
             shifted = self.time_shift(x)
