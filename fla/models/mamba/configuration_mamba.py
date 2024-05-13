@@ -103,9 +103,9 @@ class MambaConfig(PretrainedConfig):
         state_size=16,
         num_hidden_layers=48,
         layer_norm_epsilon=1e-5,
-        pad_token_id=0,
-        bos_token_id=0,
-        eos_token_id=0,
+        pad_token_id= 0,
+        bos_token_id= 1,
+        eos_token_id= 2,
         expand=2,
         conv_kernel=4,
         use_bias=False,
@@ -123,6 +123,7 @@ class MambaConfig(PretrainedConfig):
         use_cache=True,
         fuse_norm: bool = True,
         fuse_cross_entropy: bool = True,
+        tie_word_embeddings: bool = False,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -152,4 +153,4 @@ class MambaConfig(PretrainedConfig):
         self.fuse_cross_entropy = fuse_cross_entropy
         self.fuse_norm = fuse_norm
 
-        super().__init__(bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id, **kwargs)
+        super().__init__(bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id, tie_word_embeddings=tie_word_embeddings, **kwargs)
