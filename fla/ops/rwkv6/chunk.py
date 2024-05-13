@@ -203,7 +203,7 @@ def chunk_rwkv6_fwd_kernel_intra(
         p_gs = tl.make_block_ptr(gs + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
         p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
-        p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_i * BC) * K + i_k * BK,), (BK,), (0,))
+        p_gn = tl.make_block_ptr(g + i_bh*s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_i * BC - 1) * K + i_k * BK,), (BK,), (0,))
         p_A = tl.make_block_ptr(A + (i_k*n_bh+i_bh)*T*BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
         # [BK,]
         b_gn = tl.load(p_gn, boundary_check=(0,))
@@ -485,7 +485,7 @@ def chunk_rwkv6_bwd_kernel_intra(
     i_t, i_i = i_c // NC, i_c % NC
 
     p_gs = tl.make_block_ptr(gs + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-    p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_i * BC) * K + i_k * BK,), (BK,), (0,))
+    p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_i * BC - 1) * K + i_k * BK,), (BK,), (0,))
     # [BK,]
     b_gn = tl.load(p_gn, boundary_check=(0,))
     # [BC, BK]
