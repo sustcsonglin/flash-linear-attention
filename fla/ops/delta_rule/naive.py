@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-import re
-import math
+
 import torch
 from einops import rearrange
 
@@ -34,38 +33,34 @@ def delta_rule_chunkwise(q, k, v, beta, chunk_size=32):
 
     # note that diagonal is masked.
     mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=q.device), diagonal=0)
-    q, k, v, k_beta = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c = chunk_size), [q, k, v, k_beta])
-    attn = (k_beta @ k.transpose(-1, -2)).masked_fill_(mask, 0)
-
-    k_cumsum = torch.zeros_like(v)
-    k_cumdecay = torch.zeros_like(k)
-    k_cumsum[:, :, :, 0] = v[:, :, :, 0]
-    k_cumdecay[:, :, :, 0] = k_beta[:, :, :, 0]
+    q, k, v, k_beta = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c=chunk_size), [q, k, v, k_beta])
+    attn = -(k_beta @ k.transpose(-1, -2)).masked_fill(mask, 0)
 
     for i in range(1, chunk_size):
-        k_cumsum_ = k_cumsum[:, :, :, :i].clone()
-        k_cumsum[:, :, :, i] = (-(attn[:, :, :, i, :i, None] * k_cumsum_).sum(3) + v[:, :, :, i])
-        k_cumdecay_ = k_cumdecay[:, :, :, :i].clone()
-        k_cumdecay[:, :, :, i] = (-(attn[:, :, :, i, :i, None] * k_cumdecay_).sum(3) + k_beta[:, :, :, i])
-    
+        attn[..., i, :i] = attn[..., i, :i] + (attn[..., i, :, None].clone() * attn[..., :, :i].clone()).sum(-2)
+
+    attn = attn + torch.eye(chunk_size, dtype=torch.float, device=q.device)
+    # u
+    k_cumsum = attn @ v
+    # w
+    k_cumdecay = attn @ k_beta
+
     v = k_cumsum
     S = k.new_zeros(b, h, d_k, d_v)
     o = torch.zeros_like(v)
     mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=q.device), diagonal=1)
     for i in range(0, l // chunk_size):
-      q_i, k_i, v_i = q[:, :, i], k[:, :, i], v[:, :, i]
-      attn = (q_i @ k_i.transpose(-1, -2)).masked_fill_(mask, 0)
-      v_prime = k_cumdecay[:, :, i] @ S
-      v_new = v_i - v_prime
-      o_inter = q_i @ S
-      o[:, :, i] = o_inter + attn @ v_new
-      ## chunk state update
-      S = S + k_i.transpose(-1, -2) @ v_new
+        q_i, k_i, v_i = q[:, :, i], k[:, :, i], v[:, :, i]
+        attn = (q_i @ k_i.transpose(-1, -2)).masked_fill_(mask, 0)
+        v_prime = k_cumdecay[:, :, i] @ S
+        v_new = v_i - v_prime
+        o_inter = q_i @ S
+        o[:, :, i] = o_inter + attn @ v_new
+        # chunk state update
+        S = S + k_i.transpose(-1, -2) @ v_new
 
     return rearrange(o, 'b h n c d -> b h (n c) d')
 
-  
- 
 
 if __name__ == '__main__':
     B = 2
@@ -73,12 +68,12 @@ if __name__ == '__main__':
     L = 128
     DK = 64
     DV = 128
-    q = (torch.randn(B, H, L, DK)).cuda().requires_grad_(True) 
+    q = (torch.randn(B, H, L, DK)).cuda().requires_grad_(True)
     k = (torch.randn(B, H, L, DK)).cuda()
-    k = torch.nn.functional.normalize(k, dim=-1, p=2).requires_grad_(True) 
-    v = (torch.randn(B, H, L, DV)).cuda().requires_grad_(True) 
+    k = torch.nn.functional.normalize(k, dim=-1, p=2).requires_grad_(True)
+    v = (torch.randn(B, H, L, DV)).cuda().requires_grad_(True)
     beta = torch.randn(B, H, L).cuda().sigmoid().requires_grad_(True)
-    
+
     o = delta_rule_recurrence(q, k, v, beta)
     do = torch.randn(B, H, L, DV).cuda()
     o.backward(do, retain_graph=True)
