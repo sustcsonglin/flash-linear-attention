@@ -26,7 +26,7 @@ from fla.utils import contiguous
 @triton.jit
 def fwd_prepare_wy_repr_kernel(
     k, v, beta, o, o2,
-    NT, DK, DV, T, 
+    NT, DK, DV, T,
     BT: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr
@@ -199,12 +199,12 @@ prepare_wy_repr = WYRepresentationPrepration.apply
 
 
 def naive(k, v, beta, chunk_size):
-    l = k.shape[2]
-    l_new = triton.next_power_of_2(l)
+    l_org = k.shape[2]
+    l_new = triton.next_power_of_2(l_org)
     # pad k, v, beta
-    k = torch.cat([k, torch.zeros_like(k)[:, :, :l_new-l, :]], dim=2)
-    v = torch.cat([v, torch.zeros_like(v)[:, :, :l_new-l, :]], dim=2)
-    beta = torch.cat([beta, torch.zeros_like(beta)[:, :, :l_new-l]], dim=2)
+    k = torch.cat([k, torch.zeros_like(k)[:, :, :l_new-l_org, :]], dim=2)
+    v = torch.cat([v, torch.zeros_like(v)[:, :, :l_new-l_org, :]], dim=2)
+    beta = torch.cat([beta, torch.zeros_like(beta)[:, :, :l_new-l_org]], dim=2)
 
     k, v = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c=chunk_size), (k, v))
     # k = torch.nn.functional.normalize(k, dim=-1, p=2)
@@ -226,7 +226,7 @@ def naive(k, v, beta, chunk_size):
         o[..., i, :] = -(attn[..., i, :i, None] * o_i).sum(3) + k_beta[..., i, :]
         o2_i = (o2[..., :i, :]).clone()
         o2[..., i, :] = -(attn[..., i, :i, None] * o2_i).sum(3) + x[..., i, :]
-    return map(lambda x: rearrange(x, 'b h n c d -> b h (n c) d')[:, :, :l], (o, v-o2))
+    return map(lambda x: rearrange(x, 'b h n c d -> b h (n c) d')[:, :, :l_org], (o, v-o2))
 
 
 if __name__ == "__main__":
@@ -253,7 +253,7 @@ if __name__ == "__main__":
     o3, o4 = prepare_wy_repr(k.clone(), v.clone(), beta.clone(), 32)
     print((o1-o3).abs().max())
     print((o2-o4).abs().max())
-    
+
     if require_grad:
         o3.backward(do, retain_graph=True)
         o4.backward(do2, retain_graph=True)

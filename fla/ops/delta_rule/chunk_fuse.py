@@ -8,9 +8,7 @@ import triton.language as tl
 from packaging import version
 from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.modules.l2norm import _l2_norm_bwd, _l2_norm_fwd
-from fla.ops.delta_rule.triton_fn import (bwd_prepare_wy_repr,
-                                          fwd_prepare_wy_repr)
+from fla.ops.delta_rule.utils import bwd_prepare_wy_repr, fwd_prepare_wy_repr
 from fla.utils import contiguous
 
 
@@ -20,9 +18,7 @@ from fla.utils import contiguous
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        # triton.Config({}, num_warps=16),
-        # triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=8)
     ],
     key=["BT", "BK"],
 )
@@ -329,19 +325,19 @@ def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
 
 
 class FusedChunkDeltaRuleFunction(torch.autograd.Function):
+
     @staticmethod
     @contiguous
     @custom_fwd
-    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_lvl=1):
+    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=1):
         # lvl=1 will recompute ``fwd_prepare_wy_repr`` for saving memory.
-        assert checkpoint_lvl in [0, 1]
-        batch_size, n_heads, seq_len, d_head_qk = q.shape
+        assert checkpoint_level in [0, 1]
         k_origin = k
         # k = _l2_norm_fwd(k_origin)
         k = k
         d, v_new = fwd_prepare_wy_repr(k, v, beta, BT)
         o, v_new2, CHECK, final_state = fused_chunk_delta_rule_fwd(q, k, v_new, d, BT, initial_state, output_final_state)
-        if checkpoint_lvl == 1:
+        if checkpoint_level == 1:
             d, v_new = None, None
         ctx.save_for_backward(q, k_origin, v, v_new, v_new2, d, beta, initial_state)
         ctx.CHECK = CHECK
@@ -400,12 +396,13 @@ def delta_rule_recurrence(q, k, v, beta):
 
 
 if __name__ == "__main__":
+    import torch.nn.functional as F
     seq_len = 128
     b = 2
     h = 4
-    k = torch.randn(b, h, seq_len, 64)
-    v = torch.randn(b, h, seq_len, 128)
-    q = torch.randn(b, h, seq_len, 64)
+    q = F.normalize(torch.randn(b, h, seq_len, 64), 2, -1)
+    k = F.normalize(torch.randn(b, h, seq_len, 64), 2, -1)
+    v = F.normalize(torch.randn(b, h, seq_len, 128), 2, -1)
     beta = torch.rand(b, h, seq_len).sigmoid()
     q, k, v, beta = map(lambda x: x.cuda().to(torch.float32).requires_grad_(True), (q, k, v, beta))
     do = torch.rand_like(v)
@@ -422,4 +419,3 @@ if __name__ == "__main__":
     print((k_grad - k_grad2).abs().max())
     print((v_grad - v_grad2).abs().max())
     print((beta_grad - beta_grad2).abs().max())
-    breakpoint()
