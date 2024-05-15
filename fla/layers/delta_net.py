@@ -9,8 +9,8 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
-from torch.nn import functional as F
 from transformers.cache_utils import Cache
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
@@ -20,23 +20,24 @@ from fla.ops.delta_rule import (fused_chunk_delta_rule,
 
 
 def simple_norm(x):
-    return F.normalize(x, dim=-1) * x.shape[-1] ** 0.5
+    return (F.normalize(x, dim=-1) * x.shape[-1] ** 0.5).to(x)
 
 
 # @torch.jit.script
 def elu_p1(x):
-    return F.elu(x, 1., False) + 1.
+    return (F.elu(x, 1., False) + 1.).to(x)
 
 
 # @torch.jit.script
 def sum_norm(x):
-    return x / x.sum(-1, keepdim=True)
+    return (x / x.sum(-1, keepdim=True)).to(x)
 
 
 # @torch.jit.script
 def elu_norm(x):
+    dtype = x.dtype
     x = F.elu(x, 1., False) + 1.
-    return x / x.sum(-1, keepdim=True)
+    return (x / x.sum(-1, keepdim=True)).to(dtype)
 
 
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
@@ -185,8 +186,8 @@ class DeltaNet(nn.Module):
         q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
 
         if not self.use_elu:
-            k = torch.nn.functional.normalize(k, p=2, dim=-1)
-            q = torch.nn.functional.normalize(q, p=2, dim=-1)
+            q = F.normalize(q, p=2, dim=-1).to(q)
+            k = F.normalize(k, p=2, dim=-1).to(k)
         else:
             q = elu_norm(q)
             k = elu_norm(k)
@@ -195,6 +196,7 @@ class DeltaNet(nn.Module):
             beta = rearrange(self.b_proj(hidden_states), 'b l h -> b h l').sigmoid()
         else:
             beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
+
         state = past_key_values[self.layer_idx][-1] if use_cache else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_linear_attn_delta_rule(q, k, v, beta, state, output_final_state=use_cache)
