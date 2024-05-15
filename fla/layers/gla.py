@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
+from einops import rearrange, repeat
 from transformers.cache_utils import Cache
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
@@ -33,6 +33,8 @@ class GatedLinearAttention(nn.Module):
             The expansion ratio for the value dim. Default: 1.0.
         num_heads (int, Optional):
             The number of heads. Default: 4.
+        num_kv_heads (int, Optional):
+            The number of key/value heads, used for MQA. Default: 4.
         use_short_conv (bool, Optional):
             Whether to use short convolutions. Default: `False`.
         conv_size (int, Optional):
@@ -68,6 +70,7 @@ class GatedLinearAttention(nn.Module):
         expand_k: float = 0.5,
         expand_v: float = 1.0,
         num_heads: int = 4,
+        num_kv_heads: int = 4,
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
@@ -89,6 +92,8 @@ class GatedLinearAttention(nn.Module):
         self.expand_k = expand_k
         self.expand_v = expand_v
         self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
+        self.num_kv_groups = self.num_heads // self.num_kv_heads
 
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
@@ -98,6 +103,8 @@ class GatedLinearAttention(nn.Module):
 
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
+        self.key_dim_per_group = self.key_dim // self.num_kv_groups
+        self.value_dim_per_group = self.value_dim // self.num_kv_groups
         self.clamp_min = clamp_min
         self.layer_idx = layer_idx
 
@@ -109,8 +116,8 @@ class GatedLinearAttention(nn.Module):
         self.head_v_dim = self.value_dim // num_heads
 
         self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
-        self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
-        self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_size, self.key_dim_per_group, bias=False)
+        self.v_proj = nn.Linear(hidden_size, self.value_dim_per_group, bias=False)
         if self.use_output_gate:
             self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
 
@@ -120,8 +127,8 @@ class GatedLinearAttention(nn.Module):
                 self.h_conv1d = ShortConvolution(hidden_size, conv_size, activation='silu')
             else:
                 self.q_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
-                self.k_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
-                self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
+                self.k_conv1d = ShortConvolution(self.key_dim_per_group, conv_size, activation='silu')
+                self.v_conv1d = ShortConvolution(self.value_dim_per_group, conv_size, activation='silu')
 
         self.gk_proj = nn.Sequential(nn.Linear(hidden_size, gate_low_rank_dim, bias=False),
                                      nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
@@ -187,7 +194,13 @@ class GatedLinearAttention(nn.Module):
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
-        q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
+        q = rearrange(q, 'b l (h d) -> b h l d', h=self.num_heads)
+        if self.num_kv_groups > 1:
+            k = repeat(k, 'b l (h d) -> b (h g) l d', h=self.num_kv_heads, g=self.num_kv_groups)
+            v = repeat(v, 'b l (h d) -> b (h g) l d', h=self.num_kv_heads, g=self.num_kv_groups)
+        else:
+            k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_kv_heads), (k, v))
+
         gk = rearrange(self.gk_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
         gk = F.logsigmoid(gk) / self.gate_logit_normalizer
 
@@ -249,16 +262,3 @@ class GatedLinearAttention(nn.Module):
             if isinstance(module, ShortConvolution):
                 state_size += module.state_size
         return state_size
-
-
-if __name__ == "__main__":
-    batch_size = 2
-    seq_len = 1023
-    hidden_size = 1000
-    dtype = torch.bfloat16
-    layer = GatedLinearAttention(hidden_size=hidden_size).cuda().to(dtype)
-    inputs = torch.randn(batch_size, seq_len, hidden_size).cuda().to(dtype).requires_grad_(True)
-    output = layer(inputs)[0]
-    print(output.shape)
-    output.backward(torch.rand_like(output))
-    print(inputs.grad.shape)

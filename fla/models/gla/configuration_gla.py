@@ -20,6 +20,7 @@ class GLAConfig(PretrainedConfig):
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
         num_heads: int = 4,
+        num_kv_heads: int = 4,
         attn_mode: str = "chunk",
         use_short_conv: bool = False,
         conv_size: int = 4,
@@ -51,6 +52,7 @@ class GLAConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
         self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
         self.attn_mode = attn_mode
         self.clamp_min = clamp_min
         self.hidden_act = hidden_act

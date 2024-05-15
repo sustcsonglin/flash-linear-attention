@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from einops import rearrange
+from einops import rearrange, repeat
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 
@@ -33,6 +33,8 @@ class MultiScaleRetention(nn.Module):
             The expansion ratio for the value dim. Default: 2.0.
         num_heads (int, Optional):
             The number of heads. Default: 8.
+        num_kv_heads (int, Optional):
+            The number of key/value heads, used for MQA. Default: 8.
         use_short_conv (bool, Optional):
             Whether to use short convolutions. Default: `False`.
         conv_size (int, Optional):
@@ -62,6 +64,7 @@ class MultiScaleRetention(nn.Module):
         expand_k: float = 1.0,
         expand_v: float = 2.0,
         num_heads: int = 8,
+        num_kv_heads: int = 8,
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
@@ -81,6 +84,8 @@ class MultiScaleRetention(nn.Module):
         self.expand_k = expand_k
         self.expand_v = expand_v
         self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
+        self.num_kv_groups = self.num_heads // self.num_kv_heads
 
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
@@ -90,6 +95,8 @@ class MultiScaleRetention(nn.Module):
 
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
+        self.key_dim_per_group = self.key_dim // self.num_kv_groups
+        self.value_dim_per_group = self.value_dim // self.num_kv_groups
         self.layer_idx = layer_idx
 
         assert mode in ['chunk', 'fused_chunk', 'parallel', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
@@ -100,8 +107,8 @@ class MultiScaleRetention(nn.Module):
         self.head_v_dim = self.value_dim // num_heads
 
         self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
-        self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
-        self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_size, self.key_dim_per_group, bias=False)
+        self.v_proj = nn.Linear(hidden_size, self.value_dim_per_group, bias=False)
         if self.use_output_gate:
             self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
 
@@ -111,8 +118,8 @@ class MultiScaleRetention(nn.Module):
                 self.h_conv1d = ShortConvolution(hidden_size, conv_size, activation='silu')
             else:
                 self.q_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
-                self.k_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
-                self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
+                self.k_conv1d = ShortConvolution(self.key_dim_per_group, conv_size, activation='silu')
+                self.v_conv1d = ShortConvolution(self.value_dim_per_group, conv_size, activation='silu')
 
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
@@ -128,7 +135,7 @@ class MultiScaleRetention(nn.Module):
         # https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/ops/triton/rotary.py#L180
         # Ideally, we would want to support arbitrary d_head_qk
         assert self.head_qk_dim <= 256, "head_qk_dim must be less than or equal to 256"
-        self.rotary = RotaryEmbedding(dim=self.head_qk_dim, interleaved=False)
+        self.rotary = RotaryEmbedding(dim=self.head_qk_dim)
 
         self.apply(self._initialize_weights)
 
@@ -180,7 +187,8 @@ class MultiScaleRetention(nn.Module):
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
-        q, k = map(lambda x: rearrange(x, '... (h d) -> ... h d', h=self.num_heads), (q, k))
+        q = rearrange(q, '... (h d) -> ... h d', h=self.num_heads)
+        k = rearrange(k, '... (h d) -> ... h d', h=self.num_kv_heads)
 
         seqlen_offset = 0
         if past_key_values is not None:
@@ -188,9 +196,13 @@ class MultiScaleRetention(nn.Module):
         if attention_mask is not None:
             # to deliminate the offsets of padding tokens
             seqlen_offset = seqlen_offset + attention_mask.sum(-1) - attention_mask.shape[-1]
-        q, k = self.rotary(q, k, seqlen_offset)
-        q, k = q.transpose(1, 2), k.transpose(1, 2)
-        v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_heads)
+        q, k = self.rotary(q, k, seqlen_offset, q.shape[1] + max(seqlen_offset))
+        q = q.transpose(1, 2)
+        if self.num_kv_groups > 1:
+            k = repeat(k, 'b t h d -> b (h g) t d', h=self.num_kv_heads, g=self.num_kv_groups)
+            v = repeat(v, 'b t (h d) -> b (h g) t d', h=self.num_kv_heads, g=self.num_kv_groups)
+        else:
+            k, v = rearrange(k, 'b t h d -> b h t d'), rearrange(v, 'b t (h d) -> b h t d')
 
         state = last_state[-1] if use_cache else None
         if mode == 'chunk':
