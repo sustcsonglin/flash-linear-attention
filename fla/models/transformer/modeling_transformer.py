@@ -45,15 +45,18 @@ class TransformerAttention(nn.Module):
         self.config = config
         self.layer_idx = layer_idx
 
+        self.num_heads = config.num_heads
+        self.num_kv_heads = config.num_kv_heads
+        self.num_kv_groups = config.num_heads // config.num_kv_heads
         self.hidden_size = config.hidden_size
-        self.num_heads = config.num_heads
         self.head_dim = self.hidden_size // self.num_heads
-        self.num_heads = config.num_heads
+        self.kv_dim = self.num_kv_heads * self.head_dim
+        self.kv_dim = self.num_kv_heads * self.head_dim
         self.max_position_embeddings = config.max_position_embeddings
 
         self.q_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
-        self.k_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
-        self.v_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+        self.k_proj = nn.Linear(self.hidden_size, self.kv_dim, bias=False)
+        self.v_proj = nn.Linear(self.hidden_size, self.kv_dim, bias=False)
         self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
 
         self.rotary = RotaryEmbedding(self.head_dim)
@@ -80,8 +83,8 @@ class TransformerAttention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         batch_size, q_len, _ = hidden_states.size()
         q = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
-        k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
-        v = rearrange(self.v_proj(hidden_states), 'b t (h d) -> b h t d', h=self.num_heads)
+        k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_kv_heads)
+        v = rearrange(self.v_proj(hidden_states), 'b t (h d) -> b h t d', h=self.num_kv_heads)
 
         seqlen_offset = 0
         if past_key_values is not None:
@@ -90,12 +93,15 @@ class TransformerAttention(nn.Module):
         if attention_mask is not None:
             # to deliminate the offsets of padding tokens
             seqlen_offset = seqlen_offset + attention_mask.sum(-1) - attention_mask.shape[-1]
-        q, k = self.rotary(q, k, seqlen_offset)
+        q, k = self.rotary(q, k, seqlen_offset, self.max_position_embeddings)
 
         k = rearrange(k, 'b t h d -> b h t d')
         if past_key_values is not None:
             k, v = past_key_values.update(k, v, self.layer_idx)
         k, v = rearrange(k, 'b h t d -> b t h d'), rearrange(v, 'b h t d -> b t h d')
+        if self.num_kv_groups > 1:
+            k = rearrange(k.unsqueeze(-2).repeat(1, 1, 1, self.num_kv_groups, 1), 'b t h g d -> b t (h g) d')
+            v = rearrange(v.unsqueeze(-2).repeat(1, 1, 1, self.num_kv_groups, 1), 'b t h g d -> b t (h g) d')
 
         if flash_attn_func is None:
             raise ImportError("Please install Flash Attention via `pip install flash-attn --no-build-isolation` first")

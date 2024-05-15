@@ -18,6 +18,7 @@ class TransformerConfig(PretrainedConfig):
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
         num_heads: int = 32,
+        num_kv_heads: int = 32,
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
         initializer_range: float = 0.02,
@@ -40,6 +41,7 @@ class TransformerConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
         self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
 
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
