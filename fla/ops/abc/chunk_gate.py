@@ -1117,7 +1117,7 @@ class ChunkGatedABCFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    def forward(ctx, q, k, v, s, g, initial_state, output_final_state, checkpoint_level):
+    def forward(ctx, q, k, v, s, g, scale, initial_state, output_final_state, checkpoint_level):
         B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
         BT, BC = 64, 16
         BK = min(64, triton.next_power_of_2(K))
@@ -1135,7 +1135,7 @@ class ChunkGatedABCFunction(torch.autograd.Function):
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, BC=BC,
             h0=initial_state[0] if initial_state is not None else None,
             ht=final_state[0] if final_state is not None else None,
-            scale=K ** -0.5
+            scale=scale
         )
 
         # equivalent to:
@@ -1153,7 +1153,8 @@ class ChunkGatedABCFunction(torch.autograd.Function):
             q=p.to(q.dtype), k=s, v=v, g=g,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, BC=BC,
             h0=initial_state[1] if initial_state is not None else None,
-            ht=final_state[1] if final_state is not None else None
+            ht=final_state[1] if final_state is not None else None,
+            scale=1.
         )
 
         if checkpoint_level >= 1:
@@ -1169,6 +1170,7 @@ class ChunkGatedABCFunction(torch.autograd.Function):
 
         ctx.save_for_backward(q, k, v, s, g, ok, p, hk, hv, Av, *initial_state)
         ctx.checkpoint_level = checkpoint_level
+        ctx.scale = scale
         ctx.BT = BT
         return ov, final_state
 
@@ -1203,17 +1205,18 @@ class ChunkGatedABCFunction(torch.autograd.Function):
                 ht=None
             )
 
-        dp, dsv, dv, dg = bwd_v(
+        dqv, dsv, dv, dg = bwd_v(
             q=qv, k=s, v=v, g=g, h=hv, A=Av, do=dov, dg=None,
-            B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, BC=BC
+            B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, BC=BC,
+            scale=1.
         )
 
         # softmax gradient, equivalent to:
-        # dok = p * (dp - (p * dp).sum(-1, True))
+        # dok = qv * (dqv - (qv * dqv).sum(-1, True))
         dok = torch.empty_like(ok)
         def grid(meta): return (triton.cdiv(meta['T'], meta['BT']), B * H)
         softmax_bwd_kernel[grid](
-            p, dp, dok,
+            p, dqv, dok,
             s.stride(1), s.stride(2), s.stride(3),
             T=T, S=M, BT=BT
         )
@@ -1221,7 +1224,7 @@ class ChunkGatedABCFunction(torch.autograd.Function):
         dq, dk, dsk, dg = bwd_k(
             q=q, k=k, v=s, g=g, h=hk, o=ok, do=dok, dg=dg,
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, BC=BC,
-            scale=K ** -0.5
+            scale=ctx.scale
         )
 
         ds = dsv.add_(dsk)
@@ -1231,7 +1234,7 @@ class ChunkGatedABCFunction(torch.autograd.Function):
         #     c = x.cumsum(dim)
         #     return x + c.index_select(dim, x.new_tensor([c.shape[dim]-1], dtype=torch.long)) - c
         dg = chunk_reversed_cumsum_fwd(dg).to(s.dtype)
-        return dq, dk, dv, ds, dg, None, None, None
+        return dq, dk, dv, ds, dg, None, None, None, None
 
 
 def chunk_gated_abc(
@@ -1240,6 +1243,7 @@ def chunk_gated_abc(
     v: torch.Tensor,
     s: torch.Tensor,
     g: Optional[torch.Tensor] = None,
+    scale: Optional[int] = None,
     initial_state: Optional[Tuple[torch.Tensor]] = None,
     output_final_state: Optional[bool] = False,
     checkpoint_level: Optional[int] = 2
@@ -1253,8 +1257,11 @@ def chunk_gated_abc(
         v (torch.Tensor):
             values of shape `(B, H, T, V)`
         g (torch.Tensor):
-            Forget gates of shape `(B, H, T, K)` applied to keys.
+            Forget gates of shape `(B, H, T, M)` applied to keys.
             If not provided, this function is equivalent to vanilla ABC.
+        scale (Optional[int]):
+            Scale factor for attention scores.
+            If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[Tuple[torch.Tensor]]):
             Initial state tuple having tensors of shape `(B, H, K, V)`. Default: `None`.
         output_final_state (Optional[bool]):
@@ -1274,5 +1281,7 @@ def chunk_gated_abc(
         z = s.float().logcumsumexp(2)
         g = torch.cat((z[:, :, :1], z[:, :, :-1]), 2) - z
         s = torch.exp(s - z).to(k.dtype)
-    ov, final_state = ChunkGatedABCFunction.apply(q, k, v, s, g, initial_state, output_final_state, checkpoint_level)
+    if scale is None:
+        scale = q.shape[-1] ** -0.5
+    ov, final_state = ChunkGatedABCFunction.apply(q, k, v, s, g, scale, initial_state, output_final_state, checkpoint_level)
     return ov, final_state
