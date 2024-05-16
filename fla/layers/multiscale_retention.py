@@ -35,6 +35,8 @@ class MultiScaleRetention(nn.Module):
             The number of heads. Default: 8.
         num_kv_heads (int, Optional):
             The number of key/value heads, used for MQA. Default: 8.
+        feature_map (str, Optional):
+            Feature map function applied to queries/keys. Default: None.
         use_short_conv (bool, Optional):
             Whether to use short convolutions. Default: `False`.
         conv_size (int, Optional):
@@ -65,6 +67,7 @@ class MultiScaleRetention(nn.Module):
         expand_v: float = 2.0,
         num_heads: int = 8,
         num_kv_heads: int = 8,
+        feature_map: Optional[str] = None,
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
@@ -86,6 +89,7 @@ class MultiScaleRetention(nn.Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
         self.num_kv_groups = self.num_heads // self.num_kv_heads
+        self.feature_map_fn = ACT2FN[feature_map] if feature_map is not None else None
 
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
@@ -189,6 +193,8 @@ class MultiScaleRetention(nn.Module):
             v = v.mul_(attention_mask.unsqueeze(-1))
         q = rearrange(q, '... (h d) -> ... h d', h=self.num_heads)
         k = rearrange(k, '... (h d) -> ... h d', h=self.num_kv_heads)
+        if self.feature_map_fn is not None:
+            q, k = map(self.feature_map_fn, (q, k))
 
         seqlen_offset = 0
         if past_key_values is not None:

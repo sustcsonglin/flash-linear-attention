@@ -69,6 +69,7 @@ class RetNetBlock(nn.Module):
             expand_v=config.expand_v,
             num_heads=config.num_heads,
             num_kv_heads=config.num_kv_heads,
+            feature_map=config.feature_map,
             use_output_gate=config.use_output_gate,
             gate_fn=config.hidden_act,
             elementwise_affine=config.elementwise_affine,

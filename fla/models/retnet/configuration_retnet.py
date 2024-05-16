@@ -23,6 +23,7 @@ class RetNetConfig(PretrainedConfig):
         num_hidden_layers: int = 24,
         num_heads: int = 8,
         num_kv_heads: int = 8,
+        feature_map: Optional[str] = None,
         attn_mode: str = "fused_chunk",
         hidden_act: str = "swish",
         use_short_conv: bool = False,
@@ -52,6 +53,7 @@ class RetNetConfig(PretrainedConfig):
         self.num_hidden_layers = num_hidden_layers
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
+        self.feature_map = feature_map
         self.attn_mode = attn_mode
         self.hidden_act = hidden_act
         self.use_short_conv = use_short_conv

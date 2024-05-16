@@ -35,6 +35,8 @@ class GatedLinearAttention(nn.Module):
             The number of heads. Default: 4.
         num_kv_heads (int, Optional):
             The number of key/value heads, used for MQA. Default: 4.
+        feature_map (str, Optional):
+            Feature map function applied to queries/keys. Default: None.
         use_short_conv (bool, Optional):
             Whether to use short convolutions. Default: `False`.
         conv_size (int, Optional):
@@ -71,6 +73,7 @@ class GatedLinearAttention(nn.Module):
         expand_v: float = 1.0,
         num_heads: int = 4,
         num_kv_heads: int = 4,
+        feature_map: Optional[str] = None,
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
@@ -94,6 +97,7 @@ class GatedLinearAttention(nn.Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
         self.num_kv_groups = self.num_heads // self.num_kv_heads
+        self.feature_map_fn = ACT2FN[feature_map] if feature_map is not None else None
 
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
@@ -190,6 +194,8 @@ class GatedLinearAttention(nn.Module):
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
+        if self.feature_map_fn is not None:
+            q, k = map(self.feature_map_fn, (q, k))
 
         # dealing with left-padding
         if attention_mask is not None:
