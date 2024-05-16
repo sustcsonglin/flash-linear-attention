@@ -383,6 +383,7 @@ swiglu = SwiGLUFunction.apply
 swiglu_linear = SwiGLULinearFunction.apply
 
 ACT2FN = {
+    'relu': F.relu,
     'sigmoid': sigmoid,
     'logsigmoid': logsigmoid,
     'silu': swish,
