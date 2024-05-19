@@ -66,7 +66,7 @@ class MultiScaleRetention(nn.Module):
         expand_k: float = 1.0,
         expand_v: float = 2.0,
         num_heads: int = 8,
-        num_kv_heads: int = 8,
+        num_kv_heads: Optional[int] = None,
         feature_map: Optional[str] = None,
         use_short_conv: bool = False,
         conv_size: int = 4,
@@ -87,7 +87,7 @@ class MultiScaleRetention(nn.Module):
         self.expand_k = expand_k
         self.expand_v = expand_v
         self.num_heads = num_heads
-        self.num_kv_heads = num_kv_heads
+        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else num_heads
         self.num_kv_groups = self.num_heads // self.num_kv_heads
         self.feature_map_fn = ACT2FN[feature_map] if feature_map is not None else None
 

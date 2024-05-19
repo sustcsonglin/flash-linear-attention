@@ -34,7 +34,7 @@ class GatedLinearAttention(nn.Module):
         num_heads (int, Optional):
             The number of heads. Default: 4.
         num_kv_heads (int, Optional):
-            The number of key/value heads, used for MQA. Default: 4.
+            The number of key/value heads, used for MQA. Default: None.
         feature_map (str, Optional):
             Feature map function applied to queries/keys. Default: None.
         use_short_conv (bool, Optional):
@@ -72,7 +72,7 @@ class GatedLinearAttention(nn.Module):
         expand_k: float = 0.5,
         expand_v: float = 1.0,
         num_heads: int = 4,
-        num_kv_heads: int = 4,
+        num_kv_heads: Optional[int] = None,
         feature_map: Optional[str] = None,
         use_short_conv: bool = False,
         conv_size: int = 4,
@@ -95,7 +95,7 @@ class GatedLinearAttention(nn.Module):
         self.expand_k = expand_k
         self.expand_v = expand_v
         self.num_heads = num_heads
-        self.num_kv_heads = num_kv_heads
+        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else num_heads
         self.num_kv_groups = self.num_heads // self.num_kv_heads
         self.feature_map_fn = ACT2FN[feature_map] if feature_map is not None else None
 
@@ -135,7 +135,7 @@ class GatedLinearAttention(nn.Module):
                 self.v_conv1d = ShortConvolution(self.value_dim_per_group, conv_size, activation='silu')
 
         self.gk_proj = nn.Sequential(nn.Linear(hidden_size, gate_low_rank_dim, bias=False),
-                                     nn.Linear(gate_low_rank_dim, self.key_dim, bias=True))
+                                     nn.Linear(gate_low_rank_dim, self.key_dim_per_group, bias=True))
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         if gate_fn == 'swish' and fuse_norm and use_output_gate:
@@ -194,20 +194,18 @@ class GatedLinearAttention(nn.Module):
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
+        gk = self.gk_proj(hidden_states)
+
         if self.feature_map_fn is not None:
             q, k = map(self.feature_map_fn, (q, k))
-
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
         q = rearrange(q, 'b l (h d) -> b h l d', h=self.num_heads)
         if self.num_kv_groups > 1:
-            k = repeat(k, 'b l (h d) -> b (h g) l d', h=self.num_kv_heads, g=self.num_kv_groups)
-            v = repeat(v, 'b l (h d) -> b (h g) l d', h=self.num_kv_heads, g=self.num_kv_groups)
+            k, v, gk = (repeat(x, 'b l (h d) -> b (h g) l d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v, gk))
         else:
-            k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_kv_heads), (k, v))
-
-        gk = rearrange(self.gk_proj(hidden_states), 'b n (h d) -> b h n d', h=self.num_heads)
+            k, v, gk = (rearrange(x, 'b l (h d) -> b h l d', h=self.num_kv_heads) for x in (k, v, gk))
         gk = F.logsigmoid(gk) / self.gate_logit_normalizer
 
         if self.clamp_min is not None:
