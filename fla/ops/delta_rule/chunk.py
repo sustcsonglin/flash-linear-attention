@@ -493,17 +493,13 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
     @staticmethod
     @custom_fwd
     @contiguous
-    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=0):
-        # B, H, T, K, V = *q.shape, v.shape[-1]
-
+    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=1):        
         ### obtain WY representation. u is actually the new v.
         w, u, A = fwd_prepare_wy_repr(k, v, beta, BT)
-        
         # ### forward_h 
         final_state = None
         if output_final_state:
             final_state = q.new_empty(B, H, K, V, dtype=torch.float32, requires_grad=False)
-        
         h, v_new = chunk_fwd_h_fn(k, w, u, BT, initial_state, final_state)        
         ## obtain output 
         o = chunk_fwd_o_fn(q, k, v_new, h, BT)
@@ -513,19 +509,6 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
         ctx.save_for_backward(q, k, v, beta, A, h, v_new, initial_state)
         ctx.BT = BT
         return o.to(q.dtype), final_state
-        # # assert checkpoint_level in [0, 1]
-        # k_origin = k
-        # # k = _l2_norm_fwd(k_origin)
-        # k = k
-        # d, v_new = fwd_prepare_wy_repr(k, v, beta, BT)
-        # o, v_new2, CHECK, final_state = fused_chunk_delta_rule_fwd(q, k, v_new, d, BT, initial_state, output_final_state)
-        # if checkpoint_level == 1:
-        #     d, v_new = None, None
-        # ctx.save_for_backward(q, k_origin, v, v_new, v_new2, d, beta, initial_state)
-        # ctx.CHECK = CHECK
-        # ctx.chunk_size = BT
-        # return o.to(q.dtype), final_state
-
 
     @staticmethod
     @custom_bwd
@@ -535,20 +518,15 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
         scale = q.shape[-1] ** -0.5
         BT = ctx.BT
         w, u = fwd_recompute_w_u(k, v, beta, A, BT)
-
         # checkpont_level=1, recomputation.
         if h is None:
-            h, v_new = chunk_fwd_h_fn(q, k, w, u, BT, initial_state, final_state)
-        
+            h, v_new = chunk_fwd_h_fn(k, w, u, BT, initial_state, None)
         dv = fwd_prepare_dv(q, k, do, BT)
         dh, dv = chunk_bwd_dhu_fn(q, k, w, do, dv, BT)
         dq, dk, dw = chunk_bwd_dqkw_fn(q, k, v_new, w, h, dv, do, dh, BT)
-
-        # dq, dk, dv, dw = fused_chunk_delta_rule_bwd(q, k, v_new, w, do, BT, True, initial_state)
         dk2, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, A, dw, dv, BT)
         dk.add_(dk2)
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dbeta.to(beta.dtype), None, None, None, None
-
 
 def chunk_delta_rule(
     q: torch.Tensor,
@@ -559,9 +537,8 @@ def chunk_delta_rule(
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
 ):
+    assert q.dtype == k.dtype == v.dtype
     if initial_state is not None:
         initial_state = initial_state.detach()
     o, final_state = ChunkDeltaRuleFunction.apply(q, k, v, beta, BT,  initial_state, output_final_state)
     return o, final_state
-
-    

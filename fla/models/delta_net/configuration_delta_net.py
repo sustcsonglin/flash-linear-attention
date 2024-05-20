@@ -14,30 +14,26 @@ class DeltaNetConfig(PretrainedConfig):
         self,
         vocab_size: int = 32000,
         hidden_size: int = 2048,
-        expand_k: int = 0.5,
+        expand_k: int = 1,
         expand_v: int = 1,
-        use_gate: bool = True,
-        use_short_conv: bool = False,
+        use_gate: bool = False,
+        use_short_conv: bool = True,
         conv_size: int = 4,
         share_conv_kernel: bool = False,
         use_rope: bool = False,
         use_beta: bool = True,
-        use_elu: bool = False,
+        use_output_norm: bool = True,
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
         num_heads: int = 4,
-        attn_mode: str = "fused_chunk",
-        chunk_size: int = 32,
-        feature_map: str = "identity",
-        tie_feature_map_qk: bool = False,
-        norm_q: bool = False,
-        norm_k: bool = False,
-        norm_feature_map: bool = False,
+        attn_mode: str = "chunk",
+        qk_norm: str = 'l2',
+        qk_activation: str = 'silu',
+        chunk_size: int = 64,
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
-        elementwise_affine: Optional[bool] = True,
-        norm_eps: float = 1e-6,
+        rms_norm_eps: float = 1e-6,
         use_cache: bool = True,
         pad_token_id: int = None,
         bos_token_id: int = 1,
@@ -57,14 +53,8 @@ class DeltaNetConfig(PretrainedConfig):
         self.num_hidden_layers = num_hidden_layers
         self.num_heads = num_heads
         self.attn_mode = attn_mode
-        self.feature_map = feature_map
-        self.tie_feature_map_qk = tie_feature_map_qk
-        self.norm_q = norm_q
-        self.norm_k = norm_k
-        self.norm_feature_map = norm_feature_map
         self.hidden_act = hidden_act
-        self.elementwise_affine = elementwise_affine
-        self.norm_eps = norm_eps
+        self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         self.fuse_cross_entropy = fuse_cross_entropy
@@ -74,7 +64,9 @@ class DeltaNetConfig(PretrainedConfig):
         self.share_conv_kernel = share_conv_kernel
         self.use_rope = use_rope
         self.use_beta = use_beta
-        self.use_elu = use_elu
+        self.use_output_norm = use_output_norm
+        self.qk_norm = qk_norm
+        self.qk_activation = qk_activation
 
         super().__init__(
             pad_token_id=pad_token_id,

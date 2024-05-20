@@ -61,7 +61,7 @@ class DeltaNetBlock(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
+        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
         self.attn = DeltaNet(
             mode=config.attn_mode,
             hidden_size=config.hidden_size,
@@ -71,20 +71,15 @@ class DeltaNetBlock(nn.Module):
             use_gate=config.use_gate,
             use_rope=config.use_rope,
             use_beta=config.use_beta,
-            use_elu=config.use_elu,
             use_short_conv=config.use_short_conv,
+            use_output_norm=config.use_output_norm,
             conv_size=config.conv_size,
             share_conv_kernel=config.share_conv_kernel,
-            feature_map=config.feature_map,
-            tie_feature_map_qk=config.tie_feature_map_qk,
-            norm_q=config.norm_q,
-            norm_k=config.norm_k,
-            do_feature_map_norm=config.norm_feature_map,
-            elementwise_affine=config.elementwise_affine,
-            norm_eps=config.norm_eps,
-            layer_idx=layer_idx
+            layer_idx=layer_idx,
+            qk_norm=config.qk_norm,
+            qk_activation=config.qk_activation
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
+        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = DeltaNetMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -173,7 +168,7 @@ class DeltaNetModel(DeltaNetPreTrainedModel):
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([DeltaNetBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, eps=config.norm_eps)
+        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
 
@@ -264,9 +259,9 @@ class DeltaNetModel(DeltaNetPreTrainedModel):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = None
-        if use_cache:
-            next_cache = past_key_values.to_legacy_cache()
+        next_cache = past_key_values
+        # if use_cache:
+            # next_cache = past_key_values.to_legacy_cache()
         if not return_dict:
             return tuple(x for x in [hidden_states, next_cache, all_hidden_states, all_attns] if x is not None)
         return BaseModelOutputWithPast(
@@ -334,6 +329,7 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
         if past_key_values is not None:
             if not isinstance(past_key_values, RecurrentCache):
                 past_key_values = RecurrentCache.from_legacy_cache(past_key_values, input_ids.shape[1] - 1)
+            # breakpoint()
             input_ids, attention_mask = input_ids[:, -1:], attention_mask[:, -1:]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
@@ -345,7 +341,7 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
             # Ref: https://github.com/huggingface/transformers/pull/29114
             # TODO: use `next_tokens` directly instead.
             model_inputs = {'input_ids': input_ids.contiguous()}
-
+        
         model_inputs.update({
             'past_key_values': past_key_values,
             'use_cache': kwargs.get('use_cache'),
