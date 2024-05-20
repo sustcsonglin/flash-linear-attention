@@ -46,8 +46,11 @@ class TransformerAttention(nn.Module):
         self.layer_idx = layer_idx
 
         self.num_heads = config.num_heads
-        self.num_kv_heads = config.num_kv_heads
-        self.num_kv_groups = config.num_heads // config.num_kv_heads
+        if config.num_kv_heads is None:
+            self.num_kv_heads = self.num_heads
+        else:
+            self.num_kv_heads = config.num_kv_heads
+        self.num_kv_groups = config.num_heads // self.num_kv_heads
         self.hidden_size = config.hidden_size
         self.head_dim = self.hidden_size // self.num_heads
         self.kv_dim = self.num_kv_heads * self.head_dim
