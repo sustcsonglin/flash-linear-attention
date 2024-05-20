@@ -268,16 +268,16 @@ def fused_chunk_delta_rule_fwd(q, k, v, d, BT, initial_state, output_final_state
     else:
         final_state = None
     CHECK = True
-    if version.parse(triton.__version__) < version.parse('2.2.0'):
-        import warnings
-        warnings.warn(
-            "Triton<2.2.0 detected for running this kernel, "
-            "which is known to have some weird compiler issues (refer to https://github.com/openai/triton/issues/2852) "
-            "that lead to significant precision loss. "
-            "We've add some initial condition checks to resolve this, sadly at the sacrifice of the speed. "
-            "For optimal performance, it is recommended to install Triton>=2.2.0 (if possible)."
-        )
-        CHECK = True
+    # if version.parse(triton.__version__) < version.parse('2.2.0'):
+    #     import warnings
+    #     warnings.warn(
+    #         "Triton<2.2.0 detected for running this kernel, "
+    #         "which is known to have some weird compiler issues (refer to https://github.com/openai/triton/issues/2852) "
+    #         "that lead to significant precision loss. "
+    #         "We've add some initial condition checks to resolve this, sadly at the sacrifice of the speed. "
+    #         "For optimal performance, it is recommended to install Triton>=2.2.0 (if possible)."
+    #     )
+    #     CHECK = True
     grid = (NV, NK, batch_size * n_heads)
     v_new = torch.empty_like(v)
     fused_chunk_delta_rule_fwd_kernel[grid](
@@ -323,13 +323,11 @@ def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
     dd[:, :, 0:BT] = 0
     return dq, dk, dv, dd
 
-
 class FusedChunkDeltaRuleFunction(torch.autograd.Function):
-
     @staticmethod
     @contiguous
     @custom_fwd
-    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=1):
+    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=0):
         # lvl=1 will recompute ``fwd_prepare_wy_repr`` for saving memory.
         assert checkpoint_level in [0, 1]
         k_origin = k

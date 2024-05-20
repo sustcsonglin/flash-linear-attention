@@ -65,8 +65,8 @@ def delta_rule_chunkwise(q, k, v, beta, chunk_size=32):
 if __name__ == '__main__':
     B = 2
     H = 4
-    L = 128
-    DK = 64
+    L = 256
+    DK = 128
     DV = 128
     q = (torch.randn(B, H, L, DK)).cuda().requires_grad_(True)
     k = (torch.randn(B, H, L, DK)).cuda()
