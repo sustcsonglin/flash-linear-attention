@@ -199,7 +199,6 @@ def chunk_rwkv6_fwd_kernel_intra(
 
     if i_i > i_j:
         p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        # p_g = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
         p_gs = tl.make_block_ptr(gs + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
         p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
@@ -316,6 +315,7 @@ def chunk_rwkv6_bwd_kernel_dh(
     gs,
     do,
     dh,
+    dh0,
     s_k_h,
     s_k_t,
     s_k_d,
@@ -332,7 +332,8 @@ def chunk_rwkv6_bwd_kernel_dh(
     BT: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    NT: tl.constexpr
+    NT: tl.constexpr,
+    USE_INITIAL_STATE: tl.constexpr
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
@@ -362,6 +363,10 @@ def chunk_rwkv6_bwd_kernel_dh(
 
         # [BK, BV]
         b_dh += tl.dot(b_q, b_do, allow_tf32=False)
+
+    if USE_INITIAL_STATE:
+        p_dh0 = tl.make_block_ptr(dh0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -649,9 +654,6 @@ class ChunkRWKV6Function(torch.autograd.Function):
             num_stages=num_stages
         )
 
-        # if checkpoint_level >= 1:
-        #     del g
-        #     g = g_org
         if checkpoint_level > 1:
             del h
             h, initial_state = None, None
@@ -692,21 +694,23 @@ class ChunkRWKV6Function(torch.autograd.Function):
             )
             return h
 
-        def bwd_inner(q, g, gs, do, B, H, T, K, V, BT, BK, BV, NT, scale):
+        def bwd_inner(q, g, gs, h0, do, B, H, T, K, V, BT, BK, BV, NT, scale):
             NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
             dh = q.new_empty(B, H, NT * K, V)
+            dh0 = torch.empty_like(h0) if h0 is not None else None
             grid = (NK, NV, B * H)
             chunk_rwkv6_bwd_kernel_dh[grid](
-                q, g, gs, do, dh,
+                q, g, gs, do, dh, dh0,
                 q.stride(1), q.stride(2), q.stride(3),
                 do.stride(1), do.stride(2), do.stride(3),
                 dh.stride(1), dh.stride(2), dh.stride(3),
                 scale,
                 T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
+                USE_INITIAL_STATE=h0 is not None,
                 num_warps=num_warps,
                 num_stages=num_stages
             )
-            return dh
+            return dh, dh0
 
         # recompute cumulative log decays.
         g_org, g, gs = g, torch.empty_like(g, dtype=torch.float), torch.empty_like(g, dtype=torch.float)
@@ -730,8 +734,8 @@ class ChunkRWKV6Function(torch.autograd.Function):
             )
 
         scale = ctx.scale
-        dh = bwd_inner(
-            q, g, gs, do,
+        dh, dh0 = bwd_inner(
+            q, g, gs, initial_state, do,
             B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             scale=scale
         )
@@ -779,7 +783,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
             num_warps=4
         )
         du = du.sum([0, 2])
-        return dq.to(q), dk.to(k), dv.to(v), dg.to(g), du.to(u), None, None, None, None
+        return dq.to(q), dk.to(k), dv.to(v), dg.to(g), du.to(u), None, dh0, None, None
 
 
 def chunk_rwkv6(
@@ -821,7 +825,92 @@ def chunk_rwkv6(
     assert checkpoint_level in [0, 1]
     if scale is None:
         scale = r.shape[-1] ** -0.5
-    if initial_state is not None:
-        initial_state = initial_state.detach()
     o, final_state = ChunkRWKV6Function.apply(r, k, v, g, u, scale, initial_state, output_final_state, checkpoint_level)
     return o, final_state
+
+
+if __name__ == "__main__":
+    import torch.nn.functional as F
+
+    from fla.ops.rwkv6.recurrent_fuse import fused_recurrent_rwkv6
+    B = 4
+    H = 4
+    L = 1024
+    K = 100
+    V = 120
+
+    dtype = torch.float32
+    q = torch.randn(B, H, L, K).cuda().to(dtype).requires_grad_(True)
+    k = torch.randn(B, H, L, K).cuda().to(dtype).requires_grad_(True)
+    v = torch.randn(B, H, L, V).cuda().to(dtype).requires_grad_(True)
+    w = F.logsigmoid(torch.randn(B, H, L, K)).cuda().to(torch.float32).requires_grad_(True)
+    u = torch.randn(H, K).cuda().to(dtype).requires_grad_(True)
+    h0 = torch.randn(B, H, K, V).cuda().to(dtype).requires_grad_(True)
+    do = torch.rand_like(v).cuda()
+    o, ht = fused_recurrent_rwkv6(q, k, v, w, u, initial_state=h0, output_final_state=True)
+    o.backward(do)
+    dq, q.grad = q.grad.clone(), None
+    dk, k.grad = k.grad.clone(), None
+    dv, v.grad = v.grad.clone(), None
+    dw, w.grad = w.grad.clone(), None
+    du, u.grad = u.grad.clone(), None
+    dh0, h0.grad = h0.grad.clone(), None
+    o2, ht2 = chunk_rwkv6(q, k, v, w, u, initial_state=h0, output_final_state=True)
+    o2.backward(do)
+    torch.testing.assert_close(o, o2, rtol=0, atol=1e-4)
+    torch.testing.assert_close(ht, ht2, rtol=0, atol=1e-4)
+    torch.testing.assert_close(q.grad, dq, rtol=0, atol=1e-4)
+    torch.testing.assert_close(k.grad, dk, rtol=0, atol=1e-4)
+    torch.testing.assert_close(v.grad, dv, rtol=0, atol=1e-4)
+    torch.testing.assert_close(w.grad, dw, rtol=0, atol=1e-4)
+    torch.testing.assert_close(u.grad, du, rtol=0, atol=2e-4)
+    torch.testing.assert_close(h0.grad, dh0, rtol=0, atol=2e-4)
+
+    print("All tests passed!")
+
+    @triton.testing.perf_report(
+        triton.testing.Benchmark(
+            # argument names to use as an x-axis for the plot
+            x_names=['T'],
+            # different possible values for `x_name`
+            x_vals=[128 * 2 ** i for i in range(0, 8)],
+            # argument name whose value corresponds to a different line in the plot
+            line_arg='provider',
+            # possible values for `line_arg``
+            line_vals=['recurrent', 'chunk', 'recurrent_bwd', 'chunk_bwd'],
+            # label name for the lines
+            line_names=['recurrent', 'chunk', 'recurrent_bwd', 'chunk_bwd'],
+            # line styles
+            styles=[('green', '-'), ('blue', '--'), ('red', '-.'), ('cyan', ':'), ('yellow', 'dotted'), ('black', 'dashed')],
+            ylabel="Execution Time (ms)",  # label name for the y-axis
+            # name for the plot. Used also as a file name for saving the plot.
+            plot_name="Performance",
+            args={},
+        )
+    )
+    def benchmark(T, provider):
+        device = 'cuda'
+        dtype = torch.bfloat16
+        requires_grad = True
+        B, H, K = 16, 4, 128
+
+        q = torch.randn(B, H, T, K, device=device, requires_grad=requires_grad, dtype=dtype)
+        k = torch.randn(B, H, T, K, device=device, requires_grad=requires_grad, dtype=dtype)
+        v = torch.randn(B, H, T, K, device=device, requires_grad=requires_grad, dtype=dtype)
+        w = F.logsigmoid(torch.randn(B, H, T, K)).to(dtype=dtype, device=device).requires_grad_(True)
+        u = torch.randn(H, K, device=device, requires_grad=requires_grad, dtype=dtype)
+
+        do = torch.ones_like(q, dtype=dtype)
+        quantiles = [0.5, 0.2, 0.8]
+        results = 0, 0, 0
+        if provider == 'recurrent':
+            results = triton.testing.do_bench(lambda: fused_recurrent_rwkv6(q, k, v, w, u), quantiles=quantiles)
+        if provider == 'chunk':
+            results = triton.testing.do_bench(lambda: chunk_rwkv6(q, k, v, w, u), quantiles=quantiles)
+        if provider == 'recurrent_bwd':
+            results = triton.testing.do_bench(lambda: fused_recurrent_rwkv6(q, k, v, w, u)
+                                              [0].backward(do), quantiles=quantiles)
+        if provider == 'chunk_bwd':
+            results = triton.testing.do_bench(lambda: chunk_rwkv6(q, k, v, w, u)[0].backward(do), quantiles=quantiles)
+        return results
+    benchmark.run(print_data=True)
