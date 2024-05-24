@@ -20,7 +20,7 @@ class GLAConfig(PretrainedConfig):
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
         num_heads: int = 4,
-        num_kv_heads: int = 4,
+        num_kv_heads: Optional[int] = None,
         feature_map: Optional[str] = None,
         attn_mode: str = "chunk",
         use_short_conv: bool = False,

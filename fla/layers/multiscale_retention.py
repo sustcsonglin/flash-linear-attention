@@ -34,7 +34,7 @@ class MultiScaleRetention(nn.Module):
         num_heads (int, Optional):
             The number of heads. Default: 8.
         num_kv_heads (int, Optional):
-            The number of key/value heads, used for MQA. Default: 8.
+            The number of key/value heads, used for MQA. Default: None.
         feature_map (str, Optional):
             Feature map function applied to queries/keys. Default: None.
         use_short_conv (bool, Optional):
