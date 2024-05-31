@@ -104,7 +104,7 @@ class ABCAttention(nn.Module):
             if self.use_output_gate:
                 self.g_norm = FusedRMSNormSwishGate(self.head_v_dim, elementwise_affine, norm_eps)
             else:
-                self.g_norm = RMSNorm(self.head_v_dim, elementwise_affine, norm_eps)
+                self.g_norm = RMSNorm(hidden_size=self.head_v_dim, elementwise_affine=elementwise_affine, eps=norm_eps)
 
         if self.use_rope:
             self.rotary = RotaryEmbedding(self.head_k_dim)

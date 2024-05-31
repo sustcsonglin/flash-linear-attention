@@ -92,7 +92,7 @@ class LinearAttention(nn.Module):
 
         self.do_feature_map_norm = do_feature_map_norm
         if output_norm == 'rmsnorm':
-            self.norm = RMSNorm(self.head_v_dim, elementwise_affine, norm_eps)
+            self.norm = RMSNorm(hidden_size=self.head_v_dim, elementwise_affine=elementwise_affine, eps=norm_eps)
         elif output_norm == 'identity':
             self.norm = nn.Identity()
         else:
