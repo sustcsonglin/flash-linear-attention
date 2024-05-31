@@ -109,8 +109,8 @@ class RWKV6Block(nn.Module):
         self.layer_idx = layer_idx
 
         if config.norm_first and layer_idx == 0:
-            self.pre_norm = LayerNorm(hidden_size=config.hidden_size, eps=config.eps)
-        self.attn_norm = LayerNorm(hidden_size=config.hidden_size, eps=config.eps)
+            self.pre_norm = LayerNorm(hidden_size=config.hidden_size, bias=config.norm_bias, eps=config.norm_eps)
+        self.attn_norm = LayerNorm(hidden_size=config.hidden_size, bias=config.norm_bias, eps=config.norm_eps)
         self.attn = RWKV6Attention(
             mode=config.attn_mode,
             hidden_size=config.hidden_size,
@@ -119,11 +119,11 @@ class RWKV6Block(nn.Module):
             num_heads=config.num_heads,
             proj_low_rank_dim=config.proj_low_rank_dim,
             gate_low_rank_dim=config.gate_low_rank_dim,
-            eps=config.eps,
+            norm_eps=config.norm_eps,
             fuse_norm=config.fuse_norm,
             layer_idx=layer_idx
         )
-        self.ffn_norm = LayerNorm(hidden_size=config.hidden_size, eps=config.eps)
+        self.ffn_norm = LayerNorm(hidden_size=config.hidden_size, bias=config.norm_bias, eps=config.norm_eps)
         self.ffn = (RWKV6GLU if config.use_glu else RWKV6FeedForward)(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -213,7 +213,7 @@ class RWKV6Model(RWKV6PreTrainedModel):
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([RWKV6Block(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        self.norm = LayerNorm(config.hidden_size, eps=config.eps)
+        self.norm = LayerNorm(config.hidden_size, bias=config.norm_bias, eps=config.norm_eps)
 
         self.gradient_checkpointing = False
 

@@ -20,14 +20,15 @@ class RWKV6Config(PretrainedConfig):
         hidden_ratio: Optional[int] = 3.5,
         intermediate_size: Optional[int] = None,
         use_glu: Optional[bool] = False,
-        norm_first: bool = True,
         num_hidden_layers: int = 24,
         num_heads: int = 4,
         proj_low_rank_dim: int = 32,
         gate_low_rank_dim: int = 64,
         hidden_act: str = "sqrelu",
         max_position_embeddings: int = 2048,
-        eps: float = 1e-6,
+        norm_first: bool = True,
+        norm_bias: bool = True,
+        norm_eps: float = 1e-5,
         use_cache: bool = True,
         pad_token_id: int = None,
         bos_token_id: int = 1,
@@ -53,7 +54,8 @@ class RWKV6Config(PretrainedConfig):
         self.gate_low_rank_dim = gate_low_rank_dim
         self.attn_mode = attn_mode
         self.hidden_act = hidden_act
-        self.eps = eps
+        self.norm_bias = norm_bias
+        self.norm_eps = norm_eps
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         self.fuse_norm = fuse_norm
