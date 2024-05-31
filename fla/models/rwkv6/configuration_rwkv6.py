@@ -20,6 +20,7 @@ class RWKV6Config(PretrainedConfig):
         hidden_ratio: Optional[int] = 3.5,
         intermediate_size: Optional[int] = None,
         use_glu: Optional[bool] = False,
+        norm_first: bool = True,
         num_hidden_layers: int = 24,
         num_heads: int = 4,
         proj_low_rank_dim: int = 32,
@@ -45,6 +46,7 @@ class RWKV6Config(PretrainedConfig):
         self.hidden_ratio = hidden_ratio
         self.intermediate_size = intermediate_size
         self.use_glu = use_glu
+        self.norm_first = norm_first
         self.num_hidden_layers = num_hidden_layers
         self.num_heads = num_heads
         self.proj_low_rank_dim = proj_low_rank_dim

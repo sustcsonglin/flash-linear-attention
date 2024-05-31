@@ -9,10 +9,9 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from einops import rearrange
-from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 
-from fla.modules import FusedLayerNormSwishGate, LayerNorm
+from fla.modules.activations import ACT2FN
 from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
 
 
@@ -59,8 +58,10 @@ class RWKV6Attention(nn.Module):
         self.x_proj = nn.Sequential(
             LerpLinear(hidden_size, proj_low_rank_dim * 5),
             nn.Tanh(),
-            nn.Linear(proj_low_rank_dim * 5, hidden_size, bias=True)
+            nn.Linear(proj_low_rank_dim * 5, hidden_size, bias=False)
         )
+        self.x_bias = nn.Parameter(torch.zeros(5, hidden_size))
+
         self.r_proj = DDLerpLinear(hidden_size, self.key_dim)
         self.w_proj = DDLerpLinear(hidden_size, self.key_dim, low_rank_dim=gate_low_rank_dim)
         self.k_proj = DDLerpLinear(hidden_size, self.key_dim)
@@ -69,14 +70,9 @@ class RWKV6Attention(nn.Module):
         self.bonus = nn.Parameter(torch.zeros(num_heads, self.head_qk_dim))
 
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
-
-        if gate_fn == 'swish' and fuse_norm:
-            self.g_norm_swish_gate = FusedLayerNormSwishGate(self.head_v_dim, elementwise_affine, norm_eps)
-            self.fuse_norm_and_gate = True
-        else:
-            self.fuse_norm_and_gate = False
-            self.g_norm = LayerNorm(self.head_v_dim, elementwise_affine, norm_eps)
-            self.gate_fn = ACT2FN[gate_fn]
+        # TODO: fuse GroupNorm and output gate
+        self.g_norm = nn.GroupNorm(self.num_heads, self.value_dim, norm_eps, elementwise_affine)
+        self.gate_fn = ACT2FN[gate_fn]
 
         self.apply(self._initialize_weights)
 
@@ -106,9 +102,9 @@ class RWKV6Attention(nn.Module):
 
         delta = self.time_shift(hidden_states) - hidden_states
         x = self.x_proj[0](hidden_states, delta).view(batch_size, seq_len, -1, self.proj_low_rank_dim)
-        r, w, k, v, g = torch.einsum('b l n r, n r d-> b l n d',
-                                     self.x_proj[1](x),
-                                     self.x_proj[2].weight.view(5, -1, hidden_size)).unbind(-2)
+        x = torch.einsum('b l n r, h n r-> b l n h', self.x_proj[1](x), self.x_proj[2].weight.view(hidden_size, 5, -1))
+
+        r, w, k, v, g = x.add_(self.x_bias).unbind(-2)
         r = self.r_proj(hidden_states, r, delta)
         w = self.w_proj(hidden_states, w, delta)
         k = self.k_proj(hidden_states, k, delta)
@@ -124,25 +120,24 @@ class RWKV6Attention(nn.Module):
 
         last_state = past_key_values[self.layer_idx] if use_cache else None
         state = last_state[-1] if use_cache else None
+
         if mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_rwkv6(r, k, v, w, u, initial_state=state, output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_rwkv6(r, k, v, w, u,
+                                                       scale=1.,
+                                                       initial_state=state, output_final_state=use_cache)
         elif mode == 'chunk':
-            o, recurrent_state = chunk_rwkv6(r, k, v, w, u, initial_state=state, output_final_state=use_cache)
+            o, recurrent_state = chunk_rwkv6(r, k, v, w, u,
+                                             scale=1.,
+                                             initial_state=state,
+                                             output_final_state=use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
             past_key_values.update((recurrent_state,), self.layer_idx, r.shape[2])
 
-        o = rearrange(o, 'b h l d -> b l h d')
-        if self.fuse_norm_and_gate:
-            g = rearrange(g, 'b l (h d) -> b l h d', h=self.num_heads)
-            o = self.g_norm_swish_gate(o, g)
-            o = rearrange(o, 'b l h d -> b l (h d)')
-        else:
-            o = self.g_norm(o)
-            o = rearrange(o, 'b l h d -> b l (h d)')
-            o = o * self.gate_fn(g)
+        o = self.g_norm(rearrange(o, 'b h l d -> (b l) (h d)'))
+        o = rearrange(o, '(b l) d -> b l d', b=r.shape[0]) * self.gate_fn(g)
         o = self.o_proj(o)
 
         return o, None, past_key_values

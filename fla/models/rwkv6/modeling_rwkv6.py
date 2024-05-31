@@ -47,7 +47,7 @@ class RWKV6FeedForward(nn.Module):
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
 
         self.key = LerpLinear(hidden_size, intermediate_size)
-        self.value = nn.Linear(intermediate_size, hidden_size)
+        self.value = nn.Linear(intermediate_size, hidden_size, bias=False)
         self.receptance = LerpLinear(hidden_size, hidden_size)
         self.act_fn = ACT2FN[hidden_act]
 
@@ -105,6 +105,11 @@ class RWKV6Block(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
+        self.config = config
+        self.layer_idx = layer_idx
+
+        if config.norm_first and layer_idx == 0:
+            self.pre_norm = LayerNorm(hidden_size=config.hidden_size, eps=config.eps)
         self.attn_norm = LayerNorm(hidden_size=config.hidden_size, eps=config.eps)
         self.attn = RWKV6Attention(
             mode=config.attn_mode,
@@ -136,8 +141,8 @@ class RWKV6Block(nn.Module):
         output_attentions: Optional[bool] = False,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-        residual = hidden_states
-        hidden_states = self.attn_norm(hidden_states)
+        residual = self.pre_norm(hidden_states) if hasattr(self, 'pre_norm') else hidden_states
+        hidden_states = self.attn_norm(residual)
         hidden_states, attentions, past_key_values = self.attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
