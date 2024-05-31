@@ -49,8 +49,7 @@ def rms_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast
     if residual is not None:
         x = (x + residual).to(x.dtype)
     rstd = 1 / torch.sqrt((x.square()).mean(dim=-1, keepdim=True) + eps)
-    out = (x * rstd * weight) + \
-        bias if bias is not None else (x * rstd * weight)
+    out = (x * rstd * weight) + bias if bias is not None else (x * rstd * weight)
     out = out.to(dtype)
     return out if not prenorm else (out, x)
 
@@ -103,8 +102,7 @@ def _layer_norm_fwd_1pass_kernel(
     cols = tl.arange(0, BLOCK_N)
     x = tl.load(X + cols, mask=cols < N, other=0.0).to(tl.float32)
     if HAS_RESIDUAL:
-        residual = tl.load(RESIDUAL + cols, mask=cols <
-                           N, other=0.0).to(tl.float32)
+        residual = tl.load(RESIDUAL + cols, mask=cols < N, other=0.0).to(tl.float32)
         x += residual
     if STORE_RESIDUAL_OUT:
         tl.store(RESIDUAL_OUT + cols, x, mask=cols < N)
@@ -139,33 +137,25 @@ def _layer_norm_fwd(
     if residual is not None:
         residual_dtype = residual.dtype
     M, N = x.shape
-    assert x.stride(-1) == 1
     if residual is not None:
-        assert residual.stride(-1) == 1
         assert residual.shape == (M, N)
     if weight is not None:
         assert weight.shape == (N,)
-        assert weight.stride(-1) == 1
     if bias is not None:
-        assert bias.stride(-1) == 1
         assert bias.shape == (N,)
     # allocate output
     y = torch.empty_like(x, dtype=x.dtype if out_dtype is None else out_dtype)
-    assert y.stride(-1) == 1
     if residual is not None or (residual_dtype is not None and residual_dtype != x.dtype):
         residual_out = torch.empty(M, N, device=x.device, dtype=residual_dtype)
-        assert residual_out.stride(-1) == 1
     else:
         residual_out = None
-    mean = torch.empty((M,), dtype=torch.float32,
-                       device="cuda") if not is_rms_norm else None
+    mean = torch.empty((M,), dtype=torch.float32, device="cuda") if not is_rms_norm else None
     rstd = torch.empty((M,), dtype=torch.float32, device="cuda")
     # Less than 64KB per feature: enqueue fused kernel
     MAX_FUSED_SIZE = 65536 // x.element_size()
     BLOCK_N = min(MAX_FUSED_SIZE, triton.next_power_of_2(N))
     if N > BLOCK_N:
-        raise RuntimeError(
-            "This layer norm doesn't support feature dim >= 64KB.")
+        raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
     # heuristics for number of warps
     with torch.cuda.device(x.device.index):
         _layer_norm_fwd_1pass_kernel[(M,)](
@@ -326,20 +316,15 @@ def _layer_norm_bwd(
     has_residual=False,
     is_rms_norm=False,
     x_dtype=None,
-    recompute_output=False,
+    recompute_output=False
 ):
     M, N = x.shape
-    assert x.stride(-1) == 1
-    assert dy.stride(-1) == 1
     assert dy.shape == (M, N)
     if dresidual is not None:
-        assert dresidual.stride(-1) == 1
         assert dresidual.shape == (M, N)
     if weight is not None:
         assert weight.shape == (N,)
-        assert weight.stride(-1) == 1
     if bias is not None:
-        assert bias.stride(-1) == 1
         assert bias.shape == (N,)
     # allocate output
     dx = (
@@ -423,7 +408,7 @@ class LayerNormFn(torch.autograd.Function):
         eps=1e-6,
         prenorm=False,
         residual_in_fp32=False,
-        is_rms_norm=False,
+        is_rms_norm=False
     ):
         x_shape_og = x.shape
         # reshape input data into 2D tensor
@@ -494,7 +479,7 @@ def layer_norm_fn(
     eps=1e-6,
     prenorm=False,
     residual_in_fp32=False,
-    is_rms_norm=False,
+    is_rms_norm=False
 ):
     return LayerNormFn.apply(x, weight, bias, residual, eps, prenorm, residual_in_fp32, is_rms_norm)
 
@@ -517,6 +502,7 @@ class LayerNorm(nn.Module):
         self,
         hidden_size: int,
         elementwise_affine: bool = True,
+        bias: bool = True,
         eps: float = 1e-5
     ) -> LayerNorm:
         super().__init__()
@@ -525,11 +511,12 @@ class LayerNorm(nn.Module):
         self.elementwise_affine = elementwise_affine
         self.eps = eps
 
+        self.register_parameter("weight", None)
+        self.register_parameter("bias", None)
         if elementwise_affine:
             self.weight = nn.Parameter(torch.ones(hidden_size))
-        else:
-            self.register_parameter("weight", None)
-        self.register_parameter("bias", None)
+            if bias:
+                self.bias = nn.Parameter(torch.zeros(hidden_size))
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.hidden_size}"
@@ -557,6 +544,7 @@ class RMSNorm(nn.Module):
         self,
         hidden_size: int,
         elementwise_affine: bool = True,
+        bias: bool = True,
         eps: float = 1e-5
     ) -> RMSNorm:
         super().__init__()
@@ -565,11 +553,12 @@ class RMSNorm(nn.Module):
         self.elementwise_affine = elementwise_affine
         self.eps = eps
 
+        self.register_parameter("weight", None)
+        self.register_parameter("bias", None)
         if elementwise_affine:
             self.weight = nn.Parameter(torch.ones(hidden_size))
-        else:
-            self.register_parameter("weight", None)
-        self.register_parameter("bias", None)
+            if bias:
+                self.bias = nn.Parameter(torch.zeros(hidden_size))
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.hidden_size}"
@@ -700,7 +689,7 @@ def layer_norm_linear_fn(
     eps=1e-6,
     prenorm=False,
     residual_in_fp32=False,
-    is_rms_norm=False,
+    is_rms_norm=False
 ):
     return LayerNormLinearFn.apply(
         x,
@@ -722,7 +711,8 @@ class LayerNormLinear(nn.Module):
         self,
         hidden_size,
         elementwise_affine: bool = True,
-        eps=1e-5
+        bias: bool = True,
+        eps: float = 1e-5
     ) -> LayerNormLinear:
         super().__init__()
 
@@ -730,11 +720,12 @@ class LayerNormLinear(nn.Module):
         self.elementwise_affine = elementwise_affine
         self.eps = eps
 
+        self.register_parameter("weight", None)
+        self.register_parameter("bias", None)
         if elementwise_affine:
             self.weight = nn.Parameter(torch.ones(hidden_size))
-        else:
-            self.register_parameter("weight", None)
-        self.register_parameter("bias", None)
+            if bias:
+                self.bias = nn.Parameter(torch.zeros(hidden_size))
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.hidden_size}"
@@ -765,7 +756,8 @@ class RMSNormLinear(nn.Module):
         self,
         hidden_size,
         elementwise_affine: bool = True,
-        eps=1e-5
+        bias: bool = True,
+        eps: float = 1e-5
     ) -> RMSNormLinear:
         super().__init__()
 
@@ -773,11 +765,12 @@ class RMSNormLinear(nn.Module):
         self.elementwise_affine = elementwise_affine
         self.eps = eps
 
+        self.register_parameter("weight", None)
+        self.register_parameter("bias", None)
         if elementwise_affine:
             self.weight = nn.Parameter(torch.ones(hidden_size))
-        else:
-            self.register_parameter("weight", None)
-        self.register_parameter("bias", None)
+            if bias:
+                self.bias = nn.Parameter(torch.zeros(hidden_size))
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.hidden_size}"
