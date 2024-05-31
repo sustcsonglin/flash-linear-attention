@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-import math
+
 import torch
-import torch.nn.functional as F
-from torch.cuda.amp import custom_fwd, custom_bwd
 import triton
 import triton.language as tl
+
 
 @triton.autotune(
     configs=[
@@ -36,7 +35,7 @@ def _l2_norm_fwd_1pass_kernel(
     cols = tl.arange(0, BLOCK_N)
     x = tl.load(X + cols, mask=cols < N, other=0.0).to(tl.float32)
     xbar = tl.where(cols < N, x, 0.0)
-    var = tl.sum(xbar * xbar, axis=0) 
+    var = tl.sum(xbar * xbar, axis=0)
     rstd = 1 / tl.sqrt(var + eps)
     # tl.store(Rstd + row, rstd)
     # Normalize and apply linear transformation
@@ -83,7 +82,7 @@ def _l2_norm_bwd_kernel(
     cols = tl.arange(0, BLOCK_N)
     x = tl.load(X + cols, mask=cols < N, other=0.0).to(tl.float32)
     x = tl.where(cols < N, x, 0.0)
-    var = tl.sum(x * x) 
+    var = tl.sum(x * x)
     rstd = 1 / tl.sqrt(var + eps)
     # tl.store(Rstd + row, rstd)
     # Normalize and apply linear transformation
@@ -91,9 +90,10 @@ def _l2_norm_bwd_kernel(
     # y = x * rstd
     dy = tl.load(DY + cols, mask=cols < N, other=0.0).to(tl.float32)
     dy = tl.where(cols < N, dy, 0.0)
-    # dx = dy * rstd - tl.sum(dy * x) * (1 / (var+eps)) * rstd * x 
+    # dx = dy * rstd - tl.sum(dy * x) * (1 / (var+eps)) * rstd * x
     dx = dy * rstd - tl.sum(dy * x) * (1 / (var+eps)) * rstd * x
     tl.store(DX + cols, dx, mask=mask)
+
 
 def _l2_norm_fwd(
     x, eps=1e-6
@@ -103,7 +103,7 @@ def _l2_norm_fwd(
     if x.stride(-1) != 1:
         x = x.contiguous()
         M, N = x.shape
-    assert x.stride(-1) == 1 
+    assert x.stride(-1) == 1
     # allocate output
     y = torch.empty_like(x)
     assert y.stride(-1) == 1
@@ -131,6 +131,7 @@ def _l2_norm_fwd(
             # bias is not None,
         )
     return y.reshape(x_shape_og)
+
 
 def _l2_norm_bwd(
     x, dy, eps=1e-5,
@@ -169,6 +170,7 @@ def _l2_norm_bwd(
 
 
 class L2NormFN(torch.autograd.Function):
+
     @staticmethod
     def forward(
         ctx,
@@ -177,11 +179,10 @@ class L2NormFN(torch.autograd.Function):
     ):
         # reshape input data into 2D tensor
         y = _l2_norm_fwd(x, eps)
-        ctx.x_shape_og = x_shape_og
         ctx.eps = eps
         ctx.x_dtype = x.dtype
         ctx.save_for_backward(x)
-        return y 
+        return y
 
     @staticmethod
     def backward(ctx, dy, *args):
@@ -196,21 +197,5 @@ class L2NormFN(torch.autograd.Function):
             None
         )
 
+
 l2_norm_fn = L2NormFN.apply
-
-if __name__ == '__main__':
-    x = torch.rand(10, 10, 100).cuda().requires_grad_(True)
-    y = torch.nn.functional.normalize(x, dim=-1, p=2)
-    dy = torch.rand_like(y)
-    y.backward(dy, retain_graph=True)
-    x_grad, x.grad = x.grad, None
-    y2 = l2_norm_fn(x, 1e-6)
-    print((y-y2).abs().max())
-    y2.backward(dy, retain_graph=True)
-    x_grad2, x.grad = x.grad, None
-    print((x_grad2-x_grad).abs().max())
-    breakpoint()    
-    
-
-    
-    
