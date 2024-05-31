@@ -40,8 +40,8 @@ def sizeof_fmt(num, suffix='B'):
 
 
 def convert(
-    config: str,
     llama: str,
+    config: str,
     output: str
 ):
     AutoTokenizer.from_pretrained(llama).save_pretrained(output)
@@ -101,6 +101,7 @@ def convert(
         model.model.layers[i].mlp.down_proj.weight.data.copy_(llama.model.layers[i].mlp.down_proj.weight)
         torch.testing.assert_close(model.model.layers[i].mlp.down_proj.weight,
                                    llama.model.layers[i].mlp.down_proj.weight)
+
     if model.model.norm.weight is not None:
         print("llama.model.norm.weight -> model.model.norm.weight")
         model.model.norm.weight.data.copy_(llama.model.norm.weight)
@@ -120,8 +121,8 @@ def convert(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default='mistralai/Mistral-7B-v0.1')
     parser.add_argument("--config", default='configs/transformer_7B.json')
-    parser.add_argument("--llama", default='mistralai/Mistral-7B-v0.1')
     parser.add_argument("--output", default='converted/transformer-7B')
     args = parser.parse_args()
-    convert(args.config, args.llama, args.output)
+    convert(args.model, args.config, args.output)
