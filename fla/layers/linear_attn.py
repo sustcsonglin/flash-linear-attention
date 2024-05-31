@@ -36,7 +36,7 @@ class LinearAttention(nn.Module):
 
         assert output_norm in ['rmsnorm', 'identity'], f"Not supported output norm `{output_norm}`."
 
-        self.hidden_size
+        self.hidden_size = hidden_size
         self.mode = mode
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
