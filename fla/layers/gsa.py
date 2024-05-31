@@ -15,12 +15,14 @@ from fla.modules import (FusedRMSNormSwishGateLinear, RMSNormLinear,
                          RotaryEmbedding, ShortConvolution)
 from fla.modules.activations import ACT2FN, swiglu_linear, swish
 from fla.ops.abc.chunk_gate import chunk_gated_abc
+from fla.ops.abc.recurrent_fuse import fused_recurrent_gated_abc
 
 
-class GatedABCAttention(nn.Module):
+class GatedSlotAttention(nn.Module):
 
     def __init__(
         self,
+        mode: str = 'chunk',
         hidden_size: int = 1024,
         expand_k: float = 1.,
         expand_v: float = 1.,
@@ -41,9 +43,10 @@ class GatedABCAttention(nn.Module):
         use_norm: bool = True,
         layer_idx: Optional[int] = None,
         **kwargs
-    ) -> GatedABCAttention:
+    ) -> GatedSlotAttention:
         super().__init__()
 
+        self.mode = mode
         self.hidden_size = hidden_size
         self.expand_k = expand_k
         self.expand_v = expand_v
@@ -133,6 +136,8 @@ class GatedABCAttention(nn.Module):
         lower_bound: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
+        # launching the triton kernel for just one token will actually be slower
+        mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
         last_state = past_key_values[self.layer_idx] if use_cache else None
         if self.use_short_conv:
@@ -191,9 +196,17 @@ class GatedABCAttention(nn.Module):
             v = v.mul_(attention_mask.view(attention_mask.shape[0], 1, -1, 1))
 
         recurrent_state = last_state[-2:] if use_cache else None
-        o, recurrent_state = chunk_gated_abc(q, k, v, s, f,
-                                             initial_state=recurrent_state,
-                                             output_final_state=use_cache)
+        if mode == 'fused_recurrent':
+            o, recurrent_state = fused_recurrent_gated_abc(q, k, v, s, f,
+                                                           initial_state=recurrent_state,
+                                                           output_final_state=use_cache)
+        elif mode == 'chunk':
+            o, recurrent_state = chunk_gated_abc(q, k, v, s, f,
+                                                 initial_state=recurrent_state,
+                                                 output_final_state=use_cache)
+        else:
+            raise NotImplementedError(f"Not supported mode `{mode}`.")
+
         if past_key_values is not None:
             if self.use_short_conv:
                 if self.share_conv_kernel:
