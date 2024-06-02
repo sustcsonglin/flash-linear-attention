@@ -18,7 +18,7 @@ except BaseException:
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         # argument names to use as an x-axis for the plot
-        x_names=['seq_len'],
+        x_names=['T'],
         # different possible values for `x_name`
         x_vals=[128 * 2 ** i for i in range(0, 8)],
         # argument name whose value corresponds to a different line in the plot
@@ -36,24 +36,24 @@ except BaseException:
         args={},
     )
 )
-def benchmark(seq_len, provider):
+def benchmark(T, provider):
     device = 'cuda'
     dtype = torch.bfloat16
     requires_grad = True
-    batch_size, n_heads, d_head, n_slots = 16, 8, 128, 64
+    B, H, D, n_slots = 16, 8, 128, 64
 
-    q = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
-    k = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
-    v = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
+    q = torch.randn(B, H, T, D, device=device, requires_grad=requires_grad, dtype=dtype)
+    k = torch.randn(B, H, T, D, device=device, requires_grad=requires_grad, dtype=dtype)
+    v = torch.randn(B, H, T, D, device=device, requires_grad=requires_grad, dtype=dtype)
     if provider.startswith('flash'):
-        q = torch.randn(batch_size, seq_len, n_heads, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
-        k = torch.randn(batch_size, seq_len, n_heads, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
-        v = torch.randn(batch_size, seq_len, n_heads, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
+        q = torch.randn(B, T, H, D, device=device, requires_grad=requires_grad, dtype=dtype)
+        k = torch.randn(B, T, H, D, device=device, requires_grad=requires_grad, dtype=dtype)
+        v = torch.randn(B, T, H, D, device=device, requires_grad=requires_grad, dtype=dtype)
     if provider.startswith('gla'):
-        g = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, d_head, device=device, dtype=dtype))
+        g = F.logsigmoid(torch.randn(B, H, T, D, device=device, dtype=dtype))
         g = g.clamp_min(-5).requires_grad_(requires_grad)
     if provider.startswith('abc'):
-        s = torch.randn(batch_size, n_heads, seq_len, n_slots, device=device, requires_grad=requires_grad, dtype=dtype)
+        s = torch.randn(B, H, T, n_slots, device=device, requires_grad=requires_grad, dtype=dtype)
 
     do = torch.ones_like(v, dtype=dtype)
 

@@ -12,7 +12,7 @@ from fla.ops.retention.naive import naive_retention
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         # argument names to use as an x-axis for the plot
-        x_names=['seq_len'],
+        x_names=['T'],
         # different possible values for `x_name`
         x_vals=[128 * 2 ** i for i in range(0, 8)],
         # argument name whose value corresponds to a different line in the plot
@@ -32,24 +32,23 @@ from fla.ops.retention.naive import naive_retention
         args={},
     )
 )
-def benchmark(seq_len, provider):
+def benchmark(T, provider):
     device = 'cuda'
     dtype = torch.bfloat16
     requires_grad = True
-    batch_size, n_heads, d_head = 16, 8, 128
+    B, H, D = 16, 8, 128
 
-    q = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
-    k = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
-    g = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, d_head, device=device,
-                     dtype=dtype)).clamp_min(-5).requires_grad_(requires_grad)
-    v = torch.randn(batch_size, n_heads, seq_len, d_head, device=device, requires_grad=requires_grad, dtype=dtype)
+    q = torch.randn(B, H, T, D, device=device, requires_grad=requires_grad, dtype=dtype)
+    k = torch.randn(B, H, T, D, device=device, requires_grad=requires_grad, dtype=dtype)
+    g = F.logsigmoid(torch.randn(B, H, T, D, device=device, dtype=dtype)).clamp_min(-5).requires_grad_(requires_grad)
+    v = torch.randn(B, H, T, D, device=device, requires_grad=requires_grad, dtype=dtype)
 
     do = torch.ones_like(q, dtype=dtype)
 
     quantiles = [0.5, 0.2, 0.8]
     results = 0, 0, 0
     if provider == 'torch':
-        if seq_len > 2048:
+        if T > 2048:
             return results
         results = triton.testing.do_bench(lambda: naive_retention(q, k, v), quantiles=quantiles)
     elif provider == 'recurrent_gla':
@@ -63,7 +62,7 @@ def benchmark(seq_len, provider):
     elif provider == 'parallel':
         results = triton.testing.do_bench(lambda: parallel_retention(q, k, v), quantiles=quantiles)
     elif provider == 'torch_bwd':
-        if seq_len > 2048:
+        if T > 2048:
             return results
     elif provider == 'chunk_retention_bwd':
         results = triton.testing.do_bench(lambda: chunk_retention(q, k, v).backward(do), quantiles=quantiles)
