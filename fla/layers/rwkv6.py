@@ -11,6 +11,7 @@ import torch.nn as nn
 from einops import rearrange
 from transformers.cache_utils import Cache
 
+from fla.modules import GroupNorm
 from fla.modules.activations import ACT2FN
 from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
 
@@ -69,9 +70,9 @@ class RWKV6Attention(nn.Module):
         self.g_proj = DDLerpLinear(hidden_size, self.value_dim)
         self.bonus = nn.Parameter(torch.zeros(num_heads, self.head_qk_dim))
 
-        self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
         # TODO: fuse GroupNorm and output gate
-        self.g_norm = nn.GroupNorm(self.num_heads, self.value_dim, norm_eps, elementwise_affine)
+        self.g_norm = GroupNorm(self.num_heads, self.value_dim, elementwise_affine=elementwise_affine, bias=True, eps=norm_eps)
+        self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
         self.gate_fn = ACT2FN[gate_fn]
 
         self.apply(self._initialize_weights)
@@ -136,8 +137,7 @@ class RWKV6Attention(nn.Module):
         if past_key_values is not None:
             past_key_values.update((recurrent_state,), self.layer_idx, r.shape[2])
 
-        o = self.g_norm(rearrange(o, 'b h l d -> (b l) (h d)'))
-        o = rearrange(o, '(b l) d -> b l d', b=r.shape[0]) * self.gate_fn(g)
+        o = self.g_norm(rearrange(o, 'b h l d -> b l (h d)')) * self.gate_fn(g)
         o = self.o_proj(o)
 
         return o, None, past_key_values
