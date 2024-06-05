@@ -755,7 +755,7 @@ class LayerNormLinearFn(torch.autograd.Function):
             recompute_output=True,
             num_groups=ctx.num_groups
         )
-        dlinear_weight = torch.einsum("bo,bi->oi", dout, y.view_as(dout))
+        dlinear_weight = torch.einsum("bo,bi->oi", dout, y.view(-1, linear_weight.shape[-1]))
         return (
             dx.reshape(ctx.x_shape_og),
             dnorm_weight,
