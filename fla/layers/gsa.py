@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange, repeat
+from einops import rearrange
 from transformers.cache_utils import Cache
 
 from fla.modules import (FusedRMSNormSwishGateLinear, RMSNormLinear,
@@ -175,16 +175,9 @@ class GatedSlotAttention(nn.Module):
             k = rearrange(k, 'b n h d -> b h n d', h=self.num_kv_heads)
         else:
             q = rearrange(q, 'b n (h d) -> b h n d', h=self.num_heads)
-            if self.num_kv_groups > 1:
-                k = repeat(k, 'b n (h d) -> b (h g) n d', h=self.num_kv_heads, g=self.num_kv_groups)
-            else:
-                k = rearrange(k, 'b n (h d) -> b h n d', h=self.num_kv_heads)
-        if self.num_kv_groups > 1:
-            v = repeat(v, 'b n (h d) -> b (h g) n d', h=self.num_kv_heads, g=self.num_kv_groups)
-            f = repeat(f, 'b n (h m) -> b (h g) n m', h=self.num_kv_heads, g=self.num_kv_groups)
-        else:
-            v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_kv_heads)
-            f = rearrange(f, 'b n (h m) -> b h n m', h=self.num_kv_heads)
+            k = rearrange(k, 'b n (h d) -> b h n d', h=self.num_kv_heads)
+        v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_kv_heads)
+        f = rearrange(f, 'b n (h m) -> b h n m', h=self.num_kv_heads)
 
         if self.feature_map is not None:
             q, k, v = map(lambda x: ACT2FN[self.feature_map](x), (q, k, v))
