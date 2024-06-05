@@ -59,14 +59,30 @@ def convert(
     model.model.embeddings.weight.data.copy_(llama.model.embed_tokens.weight)
     torch.testing.assert_close(model.model.embeddings.weight, llama.model.embed_tokens.weight)
     for i in range(config.num_hidden_layers):
-        if model.model.layers[i].attn_norm.weight is not None:
-            print(f"llama.model.layers{i}.input_layernorm.weight -> model.model.layers{i}.attn_norm.weight")
-            model.model.layers[i].attn_norm.weight.data.copy_(llama.model.layers[i].input_layernorm.weight)
-            torch.testing.assert_close(model.model.layers[i].attn_norm.weight, llama.model.layers[i].input_layernorm.weight)
-        if model.model.layers[i].attn_norm.bias is not None:
-            print(f"llama.model.layers{i}.input_layernorm.bias -> model.model.layers{i}.attn_norm.bias")
-            model.model.layers[i].attn_norm.bias.data.copy_(llama.model.layers[i].input_layernorm.bias)
-            torch.testing.assert_close(model.model.layers[i].attn_norm.bias, llama.model.layers[i].input_layernorm.bias)
+        if hasattr(model.model.layers[i], 'attn_norm'):
+            if model.model.layers[i].attn_norm.weight is not None:
+                print(f"llama.model.layers{i}.input_layernorm.weight -> model.model.layers{i}.attn_norm.weight")
+                model.model.layers[i].attn_norm.weight.data.copy_(llama.model.layers[i].input_layernorm.weight)
+                torch.testing.assert_close(model.model.layers[i].attn_norm.weight,
+                                           llama.model.layers[i].input_layernorm.weight)
+            if model.model.layers[i].attn_norm.bias is not None:
+                print(f"llama.model.layers{i}.input_layernorm.bias -> model.model.layers{i}.attn_norm.bias")
+                model.model.layers[i].attn_norm.bias.data.copy_(llama.model.layers[i].input_layernorm.bias)
+                torch.testing.assert_close(model.model.layers[i].attn_norm.bias,
+                                           llama.model.layers[i].input_layernorm.bias)
+            model.model.layers[i].attn_norm.eps = llama.model.layers[i].input_layernorm.variance_epsilon
+        if hasattr(model.model.layers[i].attn, 'norm'):
+            if model.model.layers[i].attn.norm.weight is not None:
+                print(f"llama.model.layers{i}.input_layernorm.weight -> model.model.layers{i}.attn.norm.weight")
+                model.model.layers[i].attn.norm.weight.data.copy_(llama.model.layers[i].input_layernorm.weight)
+                torch.testing.assert_close(model.model.layers[i].attn.norm.weight,
+                                           llama.model.layers[i].input_layernorm.weight)
+            if model.model.layers[i].attn.norm.bias is not None:
+                print(f"llama.model.layers{i}.input_layernorm.bias -> model.model.layers{i}.attn.norm.bias")
+                model.model.layers[i].attn.norm.bias.data.copy_(llama.model.layers[i].input_layernorm.bias)
+                torch.testing.assert_close(model.model.layers[i].attn.norm.bias,
+                                           llama.model.layers[i].input_layernorm.bias)
+            model.model.layers[i].attn.norm.eps = llama.model.layers[i].input_layernorm.variance_epsilon
         print(f"llama.model.layers{i}.attn.q_proj.weight  -> model.model.layers{i}.attn.q_proj.weight")
         model.model.layers[i].attn.q_proj.weight.data.copy_(llama.model.layers[i].self_attn.q_proj.weight)
         torch.testing.assert_close(model.model.layers[i].attn.q_proj.weight, llama.model.layers[i].self_attn.q_proj.weight)
@@ -82,16 +98,30 @@ def convert(
         model.model.layers[i].attn.o_proj.weight.data.copy_(llama.model.layers[i].self_attn.o_proj.weight)
         torch.testing.assert_close(model.model.layers[i].attn.o_proj.weight, llama.model.layers[i].self_attn.o_proj.weight)
 
-        if model.model.layers[i].mlp_norm.weight is not None:
-            print(f"llama.model.layers{i}.post_attention_layernorm.weight -> model.model.layers{i}.mlp_norm.weight")
-            model.model.layers[i].mlp_norm.weight.data.copy_(llama.model.layers[i].post_attention_layernorm.weight)
-            torch.testing.assert_close(model.model.layers[i].mlp_norm.weight,
-                                       llama.model.layers[i].post_attention_layernorm.weight)
-        if model.model.layers[i].mlp_norm.bias is not None:
-            print(f"llama.model.layers{i}.post_attention_layernorm.bias -> model.model.layers{i}.mlp_norm.bias")
-            model.model.layers[i].mlp_norm.bias.data.copy_(llama.model.layers[i].post_attention_layernorm.bias)
-            torch.testing.assert_close(model.model.layers[i].mlp_norm.bias,
-                                       llama.model.layers[i].post_attention_layernorm.bias)
+        if hasattr(model.model.layers[i], 'mlp_norm'):
+            if model.model.layers[i].mlp_norm.weight is not None:
+                print(f"llama.model.layers{i}.post_attention_layernorm.weight -> model.model.layers{i}.mlp_norm.weight")
+                model.model.layers[i].mlp_norm.weight.data.copy_(llama.model.layers[i].post_attention_layernorm.weight)
+                torch.testing.assert_close(model.model.layers[i].mlp_norm.weight,
+                                           llama.model.layers[i].post_attention_layernorm.weight)
+            if model.model.layers[i].mlp_norm.bias is not None:
+                print(f"llama.model.layers{i}.post_attention_layernorm.bias -> model.model.layers{i}.mlp_norm.bias")
+                model.model.layers[i].mlp_norm.bias.data.copy_(llama.model.layers[i].post_attention_layernorm.bias)
+                torch.testing.assert_close(model.model.layers[i].mlp_norm.bias,
+                                           llama.model.layers[i].post_attention_layernorm.bias)
+            model.model.layers[i].mlp_norm.eps = llama.model.layers[i].post_attention_layernorm.variance_epsilon
+        if hasattr(model.model.layers[i].mlp, 'norm'):
+            if model.model.layers[i].mlp.norm.weight is not None:
+                print(f"llama.model.layers{i}.post_attention_layernorm.weight -> model.model.layers{i}.mlp.norm.weight")
+                model.model.layers[i].mlp.norm.weight.data.copy_(llama.model.layers[i].post_attention_layernorm.weight)
+                torch.testing.assert_close(model.model.layers[i].mlp.norm.weight,
+                                           llama.model.layers[i].post_attention_layernorm.weight)
+            if model.model.layers[i].mlp.norm.bias is not None:
+                print(f"llama.model.layers{i}.post_attention_layernorm.bias -> model.model.layers{i}.mlp.norm.bias")
+                model.model.layers[i].mlp.norm.bias.data.copy_(llama.model.layers[i].post_attention_layernorm.bias)
+                torch.testing.assert_close(model.model.layers[i].mlp.norm.bias,
+                                           llama.model.layers[i].post_attention_layernorm.bias)
+            model.model.layers[i].mlp.norm.eps = llama.model.layers[i].post_attention_layernorm.variance_epsilon
 
         print(f"llama.model.layers.{i}.mlp.gate/up_proj.weight -> model.model.layers.{i}.mlp.gate_proj.weight")
         model.model.layers[i].mlp.gate_proj.weight.data.copy_(torch.cat((llama.model.layers[i].mlp.gate_proj.weight,
@@ -110,12 +140,14 @@ def convert(
         print("llama.model.norm.bias -> model.model.norm.bias")
         model.model.norm.bias.data.copy_(llama.model.norm.bias)
         torch.testing.assert_close(model.model.norm.bias, llama.model.norm.bias)
+    model.model.norm.eps = llama.model.norm.variance_epsilon
+
     if not model.config.tie_word_embeddings:
         print("llama.model.lm_head.weight -> model.lm_head.weight")
         model.lm_head.weight.data.copy_(llama.lm_head.weight)
         torch.testing.assert_close(model.lm_head.weight, llama.lm_head.weight)
 
-    print(f"Saving converted model to {output} ...")
+    print(f"Saving converted model to {output} ...\n{model}")
     model.save_pretrained(output)
 
 
