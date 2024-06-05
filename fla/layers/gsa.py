@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from transformers.cache_utils import Cache
 
-from fla.modules import (FusedRMSNormSwishGateLinear, RMSNormLinear,
+from fla.modules import (FusedRMSNormSwishGateLinear, RMSNorm, RMSNormLinear,
                          RotaryEmbedding, ShortConvolution)
 from fla.modules.activations import ACT2FN, swiglu_linear, swish
 from fla.ops.abc.chunk_gate import chunk_gated_abc
@@ -34,6 +34,7 @@ class GatedSlotAttention(nn.Module):
         share_conv_kernel: bool = True,
         num_slots: Optional[int] = None,
         elementwise_affine: Optional[bool] = True,
+        norm_first: bool = True,
         norm_eps: float = 1e-5,
         gate_low_rank_dim: Optional[int] = None,
         gate_logit_normalizer: int = 16,
@@ -78,6 +79,7 @@ class GatedSlotAttention(nn.Module):
         if num_slots is None:
             num_slots = self.head_k_dim
         self.num_slots = num_slots
+        self.norm_first = norm_first
 
         self.layer_idx = layer_idx
 
@@ -88,6 +90,8 @@ class GatedSlotAttention(nn.Module):
                 "when creating this class."
             )
 
+        if norm_first:
+            self.norm = RMSNorm(self.hidden_size, eps=norm_eps)
         self.q_proj = nn.Linear(self.hidden_size, self.key_dim, bias=False)
         self.k_proj = nn.Linear(self.hidden_size, self.key_dim_per_group, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.value_dim_per_group, bias=False)
@@ -107,9 +111,9 @@ class GatedSlotAttention(nn.Module):
 
         if self.use_norm:
             if self.use_output_gate:
-                self.g_norm = FusedRMSNormSwishGateLinear(self.hidden_size, elementwise_affine, norm_eps)
+                self.g_norm = FusedRMSNormSwishGateLinear(self.hidden_size, elementwise_affine, eps=norm_eps)
             else:
-                self.g_norm = RMSNormLinear(self.hidden_size, elementwise_affine, norm_eps)
+                self.g_norm = RMSNormLinear(self.hidden_size, elementwise_affine, eps=norm_eps)
         self.o_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
         if self.use_rope:
@@ -138,6 +142,9 @@ class GatedSlotAttention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
+
+        if self.norm_first:
+            hidden_states = self.norm(hidden_states)
 
         last_state = past_key_values[self.layer_idx] if use_cache else None
         if self.use_short_conv:
@@ -232,8 +239,8 @@ class GatedSlotAttention(nn.Module):
                 state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
                           param.new_zeros(batch_size, self.key_dim, self.conv_size),
                           param.new_zeros(batch_size, self.value_dim, self.conv_size))
-        state += (param.new_zeros(batch_size, self.num_heads, self.head_k_dim, self.num_slots),
-                  param.new_zeros(batch_size, self.num_heads, self.num_slots, self.head_v_dim))
+        state += (param.new_zeros(batch_size, self.num_kv_heads, self.head_k_dim, self.num_slots),
+                  param.new_zeros(batch_size, self.num_kv_heads, self.num_slots, self.head_v_dim))
         return state
 
     def state_size(self, sequence_length: int = 2048):

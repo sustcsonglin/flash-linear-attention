@@ -36,6 +36,7 @@ class GSAConfig(PretrainedConfig):
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
         elementwise_affine: Optional[bool] = True,
+        norm_first: bool = True,
         norm_eps: float = 1e-6,
         use_cache: bool = True,
         pad_token_id: int = None,
@@ -71,6 +72,7 @@ class GSAConfig(PretrainedConfig):
         self.use_norm = use_norm
         self.hidden_act = hidden_act
         self.elementwise_affine = elementwise_affine
+        self.norm_first = norm_first
         self.norm_eps = norm_eps
         self.use_cache = use_cache
         self.initializer_range = initializer_range
