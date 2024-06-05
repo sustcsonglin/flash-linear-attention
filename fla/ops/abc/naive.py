@@ -3,6 +3,7 @@
 from typing import Optional
 
 import torch
+from einops import repeat
 
 
 def naive_recurrent_abc(
@@ -17,12 +18,17 @@ def naive_recurrent_abc(
 ) -> torch.Tensor:
     dtype = q.dtype
 
+    NG = q.shape[1]//k.shape[1]
     # [batch_size, n_heads, seq_len, n_slots]
     if g is None:
         z = s.float().logcumsumexp(2)
         g = torch.cat((z[:, :, :1], z[:, :, :-1]), 2) - z
         s = torch.exp(s - z)
     q, k, v, s, g = map(lambda x: x.float(), (q, k, v, s, g))
+    k, v, s, g = map(lambda x: repeat(x, 'b h t d -> b (h g) t d', g=NG), (k, v, s, g))
+    if initial_state is not None:
+        initial_state = tuple(map(lambda x: repeat(x, 'b h k v -> b (h g) k v', g=NG), initial_state))
+
     B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
 
     hk = torch.zeros(B, H, K, M, dtype=torch.float, device=q.device)
@@ -58,7 +64,7 @@ def naive_recurrent_abc(
         ov[:, :, i] = (q_i[..., None] * hv).sum(-2)
 
     if output_final_state:
-        final_state = (hk, hv)
+        final_state = (hk.view(B, -1, NG, K, M)[:, :, 0], hv.view(B, -1, NG, M, V)[:, :, 0])
     return ov.to(dtype), final_state
 
 
