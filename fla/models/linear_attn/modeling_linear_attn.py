@@ -67,6 +67,7 @@ class LinearAttentionBlock(nn.Module):
             expand_k=config.expand_k,
             expand_v=config.expand_v,
             num_heads=config.num_heads,
+            num_kv_heads=config.num_kv_heads,
             mode=config.attn_mode,
             feature_map=config.feature_map,
             tie_feature_map_qk=config.tie_feature_map_qk,

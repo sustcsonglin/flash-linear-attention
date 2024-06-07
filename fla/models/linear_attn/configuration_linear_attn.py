@@ -20,6 +20,7 @@ class LinearAttentionConfig(PretrainedConfig):
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
         num_heads: int = 4,
+        num_kv_heads: Optional[int] = None,
         attn_mode: str = "fused_chunk",
         feature_map: str = "elementwise_product",
         tie_feature_map_qk: bool = False,
@@ -48,6 +49,7 @@ class LinearAttentionConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
         self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
         self.attn_mode = attn_mode
         self.feature_map = feature_map
         self.tie_feature_map_qk = tie_feature_map_qk

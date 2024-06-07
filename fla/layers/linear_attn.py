@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 
+from typing import Optional
+
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
+from einops import rearrange, repeat
 
 from fla.modules import RMSNorm
 from fla.modules.feature_map import (DPFPFeatureMap, HadamardFeatureMap,
@@ -14,11 +16,12 @@ from fla.ops.linear_attn import (chunk_linear_attn, fused_chunk_linear_attn,
 class LinearAttention(nn.Module):
     def __init__(
         self,
+        mode: str = 'chunk',
         hidden_size: str = 1024,
         expand_k: int = 1.0,
         expand_v: int = 1.0,
         num_heads: int = 8,
-        mode: str = 'chunk',
+        num_kv_heads: Optional[int] = None,
         feature_map: str = 'elementwise_product',
         tie_feature_map_qk: bool = False,
         output_norm: str = 'rmsnorm',
@@ -38,9 +41,13 @@ class LinearAttention(nn.Module):
 
         self.hidden_size = hidden_size
         self.mode = mode
+        self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else num_heads
+        self.num_kv_groups = self.num_heads // self.num_kv_heads
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
-        self.num_heads = num_heads
+        self.key_dim_per_group = self.key_dim // self.num_kv_groups
+        self.value_dim_per_group = self.value_dim // self.num_kv_groups
 
         assert mode in ['chunk', 'fused_chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
@@ -48,6 +55,7 @@ class LinearAttention(nn.Module):
 
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
+        self.do_feature_map_norm = do_feature_map_norm
 
         if feature_map == 'hedgehog':
             if tie_feature_map_qk:
@@ -90,7 +98,10 @@ class LinearAttention(nn.Module):
         else:
             raise NotImplementedError
 
-        self.do_feature_map_norm = do_feature_map_norm
+        self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_size, self.key_dim_per_group, bias=False)
+        self.v_proj = nn.Linear(hidden_size, self.value_dim_per_group, bias=False)
+
         if output_norm == 'rmsnorm':
             self.norm = RMSNorm(hidden_size=self.head_v_dim, elementwise_affine=elementwise_affine, eps=norm_eps)
         elif output_norm == 'identity':
@@ -98,9 +109,6 @@ class LinearAttention(nn.Module):
         else:
             raise NotImplementedError
 
-        self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
-        self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
-        self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         self.norm_q = norm_q
@@ -128,6 +136,10 @@ class LinearAttention(nn.Module):
             q = q / (q.sum(-1, keepdim=True) + 1e-4)
         if self.norm_k:
             k = k / (k.sum(-1, keepdim=True) + 1e-4)
+        if self.num_kv_groups > 1:
+            k, v = (repeat(x, 'b n (h d) -> b (h g) n d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v))
+        else:
+            k, v = (rearrange(x, 'b n (h d) -> b h n d', h=self.num_kv_heads) for x in (k, v))
 
         if mode == 'chunk':
             o = chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
@@ -141,16 +153,3 @@ class LinearAttention(nn.Module):
         o = rearrange(o, 'b h n d -> b n (h d)')
         o = self.o_proj(o)
         return o
-
-
-if __name__ == '__main__':
-    import torch
-    batch = 4
-    seq_len = 1024
-    hidden_size = 1024
-    x = torch.randn(batch, seq_len, hidden_size).to(torch.bfloat16).cuda().requires_grad_(True)
-    model = LinearAttention(hidden_size, feature_map='dplp').to(torch.bfloat16).cuda()
-    y = model(x)
-    print(y.shape)
-    y.sum().backward()
-    print(x.grad.shape)
