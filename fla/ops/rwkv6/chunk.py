@@ -224,7 +224,7 @@ def chunk_rwkv6_fwd_kernel_intra(
         p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
         p_gs = tl.make_block_ptr(gs + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
-        p_q_self = tl.make_block_ptr(q + i_bh * s_k_h, (T*K,), (s_k_d,), ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
+        p_q_u = tl.make_block_ptr(q + i_bh * s_k_h, (T*K,), (s_k_d,), ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
 
         # [BC, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
@@ -243,13 +243,13 @@ def chunk_rwkv6_fwd_kernel_intra(
             b_A = tl.sum(b_q * b_k[None, :] * tl.exp(b_gs - b_gk[None, :]) * scale, 1)
             b_A = tl.where(o_i > j, b_A, 0.)
             # self
-            b_q_self = tl.load(p_q_self, boundary_check=(0,)).to(tl.float32)
-            A_self = tl.sum(b_q_self * b_k * b_u * scale, axis=0)
-            m_self = tl.arange(0, BC) == j
-            b_A = tl.where(m_self, A_self[None], b_A)
+            b_q_u = tl.load(p_q_u, boundary_check=(0,)).to(tl.float32)
+            b_A_u = tl.sum(b_q_u * b_k * b_u * scale, axis=0)
+            m_u = tl.arange(0, BC) == j
+            b_A = tl.where(m_u, b_A_u, b_A)
             tl.store(A + o_A + j, b_A.to(A.dtype.element_ty), mask=m_A)
             p_k = tl.advance(p_k, (K,))
-            p_q_self = tl.advance(p_q_self, (K,))
+            p_q_u = tl.advance(p_q_u, (K,))
 
 
 @triton.jit
@@ -837,18 +837,18 @@ if __name__ == "__main__":
     import torch.nn.functional as F
 
     from fla.ops.rwkv6.recurrent_fuse import fused_recurrent_rwkv6
-    B = 4
+    B = 8
     H = 4
     L = 1024
     K = 100
     V = 120
 
     torch.manual_seed(0)
-    dtype = torch.float32
+    dtype = torch.bfloat16
     q = torch.randn(B, H, L, K).cuda().to(dtype).requires_grad_(True)
     k = torch.randn(B, H, L, K).cuda().to(dtype).requires_grad_(True)
     v = torch.randn(B, H, L, V).cuda().to(dtype).requires_grad_(True)
-    w = (-torch.randn(B, H, L, K).exp()).cuda().to(torch.float32).requires_grad_(True)
+    w = (-torch.randn(B, H, L, K).exp()).cuda().requires_grad_(True)
     u = torch.randn(H, K).cuda().to(dtype).requires_grad_(True)
     h0 = torch.randn(B, H, K, V).cuda().to(dtype).requires_grad_(True)
     do = torch.rand_like(v).cuda()
@@ -918,4 +918,4 @@ if __name__ == "__main__":
         if provider == 'chunk_bwd':
             results = triton.testing.do_bench(lambda: chunk_rwkv6(q, k, v, w, u)[0].backward(do), quantiles=quantiles)
         return results
-    benchmark.run(print_data=True)
+    # benchmark.run(print_data=True)
