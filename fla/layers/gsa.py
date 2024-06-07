@@ -13,7 +13,9 @@ from transformers.cache_utils import Cache
 
 from fla.modules import (FusedRMSNormSwishGateLinear, RMSNorm, RMSNormLinear,
                          RotaryEmbedding, ShortConvolution)
-from fla.modules.activations import ACT2FN, swiglu_linear, swish
+from fla.modules.activations import swiglu_linear, swish
+from fla.modules.feature_map import (ReLUFeatureMap, SwishFeatureMap,
+                                     T2RFeatureMap)
 from fla.ops.abc.chunk_gate import chunk_gated_abc
 from fla.ops.abc.recurrent_fuse import fused_recurrent_gated_abc
 
@@ -71,7 +73,6 @@ class GatedSlotAttention(nn.Module):
         self.gate_low_rank_dim = gate_low_rank_dim
         self.gate_logit_normalizer = gate_logit_normalizer
 
-        self.feature_map = feature_map
         self.use_rope = use_rope
         self.use_output_gate = use_output_gate
         self.use_norm = use_norm
@@ -92,6 +93,16 @@ class GatedSlotAttention(nn.Module):
 
         if norm_first:
             self.norm = RMSNorm(self.hidden_size, eps=norm_eps)
+        self.register_module('feature_map', None)
+        if feature_map == 'swish':
+            self.feature_map = SwishFeatureMap()
+        elif feature_map == 'relu':
+            self.feature_map = ReLUFeatureMap()
+        elif feature_map == 't2r':
+            self.feature_map = T2RFeatureMap(self.head_k_dim, self.head_k_dim)
+        else:
+            raise NotImplementedError(f"Feature map `{feature_map}` is not supported now.")
+
         self.q_proj = nn.Linear(self.hidden_size, self.key_dim, bias=False)
         self.k_proj = nn.Linear(self.hidden_size, self.key_dim_per_group, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.value_dim_per_group, bias=False)
@@ -187,7 +198,9 @@ class GatedSlotAttention(nn.Module):
         f = rearrange(f, 'b n (h m) -> b h n m', h=self.num_kv_heads)
 
         if self.feature_map is not None:
-            q, k, v = map(lambda x: ACT2FN[self.feature_map](x), (q, k, v))
+            q, k = map(lambda x: self.feature_map(x), (q, k))
+        v = swish(v)
+
         f = F.logsigmoid(f) / self.gate_logit_normalizer
         s = (1 - f.exp()).to(f.dtype)
         # dealing with left-padding
@@ -199,11 +212,13 @@ class GatedSlotAttention(nn.Module):
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_gated_abc(q, k, v, s, f,
                                                            initial_state=recurrent_state,
-                                                           output_final_state=use_cache)
+                                                           output_final_state=use_cache,
+                                                           scale=1.)
         elif mode == 'chunk':
             o, recurrent_state = chunk_gated_abc(q, k, v, s, f,
                                                  initial_state=recurrent_state,
-                                                 output_final_state=use_cache)
+                                                 output_final_state=use_cache,
+                                                 scale=1.)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
