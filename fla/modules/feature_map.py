@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from fla.modules.activations import fast_gelu_impl, sigmoid, sqrelu, swish
 from fla.modules.layernorm import layer_norm_fn
 from fla.utils import checkpoint
 
@@ -72,13 +73,22 @@ class T2RFeatureMap(nn.Module):
     def __init__(
         self,
         head_dim: int,
-        dot_dim: int = None
+        dot_dim: int = None,
+        bias: Optional[bool] = False
     ) -> T2RFeatureMap:
         super().__init__()
         # Trainable map
         if dot_dim is None:
             dot_dim = head_dim
-        self.layer = nn.Linear(head_dim, dot_dim)
+
+        self.head_dim = head_dim
+        self.dot_dim = dot_dim
+        self.bias = bias
+
+        self.layer = nn.Linear(head_dim, dot_dim, bias=bias)
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(head_dim={self.head_dim}, dot_dim={self.dot_dim}, bias={self.bias})"
 
     def forward(self, x: torch.Tensor):
         return self.layer(x).relu()
@@ -233,3 +243,58 @@ class RebasedFeatureMap(nn.Module):
         x2_1, x2_2 = flatten_diag_outer_product_off1(x, x)
         # rebased use learnable parameters to approximate any quadratic function
         return torch.cat([x2_2 * self.head_dim ** -0.5, x2_1 * (2 / self.head_dim) ** 0.5], dim=-1)
+
+
+class ReLUFeatureMap(nn.Module):
+
+    def __init__(
+        self,
+    ) -> ReLUFeatureMap:
+        super().__init__()
+
+    def forward(self, x: torch.Tensor):
+        return F.relu(x)
+
+
+class SquaredReLUFeatureMap(nn.Module):
+
+    def __init__(
+        self,
+    ) -> SquaredReLUFeatureMap:
+        super().__init__()
+
+    def forward(self, x: torch.Tensor):
+        return sqrelu(x)
+
+
+class GELUFeatureMap(nn.Module):
+
+    def __init__(
+        self,
+    ) -> GELUFeatureMap:
+        super().__init__()
+
+    def forward(self, x: torch.Tensor):
+        return fast_gelu_impl(x)
+
+
+class SwishFeatureMap(nn.Module):
+
+    def __init__(
+        self,
+    ) -> SwishFeatureMap:
+        super().__init__()
+
+    def forward(self, x: torch.Tensor):
+        return swish(x)
+
+
+class SigmoidFeatureMap(nn.Module):
+
+    def __init__(
+        self,
+    ) -> SigmoidFeatureMap:
+        super().__init__()
+
+    def forward(self, x: torch.Tensor):
+        return sigmoid(x)
