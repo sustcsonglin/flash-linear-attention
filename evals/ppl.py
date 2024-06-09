@@ -76,16 +76,17 @@ if __name__ == "__main__":
             labels = torch.where(input_ids.eq(tokenizer.eos_token_id), loss_fct.ignore_index, input_ids)
             outputs = model(input_ids, labels=labels)
             loss, logits = outputs['loss'], outputs['logits']
-            labels = torch.cat((input_ids[..., 1:], torch.full_like(input_ids[:, :1], loss_fct.ignore_index)), -1)
+            labels = torch.cat((input_ids[..., 1:], torch.full_like(input_ids[:, :1], tokenizer.eos_token_id)), -1)
+            nlls = (-logits.log_softmax(-1)).gather(-1, labels.unsqueeze(-1)).squeeze(-1)
             labels = torch.where(labels.eq(tokenizer.eos_token_id), loss_fct.ignore_index, labels)
+            nlls = torch.where(labels.eq(loss_fct.ignore_index), 0., nlls)
 
             total_loss += loss.item() * labels.ne(loss_fct.ignore_index).sum()
             total_tokens += labels.ne(loss_fct.ignore_index).sum()
             total_sentences += input_ids.shape[0]
 
             for i, j in enumerate(range(0, min(input_ids.shape[-1], args.max_len), args.block_size)):
-                block_loss[i] += loss_fct(logits[:, j:j+args.block_size].view(-1, model.config.vocab_size),
-                                          labels[:, j:j+args.block_size].view(-1))
+                block_loss[i] += nlls[:, j:j+args.block_size].sum()
                 block_tokens[i] += labels[:, j:j+args.block_size].ne(loss_fct.ignore_index).sum()
             ppls = [f"{math.exp(loss / toks):6.2f}" for loss, toks in zip(block_loss, block_tokens)]
-            bar.set_description(f"{total_tokens} tokens, {total_sentences} sentences: " + ' '.join(ppls))
+            bar.set_description_str(f"{total_tokens} tokens, {total_sentences} sentences: " + ' '.join(ppls))
