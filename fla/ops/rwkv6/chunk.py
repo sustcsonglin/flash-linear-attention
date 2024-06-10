@@ -140,15 +140,18 @@ def chunk_rwkv6_fwd_kernel_h(
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
+
     if USE_INITIAL_STATE:
         p_h = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
     for i_t in range(NT):
+        o_t = min(i_t * BT + BT, T)
+
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         p_h = tl.make_block_ptr(h + i_bh * s_h_h + i_t * K * V, (K, V), (s_h_t, s_h_d), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         p_g = tl.make_block_ptr(g + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + BT - 1) * K + i_k * BK,), (BK,), (0,))
+        p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((o_t - 1) * K + i_k * BK,), (BK,), (0,))
 
         tl.store(p_h, b_h.to(p_h.dtype.element_ty), boundary_check=(0, 1))
         # [BK, BT]
@@ -340,11 +343,13 @@ def chunk_rwkv6_bwd_kernel_dh(
 
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
     for i_t in range(NT - 1, -1, -1):
+        o_t = min(i_t * BT + BT, T)
+
         p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         p_dh = tl.make_block_ptr(dh + i_bh * s_h_h + i_t * K*V, (K, V), (s_h_t, s_h_d), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         p_gs = tl.make_block_ptr(gs + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + BT - 1) * K + i_k * BK,), (BK,), (0,))
+        p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((o_t - 1) * K + i_k * BK,), (BK,), (0,))
 
         # [BK, BT]
         b_q = tl.load(p_q, boundary_check=(0, 1))
@@ -403,11 +408,12 @@ def chunk_rwkv6_bwd_kernel_inter(
 ):
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     n_bh = tl.num_programs(2)
+    o_t = min(i_t * BT + BT, T)
 
     p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_gq = tl.make_block_ptr(gs + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + BT - 1) * K + i_k * BK,), (BK,), (0,))
+    p_gn = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((o_t - 1) * K + i_k * BK,), (BK,), (0,))
     p_A = tl.make_block_ptr(A + i_bh * T * BT, (BT, T), (1, BT), (0, i_t * BT), (BT, BT), (0, 1))
 
     # [BT, BK]
@@ -844,7 +850,7 @@ if __name__ == "__main__":
     V = 120
 
     torch.manual_seed(0)
-    dtype = torch.bfloat16
+    dtype = torch.float
     q = torch.randn(B, H, L, K).cuda().to(dtype).requires_grad_(True)
     k = torch.randn(B, H, L, K).cuda().to(dtype).requires_grad_(True)
     v = torch.randn(B, H, L, V).cuda().to(dtype).requires_grad_(True)
@@ -918,4 +924,4 @@ if __name__ == "__main__":
         if provider == 'chunk_bwd':
             results = triton.testing.do_bench(lambda: chunk_rwkv6(q, k, v, w, u)[0].backward(do), quantiles=quantiles)
         return results
-    # benchmark.run(print_data=True)
+    benchmark.run(print_data=True)
