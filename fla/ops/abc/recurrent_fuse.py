@@ -222,6 +222,8 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
 
         g = g.float().exp()
 
+        if initial_state is None:
+            initial_state = (None, None)
         final_state = (None, None)
         if output_final_state:
             final_state = (q.new_empty(B, H, K, M), q.new_empty(B, H, M, V))
@@ -268,10 +270,6 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         ctx.save_for_backward(q, k, v, s, g, qv, *initial_state, ok)
         ctx.scale = scale
         ctx.reverse = reverse
-        # we do not need the gradient of the final state from the next chunk
-        # similiar to Trunctated BPTT
-        if final_state is not None:
-            final_state = tuple(i.detach() for i in final_state)
         return ov.to(q.dtype), final_state
 
     @staticmethod
