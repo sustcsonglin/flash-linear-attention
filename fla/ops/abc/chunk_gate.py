@@ -163,6 +163,7 @@ def chunk_gated_abc_fwd_kernel_intra_K(
         # [BC, BC]
         b_A = tl.load(p_A, boundary_check=(0, 1))
         b_o += tl.dot(b_A, b_vg, allow_tf32=False)
+    # [BC, BV]
     b_g = tl.load(p_g, boundary_check=(0, 1))
     b_o *= tl.exp(b_g - b_gn[None, :])
 
@@ -180,8 +181,7 @@ def chunk_gated_abc_fwd_kernel_intra_K(
         # [BC, BV]
         b_vg = b_v[None, :] * tl.exp(b_g - b_gv[None, :])
         # avoid 0 * inf = inf
-        m_i = o_i[:, None] >= j
-        b_o += tl.where(m_i, b_A[:, None] * b_vg, 0.)
+        b_o += tl.where(o_i[:, None] >= j, b_A[:, None] * b_vg, 0.)
     p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
 
     b_o += tl.load(p_o, boundary_check=(0, 1))
@@ -253,6 +253,87 @@ def chunk_gated_abc_fwd_kernel_K(
 
 
 @triton.jit
+def chunk_gated_abc_fwd_kernel_intra_Vk(
+    q,
+    k,
+    g,
+    A,
+    s_k_h,
+    s_k_t,
+    s_k_d,
+    i_k,
+    i_c,
+    i_bh,
+    scale,
+    T: tl.constexpr,
+    K: tl.constexpr,
+    BT: tl.constexpr,
+    BC: tl.constexpr,
+    BK: tl.constexpr,
+    NC: tl.constexpr,
+    NG: tl.constexpr
+):
+    i_bg = i_bh // NG
+    i_t, i_i, i_j = i_c // (NC * NC), (i_c % (NC * NC)) // NC, (i_c % (NC * NC)) % NC
+
+    p_A = tl.make_block_ptr(A + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
+
+    b_A = tl.zeros([BC, BC], tl.float32)
+    if i_i > i_j:
+        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bg * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
+        p_gk = tl.make_block_ptr(g + i_bg * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
+        p_gn = tl.make_block_ptr(g + i_bg * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_i * BC) * K + i_k * BK,), (BK,), (0,))
+
+        # [BK,]
+        b_gn = tl.load(p_gn, boundary_check=(0,))
+        # [BC, BK]
+        b_q = tl.load(p_q, boundary_check=(0, 1))
+        b_g = tl.load(p_g, boundary_check=(0, 1))
+        b_qg = (b_q * tl.exp(b_g - b_gn[None, :]) * scale).to(b_q.dtype)
+        # [BK, BC]
+        b_k = tl.load(p_k, boundary_check=(0, 1))
+        b_gk = tl.load(p_gk, boundary_check=(0, 1))
+        b_kg = (b_k * tl.exp(b_gn[:, None] - b_gk)).to(b_k.dtype)
+        # [BC, BC]
+        b_A = tl.dot(b_qg, b_kg, allow_tf32=False)
+        if i_k != 0:
+            b_A += tl.load(p_A, boundary_check=(0, 1))
+        tl.store(p_A, b_A.to(A.dtype.element_ty), boundary_check=(0, 1))
+    elif i_i == i_j:
+        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bg * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
+        p_gk = tl.make_block_ptr(g + i_bg * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
+        # [BC, BK]
+        b_q = tl.load(p_q, boundary_check=(0, 1))
+        b_g = tl.load(p_g, boundary_check=(0, 1))
+
+        o_i = tl.arange(0, BC)
+        # [BC, BC]
+        m_A = o_i[:, None] >= o_i[None, :]
+        for j in range(0, BC):
+            # [BK,]
+            b_k = tl.load(p_k, boundary_check=(0,)).to(tl.float32)
+            b_gk = tl.load(p_gk, boundary_check=(0,)).to(tl.float32)
+            # [BC,]
+            b_Aj = tl.sum(b_q * b_k[None, :] * tl.exp(b_g - b_gk[None, :]) * scale, 1)
+            b_A = tl.where((o_i == j)[None, :], b_Aj[:, None], b_A)
+
+            p_k = tl.advance(p_k, (K,))
+            p_gk = tl.advance(p_gk, (K,))
+        b_A = tl.where(m_A, b_A, 0.)
+        if i_k != 0:
+            b_A += tl.load(p_A, boundary_check=(0, 1))
+        tl.store(p_A, b_A.to(A.dtype.element_ty), boundary_check=(0, 1))
+    else:
+        # set the upper triangular part to 0
+        if i_k == 0:
+            tl.store(p_A, b_A.to(A.dtype.element_ty), boundary_check=(0, 1))
+
+
+@triton.jit
 def chunk_gated_abc_fwd_kernel_intra_V(
     q,
     k,
@@ -268,56 +349,32 @@ def chunk_gated_abc_fwd_kernel_intra_V(
     BC: tl.constexpr,
     BK: tl.constexpr,
     NC: tl.constexpr,
+    NK: tl.constexpr,
     NG: tl.constexpr
 ):
-    i_k, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    i_bg = i_bh // NG
-    i_t, i_i, i_j = i_c // (NC * NC), (i_c % (NC * NC)) // NC, (i_c % (NC * NC)) % NC
-    n_bh = tl.num_programs(2)
+    i_c, i_bh = tl.program_id(0), tl.program_id(1)
 
-    if i_i > i_j:
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_k = tl.make_block_ptr(k + i_bg * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
-        p_gk = tl.make_block_ptr(g + i_bg * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
-        p_gn = tl.make_block_ptr(g + i_bg * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_i * BC) * K + i_k * BK,), (BK,), (0,))
-        p_A = tl.make_block_ptr(A + (i_k*n_bh+i_bh)*T*BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
-        # [BK,]
-        b_gn = tl.load(p_gn, boundary_check=(0,))
-        # [BC, BK]
-        b_q = tl.load(p_q, boundary_check=(0, 1))
-        b_g = tl.load(p_g, boundary_check=(0, 1))
-        b_qg = (b_q * tl.exp(b_g - b_gn[None, :]) * scale).to(b_q.dtype)
-        # [BK, BC]
-        b_k = tl.load(p_k, boundary_check=(0, 1))
-        b_gk = tl.load(p_gk, boundary_check=(0, 1))
-        b_kg = (b_k * tl.exp(b_gn[:, None] - b_gk)).to(b_k.dtype)
-        # [BC, BC]
-        b_A = tl.dot(b_qg, b_kg, allow_tf32=False)
-        tl.store(p_A, b_A.to(A.dtype.element_ty), boundary_check=(0, 1))
-    elif i_i == i_j:
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_k = tl.make_block_ptr(k + i_bg * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
-        p_gk = tl.make_block_ptr(g + i_bg * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC) * K + i_k * BK,), (BK,), (0,))
-        # [BC, BK]
-        b_q = tl.load(p_q, boundary_check=(0, 1))
-        b_g = tl.load(p_g, boundary_check=(0, 1))
-
-        o_i = tl.arange(0, BC)
-        o_A = (i_bh + i_k * n_bh) * T * BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_j * BC
-        m_A = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
-        for j in range(0, BC):
-            # [BK,]
-            b_k = tl.load(p_k, boundary_check=(0,)).to(tl.float32)
-            b_gk = tl.load(p_gk, boundary_check=(0,)).to(tl.float32)
-            # [BC,]
-            b_A = tl.sum(b_q * b_k[None, :] * tl.exp(b_g - b_gk[None, :]) * scale, 1)
-            b_A = tl.where(o_i >= j, b_A, 0.)
-            tl.store(A + o_A + j, b_A.to(b_q.dtype), mask=m_A)
-
-            p_k = tl.advance(p_k, (K,))
-            p_gk = tl.advance(p_gk, (K,))
+    for i_k in range(0, NK):
+        chunk_gated_abc_fwd_kernel_intra_Vk(
+            q,
+            k,
+            g,
+            A,
+            s_k_h,
+            s_k_t,
+            s_k_d,
+            i_k,
+            i_c,
+            i_bh,
+            scale,
+            T,
+            K,
+            BT,
+            BC,
+            BK,
+            NC,
+            NG,
+        )
 
 
 @triton.jit
@@ -683,13 +740,16 @@ def chunk_gated_abc_bwd_kernel_intra_K(
     i_bg = i_bh // NG
     n_bh = tl.num_programs(2)
 
+    p_dA = tl.make_block_ptr(dA+(i_bh+i_v*n_bh)*T*BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
+
+    # [BC, BC]
+    b_dA = tl.zeros([BC, BC], dtype=tl.float32)
     if i_i > i_j:
         p_v = tl.make_block_ptr(v + i_bg * s_v_h, (V, T), (s_v_d, s_v_t), (i_v * BV, i_t * BT + i_j * BC), (BV, BC), (0, 1))
         p_gv = tl.make_block_ptr(g + i_bg * s_v_h, (V, T), (s_v_d, s_v_t), (i_v * BV, i_t * BT + i_j * BC), (BV, BC), (0, 1))
         p_gn = tl.make_block_ptr(g + i_bg * s_v_h, (T * V,), (s_v_d,), ((i_t * BT + i_i * BC) * V + i_v * BV,), (BV,), (0,))
         p_g = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
         p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
-        p_dA = tl.make_block_ptr(dA+(i_bh+i_v*n_bh)*T*BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
         # [BV,]
         b_gn = tl.load(p_gn, boundary_check=(0,))
         # [BC, BV]
@@ -702,7 +762,6 @@ def chunk_gated_abc_bwd_kernel_intra_K(
         b_vg = (b_v * tl.exp(b_gn[:, None] - b_gv)).to(b_v.dtype)
         # [BC, BC]
         b_dA = tl.dot(b_do, b_vg, allow_tf32=False)
-        tl.store(p_dA, b_dA.to(dA.dtype.element_ty), boundary_check=(0, 1))
     elif i_i == i_j:
         p_v = tl.make_block_ptr(v + i_bg * s_v_h, (T * V,), (s_v_d,), ((i_t * BT + i_j * BC) * V + i_v * BV,), (BV,), (0,))
         p_gv = tl.make_block_ptr(g + i_bg * s_v_h, (T * V,), (s_v_d,), ((i_t * BT + i_j * BC) * V + i_v * BV,), (BV,), (0,))
@@ -713,19 +772,20 @@ def chunk_gated_abc_bwd_kernel_intra_K(
         b_do = tl.load(p_do, boundary_check=(0, 1)) * scale
 
         o_i = tl.arange(0, BC)
-        o_A = (i_bh + i_v * n_bh) * T * BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_j * BC
-        m_A = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
+        # [BC, BC]
+        m_dA = o_i[:, None] >= o_i[None, :]
         for j in range(0, BC):
             # [BV,]
             b_v = tl.load(p_v, boundary_check=(0,)).to(tl.float32)
             b_gv = tl.load(p_gv, boundary_check=(0,)).to(tl.float32)
             # [BC,]
-            b_dA = tl.sum(b_do * b_v[None, :] * tl.exp(b_g - b_gv[None, :]), 1)
-            b_dA = tl.where(o_i >= j, b_dA, 0)
-            tl.store(dA + o_A + j, b_dA.to(b_do.dtype), mask=m_A)
+            b_dAj = tl.sum(b_do * b_v[None, :] * tl.exp(b_g - b_gv[None, :]), 1)
+            b_dA = tl.where((o_i == j)[None, :], b_dAj[:, None], b_dA)
 
             p_v = tl.advance(p_v, (V,))
             p_gv = tl.advance(p_gv, (V,))
+        b_dA = tl.where(m_dA, b_dA, 0.)
+    tl.store(p_dA, b_dA.to(dA.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -954,17 +1014,16 @@ def fwd_v(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, ht=None, scale=1.)
         h0=h0,
         ht=ht
     )
-    A = q.new_zeros(NK, B, HQ, T, BT)
-    grid = (NK, NT * NC * NC, B * HQ)
+    A = q.new_empty(B, HQ, T, BT)
+    grid = (NT * NC * NC, B * HQ)
     chunk_gated_abc_fwd_kernel_intra_V[grid](
         q, k, g, A,
         k.stride(1), k.stride(2), k.stride(3),
         scale,
-        T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC, NG=NG,
+        T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC, NK=NK, NG=NG,
         num_warps=num_warps,
         num_stages=num_stages
     )
-    A = A.sum(0, dtype=A.dtype)
     o = v.new_empty(B, HQ, T, V)
     grid = (NV, NT, B * HQ)
     chunk_gated_abc_fwd_kernel_V[grid](
@@ -1064,7 +1123,7 @@ def bwd_v(q, k, v, g, h, A, do, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
     dk = k.new_empty(B, HQ, T, K, dtype=torch.float)
     dv = v.new_empty(NK, B, HQ, T, V)
     dg = g.new_empty(B, HQ, T, K, dtype=torch.float) if dg is None else dg
-    dA = v.new_zeros(B, HQ, T, BT)
+    dA = v.new_empty(B, HQ, T, BT)
 
     grid = (NK, NT, B * HQ)
     chunk_gated_abc_bwd_kernel_V[grid](
@@ -1106,7 +1165,7 @@ def bwd_k(q, k, v, g, h, o, do, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
         scale=scale,
         gatek=False
     )
-    dA = q.new_zeros(NV, B, HQ, T, BT)
+    dA = q.new_empty(NV, B, HQ, T, BT)
     grid = (NV, NT * NC * NC, B * HQ)
     chunk_gated_abc_bwd_kernel_intra_K[grid](
         v, g, do, dA,
@@ -1118,7 +1177,7 @@ def bwd_k(q, k, v, g, h, o, do, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
     )
     dA = dA.sum(0, dtype=dA.dtype)
 
-    A = do.new_zeros(NK, B, HQ, T, BT)
+    A = do.new_empty(NK, B, HQ, T, BT)
     dq = torch.empty_like(q)
     dk = k.new_empty(B, HQ, T, K)
     dv = v.new_empty(NK, B, HQ, T, V)
