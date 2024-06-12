@@ -18,7 +18,7 @@ from transformers.utils import logging
 from fla.layers.delta_net import DeltaNet
 from fla.models.delta_net.configuration_delta_net import DeltaNetConfig
 from fla.models.utils import RecurrentCache
-from fla.modules import FusedCrossEntropyLoss, RMSNorm
+from fla.modules import FusedCrossEntropyLoss, RMSNorm, RMSNormLinear
 from fla.modules.activations import swiglu_linear
 
 logger = logging.get_logger(__name__)
@@ -31,7 +31,9 @@ class DeltaNetMLP(nn.Module):
         hidden_size: int,
         hidden_ratio: Optional[int] = None,
         intermediate_size: Optional[int] = None,
-        hidden_act: str = 'swish'
+        hidden_act: str = 'swish',
+        norm_first: bool = True,
+        norm_eps: float = 1e-5
     ) -> DeltaNetMLP:
         super().__init__()
 
@@ -45,14 +47,20 @@ class DeltaNetMLP(nn.Module):
             intermediate_size = 256 * ((intermediate_size + 256 - 1) // 256)
         self.hidden_ratio = hidden_ratio
         self.intermediate_size = intermediate_size
+        self.norm_first = norm_first
+
+        if norm_first:
+            self.norm = RMSNormLinear(hidden_size=hidden_size, eps=norm_eps)
 
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
     def forward(self, x):
-        y = self.gate_proj(x)
-        gate, y = y.chunk(2, -1)
+        if self.norm_first:
+            gate, y = self.norm(x, self.gate_proj.weight, self.gate_proj.bias).chunk(2, -1)
+        else:
+            gate, y = self.gate_proj(x).chunk(2, -1)
         return swiglu_linear(gate, y, self.down_proj.weight, self.down_proj.bias)
 
 
@@ -61,7 +69,8 @@ class DeltaNetBlock(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        if not config.norm_first:
+            self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.attn = DeltaNet(
             mode=config.attn_mode,
             hidden_size=config.hidden_size,
@@ -75,16 +84,21 @@ class DeltaNetBlock(nn.Module):
             use_output_norm=config.use_output_norm,
             conv_size=config.conv_size,
             share_conv_kernel=config.share_conv_kernel,
-            layer_idx=layer_idx,
             qk_norm=config.qk_norm,
-            qk_activation=config.qk_activation
+            qk_activation=config.qk_activation,
+            norm_first=config.norm_first,
+            norm_eps=config.norm_eps,
+            layer_idx=layer_idx
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+        if not config.norm_first:
+            self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = DeltaNetMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
             intermediate_size=config.intermediate_size,
-            hidden_act=config.hidden_act
+            hidden_act=config.hidden_act,
+            norm_first=config.norm_first,
+            norm_eps=config.norm_eps
         )
 
     def forward(
@@ -94,12 +108,12 @@ class DeltaNetBlock(nn.Module):
         past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
-        **kwargs,
+        **kwargs
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
         residual = hidden_states
-
-        hidden_states = self.attn_norm(hidden_states)
+        if hasattr(self, 'attn_norm'):
+            hidden_states = self.attn_norm(hidden_states)
         hidden_states, attentions, past_key_values = self.attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -107,7 +121,11 @@ class DeltaNetBlock(nn.Module):
             use_cache=use_cache,
             output_attentions=output_attentions
         )
-        hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
+        if hasattr(self, 'mlp_norm'):
+            hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
+        else:
+            hidden_states = residual + hidden_states
+            residual = hidden_states
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -168,7 +186,7 @@ class DeltaNetModel(DeltaNetPreTrainedModel):
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([DeltaNetBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(config.hidden_size, eps=config.norm_eps)
 
         self.gradient_checkpointing = False
 
@@ -260,8 +278,6 @@ class DeltaNetModel(DeltaNetPreTrainedModel):
             all_hidden_states += (hidden_states,)
 
         next_cache = past_key_values
-        # if use_cache:
-            # next_cache = past_key_values.to_legacy_cache()
         if not return_dict:
             return tuple(x for x in [hidden_states, next_cache, all_hidden_states, all_attns] if x is not None)
         return BaseModelOutputWithPast(
@@ -322,14 +338,13 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
         input_ids: torch.LongTensor = None,
         past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
         attention_mask: Optional[torch.Tensor] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs
     ):
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
             if not isinstance(past_key_values, RecurrentCache):
                 past_key_values = RecurrentCache.from_legacy_cache(past_key_values, input_ids.shape[1] - 1)
-            # breakpoint()
             input_ids, attention_mask = input_ids[:, -1:], attention_mask[:, -1:]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
@@ -341,7 +356,7 @@ class DeltaNetForCausalLM(DeltaNetPreTrainedModel):
             # Ref: https://github.com/huggingface/transformers/pull/29114
             # TODO: use `next_tokens` directly instead.
             model_inputs = {'input_ids': input_ids.contiguous()}
-        
+
         model_inputs.update({
             'past_key_values': past_key_values,
             'use_cache': kwargs.get('use_cache'),

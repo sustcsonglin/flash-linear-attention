@@ -30,10 +30,10 @@ class DeltaNetConfig(PretrainedConfig):
         attn_mode: str = "chunk",
         qk_norm: str = 'l2',
         qk_activation: str = 'silu',
-        chunk_size: int = 64,
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
-        rms_norm_eps: float = 1e-6,
+        norm_first: bool = True,
+        norm_eps: float = 1e-6,
         use_cache: bool = True,
         pad_token_id: int = None,
         bos_token_id: int = 1,
@@ -54,7 +54,8 @@ class DeltaNetConfig(PretrainedConfig):
         self.num_heads = num_heads
         self.attn_mode = attn_mode
         self.hidden_act = hidden_act
-        self.rms_norm_eps = rms_norm_eps
+        self.norm_first = norm_first
+        self.norm_eps = norm_eps
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         self.fuse_cross_entropy = fuse_cross_entropy

@@ -10,15 +10,12 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from einops import rearrange
+from torch.nn import functional as F
 from transformers.cache_utils import Cache
 
-
-from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution, LayerNorm
-from fla.modules.rotary import RotaryEmbedding
-from fla.ops.delta_rule import (fused_chunk_delta_rule,
-                                fused_recurrent_linear_attn_delta_rule,
-                                chunk_delta_rule)
-from torch.nn import functional as F
+from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
+from fla.ops.delta_rule import (chunk_delta_rule, fused_chunk_delta_rule,
+                                fused_recurrent_linear_attn_delta_rule)
 
 
 def simple_norm(x):
@@ -42,8 +39,6 @@ def elu_norm(x):
     return (x / x.sum(-1, keepdim=True)).to(dtype)
 
 
-
-
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
 class DeltaNet(nn.Module):
     def __init__(
@@ -57,7 +52,6 @@ class DeltaNet(nn.Module):
         chunk_size: int = 16,
         use_beta: bool = True,
         use_gate: bool = True,
-        use_rope: bool = False,
         use_output_norm: bool = True,
         use_elu: bool = False,
         use_short_conv: bool = True,
@@ -67,18 +61,22 @@ class DeltaNet(nn.Module):
         layer_idx: int = None,
         qk_activation: str = 'silu',
         qk_norm: str = None,
-        save_memory: str = False,
+        norm_first: bool = True,
+        norm_eps: float = 1e-5,
         **kwargs
     ) -> DeltaNet:
         super().__init__()
+
         self.mode = mode
         self.qk_activation = qk_activation
         self.qk_norm = qk_norm
+
         assert self.qk_activation in ['silu', 'relu', 'elu', 'identity']
         assert self.qk_norm in ['l2', 'sum']
+
         if d_model is not None:
             hidden_size = d_model
-        self.hidden_size = hidden_size    
+        self.hidden_size = hidden_size
         self.expand_k = expand_k
         self.expand_v = expand_v
         self.num_heads = num_heads
@@ -94,18 +92,21 @@ class DeltaNet(nn.Module):
         self.value_dim = int(hidden_size * expand_v)
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
+        self.norm_first = norm_first
         self.layer_idx = layer_idx
 
-        self.silu = torch.nn.SiLU()
+        self.silu = nn.SiLU()
 
         assert mode in ['chunk', 'fused_chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
 
+        if norm_first:
+            self.norm = RMSNorm(self.hidden_size, eps=norm_eps)
+
         self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
-        self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         self.use_beta = use_beta
         self.use_elu = use_elu
@@ -116,15 +117,21 @@ class DeltaNet(nn.Module):
             if share_conv_kernel:
                 self.h_conv1d = ShortConvolution(hidden_size, conv_size, activation=None)
             else:
-                self.q_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu' if qk_activation == 'silu' else None)
-                self.k_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu' if qk_activation == 'silu' else None)
+                self.q_conv1d = ShortConvolution(self.key_dim,
+                                                 conv_size,
+                                                 activation='silu' if qk_activation == 'silu' else None)
+                self.k_conv1d = ShortConvolution(self.key_dim,
+                                                 conv_size,
+                                                 activation='silu' if qk_activation == 'silu' else None)
                 self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
         if use_gate:
             self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
-        if self.use_gate:
-            self.norm = FusedRMSNormSwishGate(self.head_v_dim)
+            self.o_norm = FusedRMSNormSwishGate(self.head_v_dim, eps=norm_eps)
         else:
-            self.norm = RMSNorm(self.head_v_dim)
+            self.o_norm = RMSNorm(self.head_v_dim, eps=norm_eps)
+
+        self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
+
         self.apply(self._initialize_weights)
 
     def _initialize_weights(self, module: nn.Module):
@@ -136,7 +143,6 @@ class DeltaNet(nn.Module):
                 nn.init.zeros_(module.bias)
         module._is_hf_initialized = True
 
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -146,15 +152,18 @@ class DeltaNet(nn.Module):
         output_attentions: Optional[bool] = False,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
-
         # change to inference mode.
-        mode = 'fused_recurrent' if hidden_states.shape[1] < 64 else self.mode    
+        mode = 'fused_recurrent' if hidden_states.shape[1] < 64 else self.mode
+
+        if self.norm_first:
+            hidden_states = self.norm(hidden_states)
+
         last_state = past_key_values[self.layer_idx] if use_cache else None
 
         if attention_mask is not None:
             if attention_mask.shape[-1] != hidden_states.shape[-2]:
                 attention_mask = attention_mask[:, -1:]
-        
+
         if self.use_short_conv:
             conv_state = last_state[0] if use_cache else None
             if self.share_conv_kernel:
@@ -181,7 +190,7 @@ class DeltaNet(nn.Module):
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
-        
+
         q, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k, v))
 
         if self.qk_activation != 'silu':
@@ -196,12 +205,12 @@ class DeltaNet(nn.Module):
 
         if self.qk_norm is not None:
             if self.qk_norm == 'l2':
-                k = torch.nn.functional.normalize(k, dim=-1, p=2).to(v) #auto mixed precision type transfer is annoying.
-                q = torch.nn.functional.normalize(q, dim=-1, p=2).to(v)
+                k = nn.functional.normalize(k, dim=-1, p=2).to(v)  # auto mixed precision type transfer is annoying.
+                q = nn.functional.normalize(q, dim=-1, p=2).to(v)
             elif self.qk_norm == 'sum':
                 q = sum_norm(q).to(v)
-                k = sum_norm(k).to(v)      
-            
+                k = sum_norm(k).to(v)
+
         if self.use_beta:
             beta = rearrange(self.b_proj(hidden_states), 'b l h -> b h l').sigmoid()
         else:
@@ -231,12 +240,12 @@ class DeltaNet(nn.Module):
         o = rearrange(o, 'b h l d -> b l h d')
         if self.use_gate:
             g = rearrange(self.g_proj(hidden_states), 'b l (h d) -> b l h d', h=self.num_heads)
-            o = self.norm(o, g)
+            o = self.o_norm(o, g)
         else:
-            o = self.norm(o)
+            o = self.o_norm(o)
         o = rearrange(o, 'b l h d -> b l (h d)')
         o = self.o_proj(o)
-            
+
         return o, None, past_key_values
 
     def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
