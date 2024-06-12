@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import warnings
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from einops import rearrange
-from transformers.cache_utils import Cache
 
 from fla.modules import (FusedRMSNormSwishGate, RMSNorm, RotaryEmbedding,
                          ShortConvolution)
 from fla.modules.activations import swiglu, swish
 from fla.modules.convolution import proj_then_conv1d
 from fla.ops.abc.chunk import chunk_abc
+
+if TYPE_CHECKING:
+    from fla.models.utils import Cache
 
 
 class ABCAttention(nn.Module):

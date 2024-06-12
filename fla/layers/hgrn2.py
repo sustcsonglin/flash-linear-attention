@@ -4,17 +4,19 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from transformers.cache_utils import Cache
 
 from fla.modules import RMSNorm, ShortConvolution
 from fla.modules.activations import swish
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
+
+if TYPE_CHECKING:
+    from fla.models.utils import Cache
 
 
 class HGRN2Attention(nn.Module):

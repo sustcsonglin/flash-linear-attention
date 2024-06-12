@@ -17,7 +17,7 @@ from transformers.utils import logging
 
 from fla.layers.hgrn2 import HGRN2Attention
 from fla.models.hgrn2.configuration_hgrn2 import HGRN2Config
-from fla.models.utils import RecurrentCache
+from fla.models.utils import Cache
 from fla.modules import FusedCrossEntropyLoss, RMSNorm
 from fla.modules.activations import swiglu_linear
 
@@ -213,8 +213,8 @@ class HGRN2Model(HGRN2PreTrainedModel):
         if use_cache:
             if past_key_values is None:
                 past_key_values = [layer.attn.init_state(batch_size) for layer in self.layers]
-            if not isinstance(past_key_values, RecurrentCache):
-                past_key_values = RecurrentCache.from_legacy_cache(past_key_values)
+            if not isinstance(past_key_values, Cache):
+                past_key_values = Cache.from_legacy_cache(past_key_values)
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
@@ -331,8 +331,8 @@ class HGRN2ForCausalLM(HGRN2PreTrainedModel):
     ):
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
-            if not isinstance(past_key_values, RecurrentCache):
-                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, input_ids.shape[1] - 1)
+            if not isinstance(past_key_values, Cache):
+                past_key_values = Cache.from_legacy_cache(past_key_values, input_ids.shape[1] - 1)
             input_ids, attention_mask = input_ids[:, -1:], attention_mask[:, -1:]
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:

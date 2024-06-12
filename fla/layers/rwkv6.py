@@ -4,16 +4,18 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from einops import rearrange
-from transformers.cache_utils import Cache
 
 from fla.modules import GroupNorm
 from fla.modules.activations import ACT2FN
 from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
+
+if TYPE_CHECKING:
+    from fla.models.utils import Cache
 
 
 class RWKV6Attention(nn.Module):

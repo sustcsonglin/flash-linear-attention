@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.modules.rotary import RotaryEmbedding
 from fla.ops.retention import (chunk_retention, fused_chunk_retention,
                                fused_recurrent_retention, parallel_retention)
+
+if TYPE_CHECKING:
+    from fla.models.utils import Cache
 
 
 class MultiScaleRetention(nn.Module):

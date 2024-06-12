@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import warnings
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from transformers.cache_utils import Cache
 
 from fla.modules import (FusedRMSNormSwishGateLinear, RMSNorm, RMSNormLinear,
                          RotaryEmbedding, ShortConvolution)
@@ -18,6 +17,9 @@ from fla.modules.feature_map import (ReLUFeatureMap, SwishFeatureMap,
                                      T2RFeatureMap)
 from fla.ops.abc.chunk_gate import chunk_gated_abc
 from fla.ops.abc.recurrent_fuse import fused_recurrent_gated_abc
+
+if TYPE_CHECKING:
+    from fla.models.utils import Cache
 
 
 class GatedSlotAttention(nn.Module):

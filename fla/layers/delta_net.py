@@ -5,17 +5,19 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from einops import rearrange
 from torch.nn import functional as F
-from transformers.cache_utils import Cache
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.ops.delta_rule import (chunk_delta_rule, fused_chunk_delta_rule,
                                 fused_recurrent_linear_attn_delta_rule)
+
+if TYPE_CHECKING:
+    from fla.models.utils import Cache
 
 
 def simple_norm(x):
