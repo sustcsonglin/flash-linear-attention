@@ -103,7 +103,16 @@ class RWKV6Attention(nn.Module):
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
-        delta = self.time_shift(hidden_states) - hidden_states
+        last_state = past_key_values[self.layer_idx] if use_cache else None
+
+        if hidden_states.shape[1] == 1 and last_state is not None:
+            shifted = last_state[0].unsqueeze(1)
+        else:
+            shifted = self.time_shift(hidden_states)
+            if last_state is not None:
+                shifted[:, 0] = last_state[0]
+
+        delta = shifted - hidden_states
         x = self.x_proj[0](hidden_states, delta).view(batch_size, seq_len, -1, self.proj_low_rank_dim)
         x = torch.einsum('b l n r, h n r-> b l n h', self.x_proj[1](x), self.x_proj[2].weight.view(hidden_size, 5, -1))
 
@@ -121,23 +130,22 @@ class RWKV6Attention(nn.Module):
         w = -torch.exp(w)
         u = self.bonus
 
-        last_state = past_key_values[self.layer_idx] if use_cache else None
-        state = last_state[-1] if use_cache else None
-
+        recurrent_state = last_state[1] if use_cache else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_rwkv6(r, k, v, w, u,
                                                        scale=1.,
-                                                       initial_state=state, output_final_state=use_cache)
+                                                       initial_state=recurrent_state,
+                                                       output_final_state=use_cache)
         elif mode == 'chunk':
             o, recurrent_state = chunk_rwkv6(r, k, v, w, u,
                                              scale=1.,
-                                             initial_state=state,
+                                             initial_state=recurrent_state,
                                              output_final_state=use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
-            past_key_values.update((recurrent_state,), self.layer_idx, r.shape[2])
+            past_key_values.update((hidden_states[:, -1], recurrent_state), self.layer_idx, r.shape[2])
 
         o = self.g_norm(rearrange(o, 'b h l d -> b l (h d)')) * self.gate_fn(g)
         o = self.o_proj(o)
@@ -146,7 +154,8 @@ class RWKV6Attention(nn.Module):
 
     def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
         param = next(self.parameters())
-        state = (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
+        state = [param.new_zeros(batch_size, self.hidden_size),
+                 param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim)]
         return state
 
     def state_size(self, **kwargs) -> int:
