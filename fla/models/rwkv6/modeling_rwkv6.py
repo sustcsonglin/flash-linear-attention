@@ -53,7 +53,14 @@ class RWKV6FeedForward(nn.Module):
 
         self.layer_idx = layer_idx
 
-    def forward(self, x: torch.Tensor, state: Optional[Cache] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        state: Optional[Cache] = None
+    ) -> torch.Tensor:
+        if attention_mask is not None:
+            x = x.mul_(attention_mask.unsqueeze(-1))
         if x.shape[1] == 1 and state is not None:
             shifted = state[self.layer_idx][-1].unsqueeze(1)
         else:
@@ -126,7 +133,7 @@ class RWKV6Block(nn.Module):
             output_attentions=output_attentions
         )
         hidden_states, residual = self.ffn_norm(hidden_states, residual, True)
-        hidden_states, past_key_values = self.ffn(hidden_states, past_key_values)
+        hidden_states, past_key_values = self.ffn(hidden_states, attention_mask, past_key_values)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states, attentions, past_key_values)

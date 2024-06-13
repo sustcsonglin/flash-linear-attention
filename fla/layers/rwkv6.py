@@ -99,12 +99,14 @@ class RWKV6Attention(nn.Module):
         output_attentions: Optional[bool] = False,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
-        batch_size, seq_len, hidden_size = hidden_states.size()
+        batch_size, seq_len, hidden_size = hidden_states.shape
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
         last_state = past_key_values[self.layer_idx] if use_cache else None
 
+        if attention_mask is not None:
+            hidden_states = hidden_states.mul_(attention_mask.unsqueeze(-1))
         if hidden_states.shape[1] == 1 and last_state is not None:
             shifted = last_state[0].unsqueeze(1)
         else:
