@@ -555,6 +555,7 @@ class MambaForCausalLM(MambaPreTrainedModel):
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,  # noqa
         inputs_embeds: Optional[torch.FloatTensor] = None,
         cache_params: Optional[MambaCache] = None,
         labels: Optional[torch.LongTensor] = None,
