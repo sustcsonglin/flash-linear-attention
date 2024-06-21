@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from transformers.cache_utils import Cache
+import transformers
 
 
-class RecurrentCache(Cache):
+class Cache(transformers.cache_utils.Cache):
     """
     A cache used for storing hidden states produced by flash linear attention models.
 
@@ -18,7 +18,7 @@ class RecurrentCache(Cache):
     def __init__(
         self,
         seen_tokens: int = 0
-    ) -> RecurrentCache:
+    ) -> Cache:
 
         self.states: List[torch.Tensor] = []
         self._seen_tokens = seen_tokens  # Used in `generate` to keep tally of how many tokens the cache has seen
@@ -80,7 +80,7 @@ class RecurrentCache(Cache):
         return self._seen_tokens
 
     def get_max_length(self) -> Optional[int]:
-        """Returns the maximum sequence length of the cached states. RecurrentCache does not have a maximum length."""
+        """Returns the maximum sequence length of the cached states. Cache does not have a maximum length."""
         return None
 
     def reorder_cache(self, beam_idx: torch.LongTensor):
@@ -97,8 +97,8 @@ class RecurrentCache(Cache):
         cls,
         past_key_values: Optional[Tuple[torch.Tensor]] = None,
         seen_tokens: int = 0
-    ) -> RecurrentCache:
-        """Converts a cache in the legacy cache format into an equivalent `RecurrentCache`."""
+    ) -> Cache:
+        """Converts a cache in the legacy cache format into an equivalent `Cache`."""
 
         cache = cls(seen_tokens)
         if past_key_values is not None:
