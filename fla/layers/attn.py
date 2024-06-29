@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import warnings
 from typing import Optional, Tuple
 
@@ -117,11 +116,16 @@ class Attention(nn.Module):
                 cu_seqlens_k=cu_seqlens_k,
                 max_seqlen_q=max_seqlen_q,
                 max_seqlen_k=max_seqlen_k,
-                causal=True
+                causal=True,
+                window_size=(-1, -1) if self.window_size is None else (self.window_size-1, 0)
             )
             o = pad_input(o, indices_q, batch_size, q_len)
         else:
-            o = flash_attn_func(q, k, v, causal=True)
+            o = flash_attn_func(
+                q, k, v,
+                causal=True,
+                window_size=(-1, -1) if self.window_size is None else (self.window_size-1, 0)
+            )
         o = o.reshape(batch_size, q_len, self.hidden_size)
         o = self.o_proj(o)
 
