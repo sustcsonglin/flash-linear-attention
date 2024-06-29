@@ -31,52 +31,56 @@ class MambaConfig(PretrainedConfig):
 
 
     Args:
-        vocab_size (`int`, *optional*, defaults to 50280):
-            Vocabulary size of the MAMBA model. Defines the number of different tokens that can be represented by the
-            `inputs_ids` passed when calling [`MambaModel`].
-        hidden_size (`int`, *optional*, defaults to 768):
-            Dimensionality of the embeddings and hidden states.
-        state_size (`int`, *optional*, defaults to 16): shape of the state space latents.
-        num_hidden_layers (`int`, *optional*, defaults to 32):
-            Number of hidden layers in the model.
-        layer_norm_epsilon (`float`, *optional*, defaults to 1e-05):
-            The epsilon to use in the layer normalization layers.
-        pad_token_id (`int`, *optional*, defaults to 0):
-            Padding token id.
-        bos_token_id (`int`, *optional*, defaults to 0):
-            The id of the beginning of sentence token in the vocabulary.
-        eos_token_id (`int`, *optional*, defaults to 0):
-            The id of the end of sentence token in the vocabulary.
-        expand (`int`, *optional*, defaults to 2): Expanding factor used to determine the intermediate size.
-        conv_kernel (`int`, *optional*, defaults to 4): Size of the convolution kernel.
-        use_bias (`bool`, *optional*, defaults to `False`):
-            Whether or not to use bias in ["in_proj", "out_proj"] of the mixer block
-        use_conv_bias (`bool`, *optional*, defaults to `True`):
-            Whether or not to use bias in the convolution layer of the mixer block.
-        hidden_act (`str`, *optional*, defaults to `"silu"`):
-            The non-linear activation function (function or string) in the decoder.
-        initializer_range (`float`, *optional*, defaults to 0.1):
-            The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
-        residual_in_fp32 (`bool`, *optional*, defaults to `True`):
+        vocab_size (`int`, *optional*):
+            Vocabulary size of the Mamba model.
+        hidden_size (`int`, *optional*):
+            Dimensionality of the embeddings and hidden states. Default: 2048.
+        state_size (`int`, *optional*):
+            Shape of the state space latents. Default: 16.
+        num_hidden_layers (`int`, *optional*):
+            Number of hidden layers in the model. Default: 48.
+        layer_norm_epsilon (`float`, *optional*):
+            The epsilon to use in the layer normalization layers. Default: 1e-5.
+        pad_token_id (`int`, *optional*):
+            Padding token id. Default: 0.
+        bos_token_id (`int`, *optional*):
+            The id of the beginning of sentence token in the vocabulary. Default: 0.
+        eos_token_id (`int`, *optional*):
+            The id of the end of sentence token in the vocabulary. Default: 0.
+        expand (`int`, *optional*):
+            Expanding factor used to determine the intermediate size. Default: 2.
+        conv_kernel (`int`, *optional*):
+            Size of the convolution kernel. Default: 4.
+        use_bias (`bool`, *optional*):
+            Whether or not to use bias in ["in_proj", "out_proj"] of the mixer block. Default: `False`.
+        use_conv_bias (`bool`, *optional*):
+            Whether or not to use bias in the convolution layer of the mixer block. Default: `True`.
+        hidden_act (`str`, *optional*):
+            The non-linear activation function (function or string) in the decoder. Default: `"silu"`.
+        initializer_range (`float`, *optional*):
+            The standard deviation of the truncated_normal_initializer for initializing all weight matrices. Default: 0.1.
+        residual_in_fp32 (`bool`, *optional*):
             Whether or not residuals should be in `float32`.
-            If set to `False` residuals will keep the same `dtype` as the rest of the model
-        time_step_rank (`Union[int,str]`, *optional*, defaults to `"auto"`):
+            If set to `False` residuals will keep the same `dtype` as the rest of the model. Default: `True`.
+        time_step_rank (`Union[int,str]`, *optional*):
             Rank of the the discretization projection matrix.
-            `"auto"` means that it will default to `math.ceil(self.hidden_size / 16)`
-        time_step_scale (`float`, *optional*, defaults to 1.0):
-            Scale used used to scale `dt_proj.bias`.
-        time_step_min (`float`, *optional*, defaults to 0.001):
-            Minimum `time_step` used to bound `dt_proj.bias`.
-        time_step_max (`float`, *optional*, defaults to 0.1):
-            Maximum `time_step` used to bound `dt_proj.bias`.
-        time_step_init_scheme (`float`, *optional*, defaults to `"random"`):
-            Init scheme used for `dt_proj.weight`. Should be one of `["random","uniform"]`
-        time_step_floor (`float`, *optional*, defaults to 0.0001):
-            Minimum clamping value of the `dt_proj.bias` layer initialization.
-        rescale_prenorm_residual (`bool`, *optional*, defaults to `False`):
-            Whether or not to rescale `out_proj` weights when initializing.
-        use_cache (`bool`, *optional*, defaults to `True`):
-            Whether or not the cache should be used.
+            `"auto"` means that it will default to `math.ceil(self.hidden_size / 16)`. Default: `"auto"`.
+        time_step_scale (`float`, *optional*):
+            Scale used used to scale `dt_proj.bias`. Default: 1.0.
+        time_step_min (`float`, *optional*):
+            Minimum `time_step` used to bound `dt_proj.bias`. Default: 0.001.
+        time_step_max (`float`, *optional*):
+            Maximum `time_step` used to bound `dt_proj.bias`. Default: 0.1.
+        time_step_init_scheme (`float`, *optional*):
+            Init scheme used for `dt_proj.weight`. Should be one of `["random","uniform"]`. Default: `"random"`.
+        time_step_floor (`float`, *optional*):
+            Minimum clamping value of the `dt_proj.bias` layer initialization. Default: 0.0001.
+        window_size (`int`, *optional*):
+            The window size used for sliding window attention. Default: 2048.
+        rescale_prenorm_residual (`bool`, *optional*):
+            Whether or not to rescale `out_proj` weights when initializing. Default: `False`.
+        use_cache (`bool`, *optional*):
+            Whether or not the cache should be used. Default: `True`.
 
 
     Example:
