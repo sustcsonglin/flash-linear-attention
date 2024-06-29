@@ -29,7 +29,7 @@ class GSAConfig(PretrainedConfig):
         share_conv_kernel: bool = True,
         exapnd_k: float = 1,
         exapnd_v: float = 1,
-        feature_map: str = None,
+        feature_map: str = 'swish',
         use_rope: bool = False,
         use_output_gate: bool = False,
         use_norm: bool = True,
