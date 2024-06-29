@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 
-from fla.layers import (ABCAttention, BasedLinearAttention, DeltaNet,
-                        GatedLinearAttention, HGRN2Attention, LinearAttention,
-                        MultiScaleRetention, ReBasedLinearAttention)
+from fla.layers import (ABCAttention, Attention, BasedLinearAttention,
+                        DeltaNet, GatedLinearAttention, HGRN2Attention,
+                        LinearAttention, MultiScaleRetention,
+                        ReBasedLinearAttention)
 from fla.models import (ABCForCausalLM, ABCModel, DeltaNetForCausalLM,
                         DeltaNetModel, GLAForCausalLM, GLAModel,
                         HGRN2ForCausalLM, HGRN2Model, HGRNForCausalLM,
@@ -15,6 +16,7 @@ from fla.ops import (chunk_gla, chunk_retention, fused_chunk_based,
 
 __all__ = [
     'ABCAttention',
+    'Attention',
     'BasedLinearAttention',
     'DeltaNet',
     'HGRN2Attention',

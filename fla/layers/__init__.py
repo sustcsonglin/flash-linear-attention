@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from .abc import ABCAttention
+from .attn import Attention
 from .based import BasedLinearAttention
 from .delta_net import DeltaNet
 from .gla import GatedLinearAttention
@@ -13,6 +14,7 @@ from .rwkv6 import RWKV6Attention
 
 __all__ = [
     'ABCAttention',
+    'Attention',
     'BasedLinearAttention',
     'DeltaNet',
     'GatedLinearAttention',
