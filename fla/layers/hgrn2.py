@@ -44,7 +44,7 @@ class HGRN2Attention(nn.Module):
             expand_ratio = hidden_size // num_heads
         elif expand_ratio is not None and num_heads is None:
             num_heads = hidden_size // expand_ratio
-        else:
+        elif expand_ratio is None and num_heads is None:
             raise RuntimeError("One of `expand_ratio` or `num_heads` should be provided.")
         self.num_heads = num_heads
         self.expand_ratio = expand_ratio
