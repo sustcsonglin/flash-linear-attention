@@ -31,13 +31,9 @@ class LinearAttention(nn.Module):
         do_feature_map_norm: bool = False,
         elementwise_affine: bool = True,
         norm_eps: float = 1e-5,
-        **kwargs,
+        **kwargs
     ):
         super().__init__()
-        assert feature_map in ['elu', 'relu', 'hedgehog', 't2r', 'dpfp',
-                               'identity', 'elementwise_product'], f"Not supported feature map `{feature_map}`."
-
-        assert output_norm in ['rmsnorm', 'identity'], f"Not supported output norm `{output_norm}`."
 
         self.hidden_size = hidden_size
         self.mode = mode
@@ -96,7 +92,7 @@ class LinearAttention(nn.Module):
             self.feature_map_q = nn.Identity()
             self.feature_map_k = nn.Identity()
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Not supported feature map `{feature_map}`.")
 
         self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.k_proj = nn.Linear(hidden_size, self.key_dim_per_group, bias=False)
@@ -107,7 +103,7 @@ class LinearAttention(nn.Module):
         elif output_norm == 'identity':
             self.norm = nn.Identity()
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Not supported output norm `{output_norm}`.")
 
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
@@ -127,26 +123,28 @@ class LinearAttention(nn.Module):
 
     def forward(self, x):
         mode = self.mode
-        q = rearrange(self.q_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
-        k = rearrange(self.k_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
-        v = rearrange(self.v_proj(x), 'b n (h d) -> b h n d', h=self.num_heads)
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
         q = self.feature_map_q(q)
         k = self.feature_map_k(k)
-        if self.norm_q:
-            q = q / (q.sum(-1, keepdim=True) + 1e-4)
-        if self.norm_k:
-            k = k / (k.sum(-1, keepdim=True) + 1e-4)
+
+        q = rearrange(q, 'b n (h d) -> b h n d', h=self.num_heads)
         if self.num_kv_groups > 1:
             k, v = (repeat(x, 'b n (h d) -> b (h g) n d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v))
         else:
             k, v = (rearrange(x, 'b n (h d) -> b h n d', h=self.num_kv_heads) for x in (k, v))
+        if self.norm_q:
+            q = q / (q.sum(-1, True) + 1e-4)
+        if self.norm_k:
+            k = k / (k.sum(-1, True) + 1e-4)
 
         if mode == 'chunk':
-            o = chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
+            o, final_state = chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
         elif mode == 'fused_chunk':
-            o = fused_chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
+            o, final_state = fused_chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
         elif mode == 'fused_recurrent':
-            o = fused_recurrent_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
+            o, final_state = fused_recurrent_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
         else:
             raise NotImplementedError
         o = self.norm(o)

@@ -15,10 +15,10 @@ from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn
 
 
 class BasedLinearAttention(nn.Module):
+
     def __init__(
         self,
         hidden_size: int,
-        l_max: int = 2048,
         feature_dim: int = 16,
         num_key_value_heads: int = 12,
         num_heads: int = 12,
@@ -28,12 +28,9 @@ class BasedLinearAttention(nn.Module):
         mode: str = "parallel",
     ):
         super().__init__()
-        self.hidden_size
-        self.l_max = l_max
-        self.mode = mode
-        assert self.mode in ["fused_chunk", "parallel", 'chunk']
 
-        # linear attention
+        self.hidden_size = hidden_size
+        self.mode = mode
         self.feature_name = feature_name
         self.feature_dim = feature_dim
         self.num_key_value_heads = num_key_value_heads
@@ -106,21 +103,3 @@ class BasedLinearAttention(nn.Module):
         y = self.o_proj(y.to(hidden_states.dtype))
         y = self.dropout(y)
         return y.to(hidden_states.dtype)
-
-
-if __name__ == '__main__':
-    batch = 4
-    seq_len = 1024
-    hidden_size = 1024
-    dtype = torch.float32
-    x = torch.randn(batch, seq_len, hidden_size).to(dtype).cuda().requires_grad_(True)
-    dy = torch.randn(batch, seq_len, hidden_size).to(dtype).cuda()
-    model = BasedLinearAttention(hidden_size, mode='chunk').to(dtype).cuda()
-    y = model(x)
-    y.backward(dy, retain_graph=True)
-    x_grad, x.grad = x.grad, None
-    y2 = model.forward_reference(x)
-    y2.backward(dy)
-    assert y.allclose(y2, 0, 1e-4), breakpoint()
-    assert x_grad.allclose(x.grad, 0, 1e-4), breakpoint()
-    print("Pass")
