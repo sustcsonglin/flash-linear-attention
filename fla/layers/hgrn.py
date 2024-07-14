@@ -141,7 +141,7 @@ class HGRNAttention(nn.Module):
                 last_state = (recurrent_state,)
             past_key_values.update(last_state, self.layer_idx, i.shape[2])
 
-        o = self.g_norm(self.g_proj(hidden_states), rearrange(o, 'b h l d -> b l (h d)'))
+        o = self.g_norm(rearrange(o, 'b h l d -> b l (h d)'), self.g_proj(hidden_states))
         o = self.o_proj(o)
 
         return o, None, past_key_values
