@@ -74,9 +74,9 @@ class HGRN2Attention(nn.Module):
             if share_conv_kernel:
                 self.h_conv1d = ShortConvolution(hidden_size, conv_size, activation='silu')
             else:
-                self.q_conv1d = ShortConvolution(self.forget_dim, conv_size, activation='silu')
-                self.f_conv1d = ShortConvolution(self.forget_dim, conv_size, activation='silu')
-                self.i_conv1d = ShortConvolution(self.input_dim, conv_size, activation='silu')
+                self.q_conv1d = ShortConvolution(self.forget_dim, conv_size)
+                self.f_conv1d = ShortConvolution(self.forget_dim, conv_size)
+                self.i_conv1d = ShortConvolution(self.input_dim, conv_size)
 
         self.g_norm = RMSNorm(self.hidden_size, elementwise_affine, norm_eps)
         self.o_proj = nn.Linear(self.input_dim, hidden_size, bias=False)
