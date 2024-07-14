@@ -126,14 +126,16 @@ class LinearAttention(nn.Module):
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
-        q = self.feature_map_q(q)
-        k = self.feature_map_k(k)
 
         q = rearrange(q, 'b n (h d) -> b h n d', h=self.num_heads)
         if self.num_kv_groups > 1:
             k, v = (repeat(x, 'b n (h d) -> b (h g) n d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v))
         else:
             k, v = (rearrange(x, 'b n (h d) -> b h n d', h=self.num_kv_heads) for x in (k, v))
+
+        q = self.feature_map_q(q)
+        k = self.feature_map_k(k)
+
         if self.norm_q:
             q = q / (q.sum(-1, True) + 1e-4)
         if self.norm_k:
