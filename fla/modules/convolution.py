@@ -87,7 +87,7 @@ class ShortConvolution(nn.Conv1d):
         kernel_size: int,
         bias: bool = False,
         activation: Optional[str] = 'silu',
-        use_causal_conv: Optional[bool] = True
+        use_fast_conv1d: Optional[bool] = True
     ):
         super().__init__(in_channels=hidden_size,
                          out_channels=hidden_size,
@@ -102,11 +102,12 @@ class ShortConvolution(nn.Conv1d):
             assert activation in ['silu', 'swish'], f"Activation `{activation}` not supported yet."
             self.activation = activation
 
-        if use_causal_conv:
+        if use_fast_conv1d:
             if causal_conv1d_fn is None:
-                warnings.warn("Please install `causal-conv1d` to use causal convolutions, setting `use_causal_conv` to False.")
-                use_causal_conv = False
-        self.use_causal_conv = use_causal_conv
+                assert False, "Please either run `pip install causal-conv1d>=1.4.0` to install fast causal short convolution CUDA kernel or set `use_fast_conv1d` to False"
+        else:
+            warnings.warn("The naive Pytorch verison is very slow in practice, please either run `pip install causal-conv1d>=1.4.0` to install fast causal short convolution CUDA kernel")
+        self.use_fast_conv1d = use_fast_conv1d
 
     def extra_repr(self):
         s = ('{in_channels}, {out_channels}, kernel_size={kernel_size}'
@@ -155,7 +156,7 @@ class ShortConvolution(nn.Conv1d):
         # Update state (B D W)
         if cache is not None:
             cache.copy_(F.pad(x, (self.kernel_size[0] - x.shape[-1], 0)))
-        if self.use_causal_conv:
+        if self.use_fast_conv1d:
             x = causal_conv1d_fn(
                 x=x,
                 weight=rearrange(self.weight, "d 1 w -> d w"),
@@ -176,7 +177,7 @@ class ShortConvolution(nn.Conv1d):
         assert x.shape[1] == 1, "Only support decoding with 1 token at a time for now"
 
         x = x.squeeze(1)
-        if self.use_causal_conv:
+        if self.use_fast_conv1d:
             x = causal_conv1d_update(
                 x=x,
                 conv_state=cache,

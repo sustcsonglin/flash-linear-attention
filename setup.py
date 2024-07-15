@@ -116,7 +116,7 @@ setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     author='Songlin Yang, Yu Zhang',
-    author_email='bestsonta@gmail.com',
+    author_email='yangsl66@mit.edu',
     url='https://github.com/sustcsonglin/flash-linear-attention',
     packages=find_packages(),
     license='MIT',
@@ -128,9 +128,10 @@ setup(
     ],
     python_requires='>=3.7',
     install_requires=[
-        'triton',
+        'triton>=2.2',
         'transformers',
         'einops',
-        'ninja'
+        'ninja',
+        'causal-conv1d>=1.4.0'
     ]
 )
