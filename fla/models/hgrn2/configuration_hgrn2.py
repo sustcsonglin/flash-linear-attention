@@ -20,7 +20,6 @@ class HGRN2Config(PretrainedConfig):
         expand_ratio: Optional[int] = 128,
         use_short_conv: bool = False,
         conv_size: int = 4,
-        share_conv_kernel: bool = True,
         use_lower_bound: bool = True,
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
@@ -46,7 +45,6 @@ class HGRN2Config(PretrainedConfig):
         self.expand_ratio = expand_ratio
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
-        self.share_conv_kernel = share_conv_kernel
         self.use_lower_bound = use_lower_bound
         self.hidden_ratio = hidden_ratio
         self.intermediate_size = intermediate_size

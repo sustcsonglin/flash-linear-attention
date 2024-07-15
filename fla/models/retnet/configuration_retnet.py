@@ -28,7 +28,6 @@ class RetNetConfig(PretrainedConfig):
         hidden_act: str = "swish",
         use_short_conv: bool = False,
         conv_size: int = 4,
-        share_conv_kernel: bool = True,
         use_output_gate: bool = True,
         max_position_embeddings: int = 2048,
         elementwise_affine: Optional[bool] = True,
@@ -58,7 +57,6 @@ class RetNetConfig(PretrainedConfig):
         self.hidden_act = hidden_act
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
-        self.share_conv_kernel = share_conv_kernel
         self.use_output_gate = use_output_gate
         self.elementwise_affine = elementwise_affine
         self.norm_eps = norm_eps

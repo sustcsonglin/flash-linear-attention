@@ -35,7 +35,6 @@ class GatedSlotAttention(nn.Module):
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
-        share_conv_kernel: bool = True,
         num_slots: Optional[int] = None,
         elementwise_affine: Optional[bool] = True,
         norm_first: bool = True,
@@ -68,7 +67,6 @@ class GatedSlotAttention(nn.Module):
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
         self.conv_bias = conv_bias
-        self.share_conv_kernel = share_conv_kernel
 
         if gate_low_rank_dim is None:
             gate_low_rank_dim = self.hidden_size // 16
@@ -115,12 +113,9 @@ class GatedSlotAttention(nn.Module):
 
         if use_short_conv:
             self.conv_size = conv_size
-            if share_conv_kernel:
-                self.h_conv1d = ShortConvolution(hidden_size, conv_size, activation='silu')
-            else:
-                self.q_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
-                self.k_conv1d = ShortConvolution(self.key_dim_per_group, conv_size, activation='silu')
-                self.v_conv1d = ShortConvolution(self.value_dim_per_group, conv_size, activation='silu')
+            self.q_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
+            self.k_conv1d = ShortConvolution(self.key_dim_per_group, conv_size, activation='silu')
+            self.v_conv1d = ShortConvolution(self.value_dim_per_group, conv_size, activation='silu')
 
         if self.use_norm:
             if self.use_output_gate:
@@ -161,23 +156,15 @@ class GatedSlotAttention(nn.Module):
 
         last_state = past_key_values[self.layer_idx] if use_cache else None
         if self.use_short_conv:
-            conv_state = last_state[0] if use_cache else None
-            if self.share_conv_kernel:
-                # conv state is updated inplace
-                hidden_states = self.h_conv1d(hidden_states, attention_mask, conv_state)
-                q = self.q_proj(hidden_states)
-                k = self.k_proj(hidden_states)
-                v = self.v_proj(hidden_states)
-            else:
-                conv_state_q = last_state[0] if use_cache else None
-                conv_state_k = last_state[1] if use_cache else None
-                conv_state_v = last_state[2] if use_cache else None
-                q = self.q_proj(hidden_states)
-                k = self.k_proj(hidden_states)
-                v = self.v_proj(hidden_states)
-                q = self.q_conv1d(q, attention_mask, conv_state_q)
-                k = self.k_conv1d(k, attention_mask, conv_state_k)
-                v = self.v_conv1d(v, attention_mask, conv_state_v)
+            conv_state_q = last_state[0] if use_cache else None
+            conv_state_k = last_state[1] if use_cache else None
+            conv_state_v = last_state[2] if use_cache else None
+            q = self.q_proj(hidden_states)
+            k = self.k_proj(hidden_states)
+            v = self.v_proj(hidden_states)
+            q = self.q_conv1d(q, attention_mask, conv_state_q)
+            k = self.k_conv1d(k, attention_mask, conv_state_k)
+            v = self.v_conv1d(v, attention_mask, conv_state_v)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
@@ -226,10 +213,7 @@ class GatedSlotAttention(nn.Module):
 
         if past_key_values is not None:
             if self.use_short_conv:
-                if self.share_conv_kernel:
-                    last_state = (conv_state,) + recurrent_state
-                else:
-                    last_state = (conv_state_q, conv_state_k, conv_state_v) + recurrent_state
+                last_state = (conv_state_q, conv_state_k, conv_state_v) + recurrent_state
             else:
                 last_state = recurrent_state
             past_key_values.update(last_state, self.layer_idx, q.shape[2])
@@ -250,12 +234,9 @@ class GatedSlotAttention(nn.Module):
         param = next(self.parameters())
         state = tuple()
         if self.use_short_conv:
-            if self.share_conv_kernel:
-                state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
-            else:
-                state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                          param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                          param.new_zeros(batch_size, self.value_dim, self.conv_size))
+            state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                        param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                        param.new_zeros(batch_size, self.value_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_kv_heads, self.head_k_dim, self.num_slots),
                   param.new_zeros(batch_size, self.num_kv_heads, self.num_slots, self.head_v_dim))
         return state

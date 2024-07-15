@@ -19,8 +19,6 @@ class DeltaNetConfig(PretrainedConfig):
         use_gate: bool = False,
         use_short_conv: bool = True,
         conv_size: int = 4,
-        share_conv_kernel: bool = False,
-        use_rope: bool = False,
         use_beta: bool = True,
         use_output_norm: bool = True,
         hidden_ratio: Optional[int] = 4,
@@ -62,8 +60,6 @@ class DeltaNetConfig(PretrainedConfig):
         self.use_gate = use_gate
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
-        self.share_conv_kernel = share_conv_kernel
-        self.use_rope = use_rope
         self.use_beta = use_beta
         self.use_output_norm = use_output_norm
         self.qk_norm = qk_norm

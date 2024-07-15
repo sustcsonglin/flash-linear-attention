@@ -30,7 +30,6 @@ class ABCAttention(nn.Module):
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
-        share_conv_kernel: bool = True,
         num_slots: Optional[int] = None,
         elementwise_affine: Optional[bool] = True,
         norm_eps: float = 1e-5,
@@ -58,7 +57,6 @@ class ABCAttention(nn.Module):
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
         self.conv_bias = conv_bias
-        self.share_conv_kernel = share_conv_kernel
 
         self.gate_low_rank_dim = gate_low_rank_dim
         self.gate_logit_normalizer = gate_logit_normalizer
@@ -95,12 +93,9 @@ class ABCAttention(nn.Module):
 
         if use_short_conv:
             self.conv_size = conv_size
-            if share_conv_kernel:
-                self.h_conv1d = ShortConvolution(hidden_size, conv_size, activation='silu')
-            else:
-                self.q_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
-                self.k_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
-                self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
+            self.q_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
+            self.k_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
+            self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
 
         if self.use_norm:
             if self.use_output_gate:
@@ -133,15 +128,9 @@ class ABCAttention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
 
         if self.use_short_conv:
-            if self.share_conv_kernel:
-                hidden_states = self.h_conv1d(hidden_states)
-                q = self.q_proj(hidden_states)
-                k = self.k_proj(hidden_states)
-                v = self.v_proj(hidden_states)
-            else:
-                q = proj_then_conv1d(hidden_states, self.q_proj.weight, self.q_conv1d.weight, self.q_conv1d.bias)
-                k = proj_then_conv1d(hidden_states, self.k_proj.weight, self.k_conv1d.weight, self.k_conv1d.bias)
-                v = proj_then_conv1d(hidden_states, self.v_proj.weight, self.v_conv1d.weight, self.v_conv1d.bias)
+            q = proj_then_conv1d(hidden_states, self.q_proj.weight, self.q_conv1d.weight, self.q_conv1d.bias)
+            k = proj_then_conv1d(hidden_states, self.k_proj.weight, self.k_conv1d.weight, self.k_conv1d.bias)
+            v = proj_then_conv1d(hidden_states, self.v_proj.weight, self.v_conv1d.weight, self.v_conv1d.bias)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
