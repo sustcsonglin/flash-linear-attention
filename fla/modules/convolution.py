@@ -102,11 +102,17 @@ class ShortConvolution(nn.Conv1d):
             assert activation in ['silu', 'swish'], f"Activation `{activation}` not supported yet."
             self.activation = activation
 
-        if use_fast_conv1d:
-            if causal_conv1d_fn is None:
-                assert False, "Please either run `pip install causal-conv1d>=1.4.0` to install fast causal short convolution CUDA kernel or set `use_fast_conv1d` to False"
-        else:
-            warnings.warn("The naive Pytorch verison is very slow in practice, please either run `pip install causal-conv1d>=1.4.0` to install fast causal short convolution CUDA kernel")
+        if causal_conv1d_fn is None:
+            if use_fast_conv1d:
+                raise RuntimeError(
+                    "Please either install `causal-conv1d>=1.4.0` to enable fast causal short convolution CUDA kernel "
+                    "or set `use_fast_conv1d` to False"
+                )
+            else:
+                warnings.warn(
+                    "The naive Pytorch verison is very slow in practice, "
+                    "please run `pip install causal-conv1d>=1.4.0` to install fast causal short convolution CUDA kernel"
+                )
         self.use_fast_conv1d = use_fast_conv1d
 
     def extra_repr(self):

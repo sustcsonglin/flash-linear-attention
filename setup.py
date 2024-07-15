@@ -131,7 +131,9 @@ setup(
         'triton>=2.2',
         'transformers',
         'einops',
-        'ninja',
-        'causal-conv1d>=1.4.0'
-    ]
+        'ninja'
+    ],
+    extras_require={
+        'conv1d': ['causal-conv1d>=1.4.0']
+    }
 )
