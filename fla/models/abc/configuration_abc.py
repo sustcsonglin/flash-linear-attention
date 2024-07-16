@@ -24,7 +24,6 @@ class ABCConfig(PretrainedConfig):
         num_slots: Optional[int] = 64,
         use_short_conv: bool = True,
         conv_size: int = 4,
-        share_conv_kernel: bool = True,
         exapnd_k: float = 0.5,
         exapnd_v: float = 1,
         hidden_act: str = "swish",
@@ -54,7 +53,6 @@ class ABCConfig(PretrainedConfig):
         self.num_slots = num_slots
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
-        self.share_conv_kernel = share_conv_kernel
         self.expand_k = exapnd_k
         self.expand_v = exapnd_v
         self.hidden_act = hidden_act

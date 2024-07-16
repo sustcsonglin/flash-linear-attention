@@ -26,7 +26,6 @@ class GSAConfig(PretrainedConfig):
         num_slots: Optional[int] = 64,
         use_short_conv: bool = False,
         conv_size: int = 4,
-        share_conv_kernel: bool = True,
         exapnd_k: float = 1,
         exapnd_v: float = 1,
         feature_map: str = 'swish',
@@ -63,7 +62,6 @@ class GSAConfig(PretrainedConfig):
         self.num_slots = num_slots
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
-        self.share_conv_kernel = share_conv_kernel
         self.expand_k = exapnd_k
         self.expand_v = exapnd_v
         self.feature_map = feature_map

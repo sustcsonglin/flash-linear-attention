@@ -80,7 +80,6 @@ class GSABlock(nn.Module):
             num_slots=config.num_slots,
             use_short_conv=config.use_short_conv,
             conv_size=config.conv_size,
-            share_conv_kernel=config.share_conv_kernel,
             feature_map=config.feature_map,
             use_rope=config.use_rope,
             use_output_gate=config.use_output_gate,

@@ -25,7 +25,6 @@ class GLAConfig(PretrainedConfig):
         attn_mode: str = "chunk",
         use_short_conv: bool = False,
         conv_size: int = 4,
-        share_conv_kernel: bool = True,
         use_output_gate: bool = True,
         clamp_min: Optional[float] = None,
         hidden_act: str = "swish",
@@ -68,7 +67,6 @@ class GLAConfig(PretrainedConfig):
         self.fuse_cross_entropy = fuse_cross_entropy
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
-        self.share_conv_kernel = share_conv_kernel
         self.use_output_gate = use_output_gate
 
         super().__init__(

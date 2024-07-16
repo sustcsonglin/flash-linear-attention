@@ -59,7 +59,6 @@ class DeltaNet(nn.Module):
         use_short_conv: bool = True,
         conv_size: int = 4,
         conv_bias: bool = False,
-        share_conv_kernel: bool = False,
         layer_idx: int = None,
         qk_activation: str = 'silu',
         qk_norm: str = None,
@@ -88,7 +87,6 @@ class DeltaNet(nn.Module):
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
         self.conv_bias = conv_bias
-        self.share_conv_kernel = share_conv_kernel
 
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
@@ -116,16 +114,13 @@ class DeltaNet(nn.Module):
             self.b_proj = nn.Linear(hidden_size, self.num_heads, bias=False)
         if use_short_conv:
             self.conv_size = conv_size
-            if share_conv_kernel:
-                self.h_conv1d = ShortConvolution(hidden_size, conv_size, activation=None)
-            else:
-                self.q_conv1d = ShortConvolution(self.key_dim,
+            self.q_conv1d = ShortConvolution(self.key_dim,
                                                  conv_size,
                                                  activation='silu' if qk_activation == 'silu' else None)
-                self.k_conv1d = ShortConvolution(self.key_dim,
+            self.k_conv1d = ShortConvolution(self.key_dim,
                                                  conv_size,
                                                  activation='silu' if qk_activation == 'silu' else None)
-                self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
+            self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
         if use_gate:
             self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
             self.o_norm = FusedRMSNormSwishGate(self.head_v_dim, eps=norm_eps)
@@ -167,23 +162,15 @@ class DeltaNet(nn.Module):
                 attention_mask = attention_mask[:, -1:]
 
         if self.use_short_conv:
-            conv_state = last_state[0] if use_cache else None
-            if self.share_conv_kernel:
-                # conv state is updated inplace
-                hidden_states = self.h_conv1d(hidden_states, attention_mask, conv_state)
-                q = self.q_proj(hidden_states)
-                k = self.k_proj(hidden_states)
-                v = self.v_proj(hidden_states)
-            else:
-                conv_state_q = last_state[0] if use_cache else None
-                conv_state_k = last_state[1] if use_cache else None
-                conv_state_v = last_state[2] if use_cache else None
-                k = self.k_proj(hidden_states)
-                v = self.v_proj(hidden_states)
-                q = self.q_proj(hidden_states)
-                q = self.q_conv1d(q, attention_mask, conv_state_q)
-                k = self.k_conv1d(k, attention_mask, conv_state_k)
-                v = self.v_conv1d(v, attention_mask, conv_state_v)
+            conv_state_q = last_state[0] if use_cache else None
+            conv_state_k = last_state[1] if use_cache else None
+            conv_state_v = last_state[2] if use_cache else None
+            k = self.k_proj(hidden_states)
+            v = self.v_proj(hidden_states)
+            q = self.q_proj(hidden_states)
+            q = self.q_conv1d(q, attention_mask, conv_state_q)
+            k = self.k_conv1d(k, attention_mask, conv_state_k)
+            v = self.v_conv1d(v, attention_mask, conv_state_v)
         else:
             q = (self.q_proj(hidden_states))
             k = (self.k_proj(hidden_states))
@@ -231,10 +218,7 @@ class DeltaNet(nn.Module):
 
         if past_key_values is not None:
             if self.use_short_conv:
-                if self.share_conv_kernel:
-                    state = (conv_state, recurrent_state)
-                else:
-                    state = (conv_state_q, conv_state_k, conv_state_v, recurrent_state)
+                state = (conv_state_q, conv_state_k, conv_state_v, recurrent_state)
             else:
                 state = (recurrent_state,)
             past_key_values.update(state, self.layer_idx)
@@ -254,12 +238,9 @@ class DeltaNet(nn.Module):
         param = next(self.parameters())
         state = tuple()
         if self.use_short_conv:
-            if self.share_conv_kernel:
-                state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
-            else:
                 # for q/k/v each
-                state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                          param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                          param.new_zeros(batch_size, self.value_dim, self.conv_size))
+            state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                        param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                        param.new_zeros(batch_size, self.value_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
         return state

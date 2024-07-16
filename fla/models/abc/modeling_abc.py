@@ -70,7 +70,6 @@ class ABCBlock(nn.Module):
             num_slots=config.num_slots,
             use_short_conv=config.use_short_conv,
             conv_size=config.conv_size,
-            share_conv_kernel=config.share_conv_kernel,
             gate_fn=config.hidden_act,
             elementwise_affine=config.elementwise_affine,
             norm_eps=config.norm_eps,

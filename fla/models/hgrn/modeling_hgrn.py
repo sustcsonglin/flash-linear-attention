@@ -69,7 +69,6 @@ class HGRNBlock(nn.Module):
             expand_ratio=config.expand_ratio,
             use_short_conv=config.use_short_conv,
             conv_size=config.conv_size,
-            share_conv_kernel=config.share_conv_kernel,
             elementwise_affine=config.elementwise_affine,
             norm_eps=config.norm_eps,
             layer_idx=layer_idx

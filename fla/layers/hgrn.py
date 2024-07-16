@@ -30,7 +30,6 @@ class HGRNAttention(nn.Module):
         use_short_conv: bool = False,
         conv_size: int = 4,
         conv_bias: bool = False,
-        share_conv_kernel: bool = True,
         elementwise_affine: Optional[bool] = True,
         norm_eps: float = 1e-5,
         layer_idx: int = None
@@ -47,7 +46,6 @@ class HGRNAttention(nn.Module):
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
         self.conv_bias = conv_bias
-        self.share_conv_kernel = share_conv_kernel
 
         self.layer_idx = layer_idx
 
@@ -60,12 +58,9 @@ class HGRNAttention(nn.Module):
 
         if use_short_conv:
             self.conv_size = conv_size
-            if share_conv_kernel:
-                self.h_conv1d = ShortConvolution(hidden_size, conv_size, activation='silu')
-            else:
-                self.q_conv1d = ShortConvolution(self.input_dim, conv_size, activation='silu')
-                self.f_conv1d = ShortConvolution(self.input_dim, conv_size, activation='silu')
-                self.i_conv1d = ShortConvolution(self.input_dim, conv_size, activation='silu')
+            self.q_conv1d = ShortConvolution(self.input_dim, conv_size, activation='silu')
+            self.f_conv1d = ShortConvolution(self.input_dim, conv_size)
+            self.i_conv1d = ShortConvolution(self.input_dim, conv_size)
 
         self.g_norm = FusedRMSNormSwishGate(self.input_dim, elementwise_affine, norm_eps)
         self.o_proj = nn.Linear(self.input_dim, hidden_size, bias=False)
@@ -96,17 +91,10 @@ class HGRNAttention(nn.Module):
 
         last_state = past_key_values[self.layer_idx] if use_cache else None
         if self.use_short_conv:
-            conv_state = last_state[0] if use_cache else None
-            if self.share_conv_kernel:
-                # conv state is updated inplace
-                hidden_states = self.h_conv1d(hidden_states, attention_mask, conv_state)
-                i = self.i_proj(hidden_states)
-                f = self.f_proj(hidden_states)
-            else:
-                conv_state_i = last_state[2] if use_cache else None
-                conv_state_f = last_state[1] if use_cache else None
-                i = self.i_conv1d(self.i_proj(hidden_states), attention_mask, conv_state_i)
-                f = self.f_conv1d(self.f_proj(hidden_states), attention_mask, conv_state_f)
+            conv_state_i = last_state[0] if use_cache else None
+            conv_state_f = last_state[1] if use_cache else None
+            i = self.i_conv1d(self.i_proj(hidden_states), attention_mask, conv_state_i)
+            f = self.f_conv1d(self.f_proj(hidden_states), attention_mask, conv_state_f)
         else:
             i = self.i_proj(hidden_states)
             f = self.f_proj(hidden_states)
@@ -133,10 +121,7 @@ class HGRNAttention(nn.Module):
 
         if past_key_values is not None:
             if self.use_short_conv:
-                if self.share_conv_kernel:
-                    last_state = (conv_state, recurrent_state)
-                else:
-                    last_state = (conv_state_i, conv_state_f, recurrent_state)
+                last_state = (conv_state_i, conv_state_f, recurrent_state)
             else:
                 last_state = (recurrent_state,)
             past_key_values.update(last_state, self.layer_idx, i.shape[2])
@@ -150,12 +135,9 @@ class HGRNAttention(nn.Module):
         param = next(self.parameters())
         state = tuple()
         if self.use_short_conv:
-            if self.share_conv_kernel:
-                state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
-            else:
-                state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),
-                          param.new_zeros(batch_size, self.hidden_size, self.conv_size),
-                          param.new_zeros(batch_size, self.hidden_size, self.conv_size))
+            state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),
+                      param.new_zeros(batch_size, self.hidden_size, self.conv_size),
+                      param.new_zeros(batch_size, self.hidden_size, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_heads, self.head_dim),)
         return state
 
