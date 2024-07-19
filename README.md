@@ -155,7 +155,7 @@ In the following, we give a generation example:
 ```py
 >>> import fla
 >>> from transformers import AutoModelForCausalLM, AutoTokenizer
->>> name = 'fla-hub/gla-340M-15B'
+>>> name = 'fla-hub/gla-1.3B-100B'
 >>> tokenizer = AutoTokenizer.from_pretrained(name)
 >>> model = AutoModelForCausalLM.from_pretrained(name).cuda()
 >>> input_prompt = "Power goes with permanence. Impermanence is impotence. And rotation is castration."
@@ -168,7 +168,7 @@ We also provide a simple script [here](benchmarks/benchmark_generation.py) for b
 Simply run it by:
 ```sh
 $ python -m benchmarks.benchmark_generation \
-  --path 'fla-hub/gla-340M-15B' \
+  --path 'fla-hub/gla-1.3B-100B' \
   --repetition_penalty 2. \
   --prompt="Hello everyone, I'm Songlin Yang"
 
@@ -197,7 +197,7 @@ Follow the steps below to use this library:
 
 2. Run evaluation with:
 ```sh
-$ PATH='fla-hub/gla-340M-15B'
+$ PATH='fla-hub/gla-1.3B-100B'
 $ python -m evals.harness --model hf \
     --model_args pretrained=$PATH,dtype=bfloat16 \
     --tasks wikitext,lambada_openai,piqa,hellaswag,winogrande,arc_easy,arc_challenge,boolq,sciq,copa,openbookqa \
@@ -251,6 +251,13 @@ Please refer to Sectiton 2.3 of [GLA paper](https://arxiv.org/pdf/2312.06635.pdf
 # Citation
 If you find this repo useful, please consider citing our works:
 ```bib
+@article{yang2024delta,
+  title   = {Parallelizing Linear Transformers with the Delta Rule over Sequence Length}, 
+  author  = {Songlin Yang and Bailin Wang and Yu Zhang and Yikang Shen and Yoon Kim},
+  journal = {arXiv preprint arXiv:2406.06484},
+  year    = {2024},
+}
+
 @article{yang2023gated,
   title   = {Gated Linear Attention Transformers with Hardware-Efficient Training},
   author  = {Yang, Songlin and Wang, Bailin and Shen, Yikang and Panda, Rameswar and Kim, Yoon},
