@@ -368,6 +368,9 @@ def fused_chunk_delta_rule(
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    assert q.dtype == k.dtype == v.dtype 
+    assert q.dtype != torch.float32, "FusedChunkDeltaRuleFunction does not support float32. Please use bfloat16."
+
     if initial_state is not None:
         initial_state = initial_state.detach()
     o, final_state = FusedChunkDeltaRuleFunction.apply(q, k, v, beta, BT, initial_state, output_final_state)

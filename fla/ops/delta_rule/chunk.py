@@ -278,11 +278,6 @@ def chunk_delta_rule_bwd_kernel_dhu(
             # [BT, V]
             b_do = tl.load(p_do, boundary_check=(0, 1))
 
-            # [BT, BT]
-            # b_s = tl.dot(b_k, b_q, allow_tf32=False)
-            # b_s = tl.where(m_s, b_s, 0)
-            # b_dv = tl.dot(b_s.to(b_do.dtype), b_do, allow_tf32=False) + tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False)
-
             b_dv = tl.load(p_dv, boundary_check=(0, 1))
             b_dv += tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False)
             p_dv2 = tl.make_block_ptr(dv2 + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT + i_c * BC, i_v * BV), (BC, BV), (1, 0))
@@ -335,16 +330,11 @@ def chunk_delta_rule_bwd_kernel_dqkw(
     NT: tl.constexpr
 ):
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    n_bh = tl.num_programs(2)
     o_i = tl.arange(0, BT)
     
     p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
     p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
 
-    b_q = tl.load(p_q, boundary_check=(0, 1))
-    b_k = tl.load(p_k, boundary_check=(0, 1))
-    b_s = tl.dot(b_k, b_q, allow_tf32=False) * scale
-    b_s = tl.where(o_i[:, None] <= o_i[None, :], b_s, 0)
 
     b_dq = tl.zeros([BT, BK], dtype=tl.float32)
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
@@ -366,16 +356,20 @@ def chunk_delta_rule_bwd_kernel_dqkw(
         # [BT, BT]
         b_ds += tl.dot(b_do, tl.trans(b_v), allow_tf32=False)
         # [BT, BK]
-        b_dq += tl.dot(b_do, b_h, allow_tf32=False) * scale
+        b_dq += tl.dot(b_do, b_h, allow_tf32=False) 
         b_dk += tl.dot(b_v, tl.trans(b_dh), allow_tf32=False)
 
         b_dv = tl.load(p_dv, boundary_check=(0, 1))
-        b_dw += tl.dot(b_dv.to(b_k.dtype), b_h.to(b_k.dtype), allow_tf32=False)
+        b_dw += tl.dot(b_dv.to(b_v.dtype), b_h.to(b_v.dtype), allow_tf32=False)
         
     # [BT, BT]
-    b_ds = tl.where(o_i[:, None] >= o_i[None, :], b_ds * scale, 0).to(b_q.dtype)
     # [BT, BK]
-    b_dq += tl.dot(b_ds, b_k, allow_tf32=False)
+    b_q = tl.load(p_q, boundary_check=(0, 1))
+    b_q = (b_q * scale).to(b_q.dtype)
+    b_k = tl.load(p_k, boundary_check=(0, 1))
+    b_ds = tl.where(o_i[:, None] >= o_i[None, :], b_ds, 0).to(b_q.dtype)
+    b_dq += tl.dot(b_ds, b_k, allow_tf32=False) 
+    b_dq *= scale
     b_dk += tl.trans(tl.dot(b_q, b_ds, allow_tf32=False))
 
     p_dq = tl.make_block_ptr(dq + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
@@ -449,7 +443,7 @@ def chunk_fwd_o_fn(q, k, v_new, h, BT):
     BK = triton.next_power_of_2(K)
     o = torch.empty_like(v_new)
     BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(K), 64)
+    BV = min(triton.next_power_of_2(V), 64)
     NV = triton.cdiv(V, BV)
     NT = triton.cdiv(T, BT)
     grid = (NV, NT, B * H)
@@ -471,9 +465,9 @@ def chunk_bwd_dqkw_fn(q, k, v_new, w, h, du, do, dh, BT):
     BK = triton.next_power_of_2(K)
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
-    NV = triton.cdiv(V, BV)
+    NK = triton.cdiv(K, BK)
     NT = triton.cdiv(T, BT)
-    grid = (NV, NT, B * H)
+    grid = (NK, NT, B * H)
     dq = torch.empty_like(q)
     dk = torch.empty_like(k) 
     dw = torch.empty_like(w) 
@@ -498,8 +492,8 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
         w, u, A = fwd_prepare_wy_repr(k, v, beta, BT)
         # ### forward_h 
         final_state = None
-        if output_final_state:
-            final_state = q.new_empty(B, H, K, V, dtype=torch.float32, requires_grad=False)
+        if output_final_state: 
+            final_state = q.new_empty(q.shape[0], q.shape[1], q.shape[-1], v.shape[-1], dtype=torch.float32, requires_grad=False)
         h, v_new = chunk_fwd_h_fn(k, w, u, BT, initial_state, final_state)        
         ## obtain output 
         o = chunk_fwd_o_fn(q, k, v_new, h, BT)
@@ -537,7 +531,8 @@ def chunk_delta_rule(
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
 ):
-    assert q.dtype == k.dtype == v.dtype
+    assert q.dtype == k.dtype == v.dtype 
+    assert q.dtype != torch.float32, "FusedChunkDeltaRuleFunction does not support float32. Please use bfloat16."
     if initial_state is not None:
         initial_state = initial_state.detach()
     o, final_state = ChunkDeltaRuleFunction.apply(q, k, v, beta, BT,  initial_state, output_final_state)
