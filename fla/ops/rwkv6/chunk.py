@@ -455,7 +455,7 @@ def chunk_rwkv6_bwd_kernel_inter(
         # [BT, BK]
         b_dq += tl.dot(b_do, b_h, allow_tf32=False)
         # [BT, BK]
-        b_dk += tl.dot(b_v, tl.trans(b_dh), allow_tf32=False)
+        b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), allow_tf32=False)
 
     b_dq = b_dq * tl.exp(b_gq)
     b_dk = b_dk * b_gn
@@ -744,11 +744,13 @@ class ChunkRWKV6Function(torch.autograd.Function):
             )
 
         scale = ctx.scale
+        # g, gs: torch.float32
         dh, dh0 = bwd_inner(
-            q, g, gs, initial_state, do,
+            q.to(torch.float), g, gs, initial_state, do.to(torch.float),
             B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             scale=scale
         )
+        dh, dh0 = dh.to(q), dh0.to(q)
         dq = torch.empty_like(q, dtype=torch.float)
         dk = torch.empty_like(k, dtype=torch.float)
         dv = v.new_empty(NK, *v.shape)
