@@ -53,7 +53,7 @@ class DeltaNet(nn.Module):
         mode: str = 'fused_chunk',
         chunk_size: int = 16,
         use_beta: bool = True,
-        use_gate: bool = True,
+        use_gate: bool = False,
         use_output_norm: bool = True,
         use_elu: bool = False,
         use_short_conv: bool = True,
@@ -61,8 +61,8 @@ class DeltaNet(nn.Module):
         conv_bias: bool = False,
         layer_idx: int = None,
         qk_activation: str = 'silu',
-        qk_norm: str = None,
-        norm_first: bool = True,
+        qk_norm: str = 'l2',
+        norm_first: bool = False,
         norm_eps: float = 1e-5,
         **kwargs
     ) -> DeltaNet:

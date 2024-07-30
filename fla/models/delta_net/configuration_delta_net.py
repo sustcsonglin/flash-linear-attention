@@ -30,7 +30,7 @@ class DeltaNetConfig(PretrainedConfig):
         qk_activation: str = 'silu',
         hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
-        norm_first: bool = True,
+        norm_first: bool = False,
         norm_eps: float = 1e-6,
         use_cache: bool = True,
         pad_token_id: int = None,
