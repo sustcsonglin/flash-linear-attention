@@ -43,8 +43,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate perplexity")
     parser.add_argument('-p', '--path', type=str, default='fla-hub/gla-1.3B-100B')
     parser.add_argument('-d', '--data', type=str, default='fla-hub/slimpajama-test')
-    parser.add_argument('-s', '--split', type=str, default='test')
+    parser.add_argument('-s', '--split', type=str, default='train')
     parser.add_argument('--max_len', type=int, default=32000)
+    parser.add_argument('--max_block', type=int, default=float('inf'))
     parser.add_argument('--block_size', type=int, default=2048)
     args = parser.parse_args()
 
@@ -58,8 +59,10 @@ if __name__ == "__main__":
     model.eval()
     print(f"{model}")
 
-    dataset = load_dataset(args.data, split='train')
-    dataset = dataset.map(partial(preprocess, tokenizer=tokenizer), batched=True)
+    print(f"Loading data {args.data}")
+    dataset = load_dataset(args.data, split=args.split)
+    dataset = dataset.map(partial(preprocess, tokenizer=tokenizer), batched=True, num_proc=32)
+    print(dataset)
 
     with torch.no_grad():
         total_loss = 0
@@ -67,12 +70,25 @@ if __name__ == "__main__":
         total_sentences = 0
         block_loss = [torch.tensor(0., dtype=torch.float, device=device) for _ in range(0, args.max_len, args.block_size)]
         block_tokens = [1e-10 for _ in range(0, args.max_len, args.block_size)]
+        block_sizes = [0 for _ in range(0, args.max_len, args.block_size)]
         loss_fct = FusedCrossEntropyLoss(reduction='sum')
         bar = tqdm(batchify(dataset, 8 * 2048))
         for batch in bar:
             input_ids = pad_sequence(sequences=[torch.tensor(i, dtype=torch.long, device=device) for i in batch],
                                      batch_first=True,
-                                     padding_value=tokenizer.eos_token_id)
+                                     padding_value=tokenizer.eos_token_id)[:, :args.max_len]
+            total_tokens += input_ids.ne(loss_fct.ignore_index).sum()
+            total_sentences += input_ids.shape[0]
+
+            blocks = [min(length//args.block_size, len(block_sizes)-1)
+                      for length in input_ids.ne(tokenizer.eos_token_id).sum(-1).tolist()]
+            for i in blocks:
+                block_sizes[i] += 1
+            mask = input_ids.new_tensor([block_sizes[i] < args.max_block for i in blocks], dtype=torch.bool)
+            if not mask.any():
+                continue
+            input_ids = input_ids[mask]
+
             labels = torch.where(input_ids.eq(tokenizer.eos_token_id), loss_fct.ignore_index, input_ids)
             outputs = model(input_ids, labels=labels)
             loss, logits = outputs['loss'], outputs['logits']
@@ -82,11 +98,9 @@ if __name__ == "__main__":
             nlls = torch.where(labels.eq(loss_fct.ignore_index), 0., nlls)
 
             total_loss += loss.item() * labels.ne(loss_fct.ignore_index).sum()
-            total_tokens += labels.ne(loss_fct.ignore_index).sum()
-            total_sentences += input_ids.shape[0]
 
             for i, j in enumerate(range(0, min(input_ids.shape[-1], args.max_len), args.block_size)):
                 block_loss[i] += nlls[:, j:j+args.block_size].sum()
                 block_tokens[i] += labels[:, j:j+args.block_size].ne(loss_fct.ignore_index).sum()
             ppls = [f"{math.exp(loss / toks):6.2f}" for loss, toks in zip(block_loss, block_tokens)]
-            bar.set_description_str(f"{total_tokens} tokens, {total_sentences} sentences: " + ' '.join(ppls))
+            bar.set_description_str(f"[{total_tokens:10} tokens, {total_sentences:8} sentences] " + ' '.join(ppls))
