@@ -4,7 +4,7 @@ import torch
 import triton
 from torch.nn import functional as F
 
-from fla.ops.abc import chunk_abc
+from fla.ops.abc import chunk_gated_abc
 from fla.ops.gla import chunk_gla
 from fla.ops.retention import chunk_retention
 
@@ -24,9 +24,9 @@ except BaseException:
         # argument name whose value corresponds to a different line in the plot
         line_arg='provider',
         # possible values for `line_arg``
-        line_vals=['abc',  'gla', 'abc_bwd', 'gla_bwd', 'retention_bwd', 'flash_bwd'],
+        line_vals=['gsa',  'gla', 'gsa_bwd', 'gla_bwd', 'retention_bwd', 'flash_bwd'],
         # label name for the lines
-        line_names=['abc',  'gla', 'abc_bwd', 'gla_bwd', 'retention_bwd', 'flash_bwd'],
+        line_names=['gsa',  'gla', 'gsa_bwd', 'gla_bwd', 'retention_bwd', 'flash_bwd'],
         # line styles
         styles=[('green', '-'), ('blue', '--'), ('red', '-.'),
                 ('cyan', ':'), ('yellow', 'dotted'), ('black', ':')],
@@ -52,18 +52,18 @@ def benchmark(T, provider):
     if provider.startswith('gla'):
         g = F.logsigmoid(torch.randn(B, H, T, D, device=device, dtype=dtype))
         g = g.clamp_min(-5).requires_grad_(requires_grad)
-    if provider.startswith('abc'):
-        s = torch.randn(B, H, T, M, device=device, requires_grad=requires_grad, dtype=dtype)
-
+    if provider.startswith('gsa'):
+        f = F.logsigmoid(torch.randn(B, H, T, M, device=device, dtype=dtype))
+        s = (1 - f.exp()).to(f.dtype)
     do = torch.ones_like(v, dtype=dtype)
 
     quantiles = [0.5, 0.2, 0.8]
-    if provider == 'abc':
-        results = triton.testing.do_bench(lambda: chunk_abc(q, k, v, s), quantiles=quantiles)
+    if provider == 'gsa':
+        results = triton.testing.do_bench(lambda: chunk_gated_abc(q, k, v, s, f), quantiles=quantiles)
     elif provider == 'gla':
         results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g), quantiles=quantiles)
-    elif provider == 'abc_bwd':
-        results = triton.testing.do_bench(lambda: chunk_abc(q, k, v, s)[0].backward(do), quantiles=quantiles)
+    elif provider == 'gsa_bwd':
+        results = triton.testing.do_bench(lambda: chunk_gated_abc(q, k, v, s, f)[0].backward(do), quantiles=quantiles)
     elif provider == 'gla_bwd':
         results = triton.testing.do_bench(lambda: chunk_gla(q, k, v, g)[0].backward(do), quantiles=quantiles)
     elif provider == 'retention_bwd':
