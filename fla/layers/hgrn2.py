@@ -73,7 +73,7 @@ class HGRN2Attention(nn.Module):
             self.f_conv1d = ShortConvolution(self.forget_dim, conv_size)
             self.i_conv1d = ShortConvolution(self.input_dim, conv_size)
 
-        self.g_norm = RMSNorm(self.hidden_size, elementwise_affine, norm_eps)
+        self.g_norm = RMSNorm(hidden_size=self.hidden_size, elementwise_affine=elementwise_affine, eps=norm_eps)
         self.o_proj = nn.Linear(self.input_dim, hidden_size, bias=False)
 
         self.apply(self._initialize_weights)
@@ -131,7 +131,7 @@ class HGRN2Attention(nn.Module):
         else:
             g = lower_bound + (1 - lower_bound) * f.sigmoid()
             k, g = 1 - g, g.log()
-        
+
         q, k, i, g = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k.to(i), i, g))
 
         recurrent_state = last_state[-1] if use_cache else None
@@ -161,8 +161,8 @@ class HGRN2Attention(nn.Module):
         state = tuple()
         if self.use_short_conv:
             state += (param.new_zeros(batch_size, self.forget_dim, self.conv_size),
-                        param.new_zeros(batch_size, self.forget_dim, self.conv_size),
-                        param.new_zeros(batch_size, self.input_dim, self.conv_size))
+                      param.new_zeros(batch_size, self.forget_dim, self.conv_size),
+                      param.new_zeros(batch_size, self.input_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_heads, self.head_f_dim, self.head_i_dim),)
         return state
 
