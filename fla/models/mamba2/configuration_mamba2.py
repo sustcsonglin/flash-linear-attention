@@ -39,14 +39,14 @@ class Mamba2Config(PretrainedConfig):
             `inputs_ids` passed when calling [`Mamba2Model`].
         hidden_size (`int`, *optional*, defaults to 2048):
             Dimensionality of the embeddings and hidden states.
-        state_size (`int`, *optional*, defaults to 128): shape of the state space latents.
+        state_size (`int`, *optional*, defaults to 16): shape of the state space latents.
         num_hidden_layers (`int`, *optional*, defaults to 48):
             Number of hidden layers in the model.
         layer_norm_epsilon (`float`, *optional*, defaults to 1e-05):
             The epsilon to use in the layer normalization layers.
-        pad_token_id (`int`, *optional*, defaults to 1):
+        pad_token_id (`int`, *optional*, defaults to 0):
             Padding token id.
-        bos_token_id (`int`, *optional*, defaults to 0):
+        bos_token_id (`int`, *optional*, defaults to 1):
             The id of the beginning of sentence token in the vocabulary.
         eos_token_id (`int`, *optional*, defaults to 2):
             The id of the end of sentence token in the vocabulary.
@@ -63,9 +63,11 @@ class Mamba2Config(PretrainedConfig):
         initializer_range (`float`, *optional*, defaults to 0.1):
             The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
         residual_in_fp32 (`bool`, *optional*, defaults to `True`):
-            Whether or not residuals should be in `float32`. If set to `False` residuals will keep the same `dtype` as the rest of the model
+            Whether or not residuals should be in `float32`.
+            If set to `False` residuals will keep the same `dtype` as the rest of the model
         time_step_rank (`Union[int,str]`, *optional*, defaults to `"auto"`):
-            Rank of the discretization projection matrix. `"auto"` means that it will default to `math.ceil(self.hidden_size / 16)`
+            Rank of the discretization projection matrix.
+            `"auto"` means that it will default to `math.ceil(self.hidden_size / 16)`
         time_step_min (`float`, *optional*, defaults to 0.001):
             Minimum `time_step` used to bound `dt_proj.bias`.
         time_step_max (`float`, *optional*, defaults to 0.1):
@@ -86,22 +88,7 @@ class Mamba2Config(PretrainedConfig):
             Size of the chunks that will comprise the sequence.
         tie_word_embeddings (`bool`, *optional*, defaults to `False`):
             Whether to tie word embeddings or not.
-
-
-    Example:
-
-    ```python
-    >>> from transformers import Mamba2Config, Mamba2Model
-
-    >>> # Initializing a Mamba2 configuration
-    >>> configuration = Mamba2Config()
-
-    >>> # Initializing a model (with random weights) from the configuration
-    >>> model = Mamba2Model(configuration)
-
-    >>> # Accessing the model configuration
-    >>> configuration = model.config
-    ```"""
+    """
 
     model_type = "mamba2"
 
@@ -111,7 +98,7 @@ class Mamba2Config(PretrainedConfig):
         head_dim: int = 64,
         vocab_size: int = 32000,
         hidden_size: int = 2048,
-        state_size: int = 128,
+        state_size: int = 16,
         num_hidden_layers: int = 48,
         layer_norm_epsilon: float = 1e-5,
         pad_token_id: int = 0,
