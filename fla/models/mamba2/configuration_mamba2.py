@@ -30,17 +30,17 @@ class Mamba2Config(PretrainedConfig):
 
 
     Args:
-        num_heads (`int`, *optional*, defaults to 128):
+        num_heads (`int`, *optional*, defaults to 64):
             Number of heads for the evolution matrices of mamba 2.
         head_dim (`int`, *optional*, defaults to 64):
             Dimension of each head.
         vocab_size (`int`, *optional*, defaults to 32768):
             Vocabulary size of the MAMBA2 model. Defines the number of different tokens that can be represented by the
             `inputs_ids` passed when calling [`Mamba2Model`].
-        hidden_size (`int`, *optional*, defaults to 4096):
+        hidden_size (`int`, *optional*, defaults to 2048):
             Dimensionality of the embeddings and hidden states.
         state_size (`int`, *optional*, defaults to 128): shape of the state space latents.
-        num_hidden_layers (`int`, *optional*, defaults to 64):
+        num_hidden_layers (`int`, *optional*, defaults to 48):
             Number of hidden layers in the model.
         layer_norm_epsilon (`float`, *optional*, defaults to 1e-05):
             The epsilon to use in the layer normalization layers.
@@ -107,15 +107,15 @@ class Mamba2Config(PretrainedConfig):
 
     def __init__(
         self,
-        num_heads: int = 128,
+        num_heads: int = 64,
         head_dim: int = 64,
         vocab_size: int = 32000,
-        hidden_size: int = 4096,
+        hidden_size: int = 2048,
         state_size: int = 128,
-        num_hidden_layers: int = 64,
+        num_hidden_layers: int = 48,
         layer_norm_epsilon: float = 1e-5,
-        pad_token_id: int = 1,
-        bos_token_id: int = 0,
+        pad_token_id: int = 0,
+        bos_token_id: int = 1,
         eos_token_id: int = 2,
         expand: int = 2,
         conv_kernel: int = 4,
