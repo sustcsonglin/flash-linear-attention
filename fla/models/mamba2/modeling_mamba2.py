@@ -375,7 +375,7 @@ class Mamba2Mixer(nn.Module):
                     seq_idx=None,  # was seq_idx
                     activation=self.activation,
                     rmsnorm_weight=self.norm.weight,
-                    rmsnorm_eps=self.norm.variance_epsilon,
+                    rmsnorm_eps=self.norm.eps,
                     outproj_weight=self.out_proj.weight,
                     outproj_bias=self.out_proj.bias,
                     headdim=None if self.D_has_hdim else self.head_dim,
