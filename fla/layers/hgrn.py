@@ -58,9 +58,9 @@ class HGRNAttention(nn.Module):
 
         if use_short_conv:
             self.conv_size = conv_size
-            self.q_conv1d = ShortConvolution(self.input_dim, conv_size, activation='silu')
-            self.f_conv1d = ShortConvolution(self.input_dim, conv_size)
-            self.i_conv1d = ShortConvolution(self.input_dim, conv_size)
+            self.q_conv1d = ShortConvolution(self.input_dim, conv_size, activation=None)
+            self.f_conv1d = ShortConvolution(self.input_dim, conv_size, activation=None)
+            self.i_conv1d = ShortConvolution(self.input_dim, conv_size, activation=None)
 
         self.g_norm = FusedRMSNormSwishGate(self.input_dim, elementwise_affine, norm_eps)
         self.o_proj = nn.Linear(self.input_dim, hidden_size, bias=False)
