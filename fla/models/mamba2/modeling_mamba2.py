@@ -19,21 +19,21 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 import torch.utils.checkpoint
-from fla.models.mamba2.configuration_mamba2 import Mamba2Config
-from fla.modules import FusedCrossEntropyLoss, FusedRMSNormSwishGate, RMSNorm
 from torch import nn
 from transformers.activations import ACT2FN
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import ModelOutput, logging
 
+from fla.models.mamba2.configuration_mamba2 import Mamba2Config
+from fla.modules import FusedCrossEntropyLoss, FusedRMSNormSwishGate, RMSNorm
+
 logger = logging.get_logger(__name__)
 
 try:
-    from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+    from mamba_ssm.ops.triton.selective_state_update import \
+        selective_state_update
     from mamba_ssm.ops.triton.ssd_combined import (
-        mamba_chunk_scan_combined,
-        mamba_split_conv1d_scan_combined,
-    )
+        mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined)
 except ImportError:
     (
         selective_state_update,
@@ -84,7 +84,8 @@ def reshape_into_chunks(x, pad_size, chunk_size):
         return x.reshape(x.shape[0], -1, chunk_size, x.shape[2])
     else:
         # b (l c) h p -> b l c h p with c=chunk_size
-        # [bsz, seq_len multiple of chunk_size, num_heads, head_dim or state_size] -> [bsz, -1, chunk_size, num_heads, head_dim or state_size]
+        # [bsz, seq_len multiple of chunk_size, num_heads, head_dim or state_size] ->
+        # [bsz, -1, chunk_size, num_heads, head_dim or state_size]
         return x.reshape(x.shape[0], -1, chunk_size, x.shape[2], x.shape[3])
 
 
@@ -253,9 +254,11 @@ class Mamba2Mixer(nn.Module):
 
         if not is_fast_path_available:
             logger.warning_once(
-                "The fast path is not available because on of `(selective_state_update, causal_conv1d_fn, causal_conv1d_update)`"
-                " is None. Falling back to the naive implementation. To install follow https://github.com/state-spaces/mamba/#installation and"
-                " https://github.com/Dao-AILab/causal-conv1d"
+                "The fast path is not available because one of "
+                "`(selective_state_update, causal_conv1d_fn, causal_conv1d_update)` is None. "
+                "Falling back to the naive implementation. "
+                "To install follow https://github.com/state-spaces/mamba/#installation and"
+                "https://github.com/Dao-AILab/causal-conv1d"
             )
 
     def cuda_kernels_forward(
@@ -464,15 +467,19 @@ class Mamba2Mixer(nn.Module):
         return out
 
     # fmt: off
-    def torch_forward(self, input_states, cache_params: Optional[Mamba2Cache] = None,
-                       cache_position: Optional[torch.LongTensor] = None,
-                       attention_mask: Optional[torch.Tensor] = None):
+    def torch_forward(
+        self,
+        input_states,
+        cache_params: Optional[Mamba2Cache] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None
+    ):
         batch_size, seq_len, _ = input_states.shape
         dtype = input_states.dtype
         # Gated MLP's linear projection
         projected_states = self.in_proj(input_states.squeeze(1))
         d_mlp = (projected_states.shape[-1] - 2 * self.intermediate_size - 2
-                  * self.n_groups * self.ssm_state_size - self.num_heads) // 2
+                 * self.n_groups * self.ssm_state_size - self.num_heads) // 2
         # z0 and x0 are empty tensors
         z0, x0, gate, hidden_states, dt = projected_states.split(
             [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads], dim=-1
@@ -488,8 +495,7 @@ class Mamba2Mixer(nn.Module):
                 # handle batched generation - states are copied through
                 conv_state[:, :, -1] = hidden_states[:, 0, :] if hidden_states.ndim == 3 else hidden_states
                 cache_params.conv_states[self.layer_idx].copy_(conv_state)
-                hidden_states = torch.sum(conv_state.to(projected_states.device)
-                                           * self.conv1d.weight[:, 0, :], dim=-1)
+                hidden_states = torch.sum(conv_state.to(projected_states.device) * self.conv1d.weight[:, 0, :], dim=-1)
                 if self.use_conv_bias:
                     hidden_states += self.conv1d.bias
                 hidden_states = self.act(hidden_states).to(dtype).unsqueeze(1)  # [batch, 1, intermediate_size] : decoding
@@ -509,7 +515,7 @@ class Mamba2Mixer(nn.Module):
             )
             hidden_states = self.act(self.conv1d(hidden_states.transpose(1, 2))[..., :seq_len].transpose(1, 2))
         hidden_states, B, C = torch.split(hidden_states, [self.intermediate_size, self.n_groups * self.ssm_state_size,
-                                                           self.n_groups * self.ssm_state_size], dim=-1)
+                                                          self.n_groups * self.ssm_state_size], dim=-1)
         A = -torch.exp(self.A_log.float())                            # [num_heads]
         if cache_params is not None and cache_params.seqlen_offset > 0:
             assert attention_mask.shape[-1] == 1
@@ -556,7 +562,7 @@ class Mamba2Mixer(nn.Module):
 
             ssm_states = cache_params.ssm_states[self.layer_idx].to(C.dtype)  # Shape: [b, h, d, n]
             # Reshape ssm_states to merge the first two dimensions
-            ssm_states_reshaped = ssm_states.view(batch_size * self.num_heads, self.head_dim, self.ssm_state_size)  # Shape: [b*h, d, n]
+            ssm_states_reshaped = ssm_states.view(batch_size * self.num_heads, self.head_dim, self.ssm_state_size)
             C_reshaped = C.view(batch_size * self.num_heads, self.ssm_state_size, 1)  # Shape: [b*h, n, 1]
             y = torch.bmm(ssm_states_reshaped, C_reshaped)
             y = y.view(batch_size, self.num_heads, self.head_dim)
@@ -681,7 +687,6 @@ class Mamba2Mixer(nn.Module):
             return self.cuda_kernels_forward(
                 hidden_states, cache_params, cache_position, attention_mask
             )
-        # if cache_params is not None and attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
         dtype = hidden_states.dtype
         if (
             attention_mask is not None
@@ -799,7 +804,8 @@ class Mamba2Output(ModelOutput):
             avoid providing the old `input_ids`.
 
             Includes both the State space model state matrices after the selective scan, and the Convolutional states
-        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*,
+            returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
             Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
             one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
 
@@ -827,7 +833,8 @@ class Mamba2CausalLMOutput(ModelOutput):
             avoid providing the old `input_ids`.
 
             Includes both the State space model state matrices after the selective scan, and the Convolutional states
-        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*,
+            returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
             Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
             one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
 
@@ -1115,27 +1122,22 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel):
         )
         hidden_states = mamba2_outputs[0]
 
-        logits = self.lm_head(hidden_states.to(self.lm_head.weight.dtype)).float()
+        logits = self.lm_head(hidden_states)
 
         loss = None
         if labels is not None:
-            # move labels to correct device to enable model parallelism
-            labels = labels.to(logits.device)
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
             if self.config.fuse_cross_entropy:
                 loss_fct = FusedCrossEntropyLoss(inplace_backward=True)
             else:
                 loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
-            )
+            # Enable model parallelism
+            labels = labels.to(logits.device)
+            labels = torch.cat((labels[..., 1:], torch.full_like(labels[:, :1], loss_fct.ignore_index)), 1)
+            loss = loss_fct(logits.view(-1, self.config.vocab_size), labels.view(-1))
 
         if not return_dict:
             output = (logits,) + mamba2_outputs[1:]
-            return ((loss,) + output) if loss is not None else output
+            return (loss,) + output if loss is not None else output
 
         return Mamba2CausalLMOutput(
             loss=loss,
