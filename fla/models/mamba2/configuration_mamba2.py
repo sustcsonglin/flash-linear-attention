@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,6 +16,7 @@
 import math
 
 from transformers.configuration_utils import PretrainedConfig
+
 
 class Mamba2Config(PretrainedConfig):
     """
@@ -107,36 +107,36 @@ class Mamba2Config(PretrainedConfig):
 
     def __init__(
         self,
-        num_heads=128,
-        head_dim=64,
-        vocab_size=32000,
-        hidden_size=4096,
-        state_size=128,
-        num_hidden_layers=64,
-        layer_norm_epsilon=1e-5,
-        pad_token_id=1,
-        bos_token_id=0,
-        eos_token_id=2,
-        expand=2,
-        conv_kernel=4,
-        n_groups=8,
-        use_bias=False,
-        use_conv_bias=True,
-        hidden_act="silu",
-        initializer_range=0.1,
-        residual_in_fp32=True,
-        time_step_rank="auto",
-        time_step_min=0.001,
-        time_step_max=0.1,
-        time_step_floor=1e-4,
+        num_heads: int = 128,
+        head_dim: int = 64,
+        vocab_size: int = 32000,
+        hidden_size: int = 4096,
+        state_size: int = 128,
+        num_hidden_layers: int = 64,
+        layer_norm_epsilon: float = 1e-5,
+        pad_token_id: int = 1,
+        bos_token_id: int = 0,
+        eos_token_id: int = 2,
+        expand: int = 2,
+        conv_kernel: int = 4,
+        n_groups: int = 8,
+        use_bias: bool = False,
+        use_conv_bias: bool = True,
+        hidden_act: str = "silu",
+        initializer_range: float = 0.1,
+        residual_in_fp32: bool = True,
+        time_step_rank: str = "auto",
+        time_step_min: float = 0.001,
+        time_step_max: float = 0.1,
+        time_step_floor: float = 1e-4,
         time_step_limit=(0.0, float("inf")),
-        rescale_prenorm_residual=False,
-        use_cache=True,
-        norm_before_gate=True,
-        rms_norm=True,
-        chunk_size=256,
-        fuse_cross_entropy=True,
-        tie_word_embeddings=False,
+        rescale_prenorm_residual: bool = False,
+        use_cache: bool = True,
+        norm_before_gate: bool = True,
+        rms_norm: bool = True,
+        chunk_size: int = 256,
+        fuse_cross_entropy: bool = True,
+        tie_word_embeddings: bool = False,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -154,7 +154,11 @@ class Mamba2Config(PretrainedConfig):
         self.use_conv_bias = use_conv_bias
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
-        self.time_step_rank = math.ceil(self.hidden_size / 16) if time_step_rank == "auto" else time_step_rank
+        self.time_step_rank = (
+            math.ceil(self.hidden_size / 16)
+            if time_step_rank == "auto"
+            else time_step_rank
+        )
         self.time_step_min = time_step_min
         self.time_step_max = time_step_max
         self.time_step_floor = time_step_floor
