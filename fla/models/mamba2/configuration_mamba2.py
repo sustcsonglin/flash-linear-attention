@@ -39,7 +39,7 @@ class Mamba2Config(PretrainedConfig):
             `inputs_ids` passed when calling [`Mamba2Model`].
         hidden_size (`int`, *optional*, defaults to 2048):
             Dimensionality of the embeddings and hidden states.
-        state_size (`int`, *optional*, defaults to 16): shape of the state space latents.
+        state_size (`int`, *optional*, defaults to 64): shape of the state space latents.
         num_hidden_layers (`int`, *optional*, defaults to 48):
             Number of hidden layers in the model.
         layer_norm_epsilon (`float`, *optional*, defaults to 1e-05):
@@ -98,7 +98,7 @@ class Mamba2Config(PretrainedConfig):
         head_dim: int = 64,
         vocab_size: int = 32000,
         hidden_size: int = 2048,
-        state_size: int = 16,
+        state_size: int = 64,
         num_hidden_layers: int = 48,
         layer_norm_epsilon: float = 1e-5,
         pad_token_id: int = 0,
