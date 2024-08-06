@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 state-spaces/mamba2 org and HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +15,7 @@
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.utils.checkpoint
@@ -77,7 +76,8 @@ def reshape_into_chunks(input_tensor, pad_size, chunk_size):
         # [bsz, seq_len multiple of chunk_size, num_heads] -> [bsz, -1, chunk_size, num_heads]
         return input_tensor.reshape(input_tensor.shape[0], -1, chunk_size, input_tensor.shape[2])
     else:
-        # [bsz, seq_len multiple of chunk_size, num_heads, head_dim or state_size] -> [bsz, -1, chunk_size, num_heads, head_dim or state_size]
+        # [bsz, seq_len multiple of chunk_size, num_heads, head_dim or state_size] ->
+        # [bsz, -1, chunk_size, num_heads, head_dim or state_size]
         return input_tensor.reshape(
             input_tensor.shape[0], -1, chunk_size, input_tensor.shape[2], input_tensor.shape[3]
         )
@@ -239,9 +239,7 @@ class Mamba2Mixer(nn.Module):
             self.intermediate_size, eps=self.layer_norm_epsilon
         )
 
-        self.D = nn.Parameter(
-            torch.ones(self.num_heads)
-        )
+        self.D = nn.Parameter(torch.ones(self.num_heads))
         self.D._no_weight_decay = True
 
         self.out_proj = nn.Linear(
@@ -301,7 +299,7 @@ class Mamba2Mixer(nn.Module):
             B = B.view(batch_size, self.n_groups, B.shape[1] // self.n_groups)
             C = C.view(batch_size, self.n_groups, C.shape[1] // self.n_groups)
             hidden_states_reshaped = hidden_states.view(batch_size, self.num_heads, self.head_dim)
-            
+
             hidden_states = selective_state_update(
                 cache_params.ssm_states[self.layer_idx],
                 hidden_states_reshaped,
@@ -352,7 +350,7 @@ class Mamba2Mixer(nn.Module):
                     rmsnorm_eps=self.norm.eps,
                     outproj_weight=self.out_proj.weight,
                     outproj_bias=self.out_proj.bias,
-                    headdim=None if self.D_has_hdim else self.head_dim,
+                    headdim=self.head_dim,
                     ngroups=self.n_groups,
                     norm_before_gate=self.norm_before_gate,
                     return_final_states=True,
@@ -577,13 +575,12 @@ class Mamba2Mixer(nn.Module):
             # Step 3: Compute Y_diag (apply to values)
             Y_diag = (M[..., None] * hidden_states[:, :, None]).sum(3)
 
-
             # (right term of low-rank factorization of off-diagonal blocks; B terms)
 
             decay_states = torch.exp((A_cumsum[:, :, :, -1:] - A_cumsum))
             B_decay_contraction = B * decay_states.permute(0, 2, 3, 1)[..., None]
             # permute back B * decay states
-            states = (B_decay_contraction.permute(0, 1, 3, 2, 4)[..., None] 
+            states = (B_decay_contraction.permute(0, 1, 3, 2, 4)[..., None]
                       * hidden_states.permute(0, 1, 3, 2, 4)[..., None, :]).sum(dim=3).permute(0, 1, 2, 4, 3)
 
             if cache_params is not None and cache_params.seqlen_offset > 0:
@@ -1055,7 +1052,7 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel):
         )
         hidden_states = mamba2_outputs[0]
 
-        logits = self.lm_head(hidden_states.to(self.lm_head.weight.dtype)).float()
+        logits = self.lm_head(hidden_states)
 
         loss = None
         if labels is not None:
@@ -1070,7 +1067,7 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel):
 
         if not return_dict:
             output = (logits,) + mamba2_outputs[1:]
-            return ((loss,) + output) if loss is not None else output
+            return (loss,) + output if loss is not None else output
 
         return Mamba2CausalLMOutput(
             loss=loss,
