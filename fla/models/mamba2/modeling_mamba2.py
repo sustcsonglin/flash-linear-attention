@@ -1,3 +1,4 @@
+# coding=utf-8
 # Copyright 2024 state-spaces/mamba2 org and HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -217,10 +218,11 @@ class Mamba2Mixer(nn.Module):
         )
 
         # projection of the input hidden state
-        projection_size = self.intermediate_size + self.conv_dim + self.num_head
+        projection_size = self.intermediate_size + self.conv_dim + self.num_heads
         self.in_proj = nn.Linear(
             self.hidden_size,
             projection_size,
+            bias=config.use_bias,
         )
         # selective projection used to make dt, B and C input dependant
 
@@ -269,11 +271,8 @@ class Mamba2Mixer(nn.Module):
         # getting projected states from cache if it exists
         if cache_params is not None and cache_params.seqlen_offset > 0:
             in_projected_states = self.in_proj(hidden_states.squeeze(1))  # (B 2D)
-            d_mlp = (
             d_mlp = (in_projected_states.shape[-1] - d_to_remove) // 2
-                zxbcdt.shape[-1]
             split_projection_dim = [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads]
-                - 2 * self.intermediate_size
             _, _, gate, hidden_states_B_C, dt = torch.split(in_projected_states, split_projection_dim, dim=-1)
 
             hidden_states_B_C = causal_conv1d_update(
@@ -345,7 +344,7 @@ class Mamba2Mixer(nn.Module):
                     self.conv1d.bias,
                     self.dt_bias,
                     A,
-                    D=self.D.view(-1, self.head_dim) if self.D_has_hdim else self.D,
+                    D=self.D,
                     chunk_size=self.chunk_size,
                     seq_idx=None,  # was seq_idx
                     activation=self.activation,
@@ -366,17 +365,7 @@ class Mamba2Mixer(nn.Module):
                     [self.intermediate_size, self.conv_dim, self.num_heads],
                     dim=-1,
                 )
-                if (
-                    attention_mask is not None
-                    and attention_mask.shape[1] > 1
-                    and attention_mask.shape[0] > 1
-                ):
-                    # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
-                    # bug in generate tests?
-                    dtype = hidden_states.dtype
-                    hidden_states = (hidden_states * attention_mask.unsqueeze(2)).to(
-                        dtype
-                    )
+
                 time_step = nn.functional.softplus(time_step + self.dt_bias)
                 # 1D Convolution
                 if causal_conv1d_fn is None or self.activation not in ["silu", "swish"]:
@@ -492,7 +481,6 @@ class Mamba2Mixer(nn.Module):
                                                           self.n_groups * self.ssm_state_size], dim=-1)
         A = -torch.exp(self.A_log.float())                            # [num_heads]
         if cache_params is not None and cache_params.seqlen_offset > 0:
-            assert attention_mask.shape[-1] == 1
             # Note: there is no need to pad parameter matrices here, as there is just one new token
             # for batched generation
             dt = dt[:, None, ...] if dt.ndim == 2 else dt[:, 0, :][:, None, ...]
@@ -559,7 +547,6 @@ class Mamba2Mixer(nn.Module):
             C = C.reshape(batch_size, seq_len, -1, self.ssm_state_size).float()
             B = B.repeat(1, 1, self.num_heads // self.n_groups, 1)
             C = C.repeat(1, 1, self.num_heads // self.n_groups, 1)
-            seq_len = hidden_states.shape[1]
             pad_size = self.chunk_size - (seq_len % self.chunk_size)
 
             D_residual = self.D[..., None] * pad_tensor_by_size(hidden_states, pad_size)
@@ -635,11 +622,6 @@ class Mamba2Mixer(nn.Module):
                 cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
 
         scan_output = self.norm(y, o=gate)
-
-        # end ssd naive
-        if d_mlp > 0:
-            y0 = nn.functional.silu(z0) * x0
-            scan_output = torch.cat([y0, scan_output], dim=-1)
 
         # 4. Final linear projection
         contextualized_states = self.out_proj(scan_output.to(dtype))  # [batch, seq_len, hidden_size]
