@@ -176,7 +176,7 @@ class GatedLinearAttention(nn.Module):
             v = self.v_proj(hidden_states)
             q = self.q_conv1d(q, attention_mask, conv_state_q)
             k = self.k_conv1d(k, attention_mask, conv_state_k)
-            v = self.v_conv1d(v, attention_mask, conv_state_v)            
+            v = self.v_conv1d(v, attention_mask, conv_state_v)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
@@ -236,8 +236,8 @@ class GatedLinearAttention(nn.Module):
         state = tuple()
         if self.use_short_conv:
             state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                        param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                        param.new_zeros(batch_size, self.value_dim, self.conv_size))
+                      param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                      param.new_zeros(batch_size, self.value_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
         return state
 

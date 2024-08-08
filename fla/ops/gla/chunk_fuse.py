@@ -20,6 +20,7 @@ from fla.utils import contiguous
 
 inv_ln2 = 1.44269504
 
+
 @triton.jit
 def fused_chunk_gla_fwd_kernel(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
@@ -68,7 +69,7 @@ def fused_chunk_gla_fwd_kernel(
     if USE_INITIAL_STATE:
         p_h = tl.make_block_ptr(initial_state + i_bh * DK * DV, (DK, DV), (DV, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
-    
+
     mask = (i_k * BK + tl.arange(0, BK)) < DK
 
     for i in range(0, tl.cdiv(T, BT)):
@@ -138,8 +139,8 @@ def fused_chunk_gla_bwd_kernel(
     if USE_INITIAL_STATE:
         p_h = tl.make_block_ptr(initial_state + i_bh * DK * DV, (DV, DK), (1, DV), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
         b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
-    
-    mask = (i_k * BK + tl.arange(0, BK)) < DK    
+
+    mask = (i_k * BK + tl.arange(0, BK)) < DK
     for i in range(0, tl.cdiv(T, BT)):
         p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
         p_db = g + i_bh * s_qk_h + ((i+1) * BT - 1) * s_qk_t + i_k * BK + tl.arange(0, BK)
@@ -519,7 +520,7 @@ def pad(x, chunk_size=16):
     padded_seq_len = ceildiv(seq_len, chunk_size) * chunk_size
     if x.shape[-2] % chunk_size != 0:
         x = F.pad(x, (0, 0, 0, padded_seq_len - seq_len))
-    
+
     return x
 
 

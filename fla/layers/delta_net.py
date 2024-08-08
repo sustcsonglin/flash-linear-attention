@@ -115,11 +115,11 @@ class DeltaNet(nn.Module):
         if use_short_conv:
             self.conv_size = conv_size
             self.q_conv1d = ShortConvolution(self.key_dim,
-                                                 conv_size,
-                                                 activation='silu' if qk_activation == 'silu' else None)
+                                             conv_size,
+                                             activation='silu' if qk_activation == 'silu' else None)
             self.k_conv1d = ShortConvolution(self.key_dim,
-                                                 conv_size,
-                                                 activation='silu' if qk_activation == 'silu' else None)
+                                             conv_size,
+                                             activation='silu' if qk_activation == 'silu' else None)
             self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
         if use_gate:
             self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
@@ -238,9 +238,9 @@ class DeltaNet(nn.Module):
         param = next(self.parameters())
         state = tuple()
         if self.use_short_conv:
-                # for q/k/v each
+            # for q/k/v each
             state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                        param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                        param.new_zeros(batch_size, self.value_dim, self.conv_size))
+                      param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                      param.new_zeros(batch_size, self.value_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
         return state

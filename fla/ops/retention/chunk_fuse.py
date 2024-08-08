@@ -70,7 +70,7 @@ def fused_chunk_retention_fwd_kernel(
     if USE_INITIAL_STATE:
         p_h = tl.make_block_ptr(initial_state + i_bh * DK * DV, (DK, DV), (DV, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_h = tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
-    
+
     NT = tl.cdiv(T, BT)
     for i in range(0, NT):
         # [BK, BT]

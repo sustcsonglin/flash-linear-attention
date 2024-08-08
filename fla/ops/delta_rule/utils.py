@@ -6,9 +6,8 @@ import triton.language as tl
 from einops import rearrange
 from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.utils import contiguous
 from fla.ops.delta_rule.wy_fast import prepare_wy_repr as prepare_wy_repr2
-
+from fla.utils import contiguous
 
 
 # Inspired by "THE WY REPRESENTATION FOR PRODUCTS OF HOUSEHOLDER MATRICES" https://epubs.siam.org/doi/pdf/10.1137/0908009
@@ -189,6 +188,7 @@ def bwd_prepare_wy_repr(k, v, beta, o_cumdecay, v_new, do, do2, chunk_size):
     )
     return dk, dv, dbeta
 
+
 class WYRepresentationPrepration(torch.autograd.Function):
     @staticmethod
     @contiguous
@@ -206,6 +206,7 @@ class WYRepresentationPrepration(torch.autograd.Function):
         k, v, beta, o_cumdecay, v_new = ctx.saved_tensors
         dk, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, o_cumdecay, v_new, do, do2, ctx.chunk_size)
         return dk, dv, dbeta, None
+
 
 prepare_wy_repr = WYRepresentationPrepration.apply
 
@@ -247,7 +248,7 @@ if __name__ == "__main__":
     b = 4
     h = 8
     k = torch.nn.functional.normalize(torch.randn(b, h, seq_len, 256), dim=-1, p=2)
-    v = torch.randn(b, h, seq_len, 256) 
+    v = torch.randn(b, h, seq_len, 256)
     beta = torch.rand(b, h, seq_len).sigmoid()
     require_grad = True
     k, v, beta = map(lambda x: x.cuda().requires_grad_(require_grad), (k, v, beta))
@@ -262,7 +263,6 @@ if __name__ == "__main__":
     print((o1 - o3).abs().max())
     print((o2 - o4).abs().max())
 
-
     for i in range(30):
         o1, o2 = prepare_wy_repr(k, v, beta, 32)
         (o1 * do + o2 * do2).sum().backward()
@@ -271,7 +271,7 @@ if __name__ == "__main__":
 
     print("Done warmup.")
 
-    import time 
+    import time
     torch.cuda.synchronize()
     start = time.time()
 
@@ -282,7 +282,6 @@ if __name__ == "__main__":
     torch.cuda.synchronize()
     print(time.time() - start)
 
-
     torch.cuda.synchronize()
     start = time.time()
 
@@ -292,6 +291,3 @@ if __name__ == "__main__":
 
     torch.cuda.synchronize()
     print(time.time() - start)
-
-
-    

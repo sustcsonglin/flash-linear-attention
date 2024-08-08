@@ -5,7 +5,6 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
-from packaging import version
 from torch.cuda.amp import custom_bwd, custom_fwd
 
 from fla.ops.delta_rule.utils import bwd_prepare_wy_repr, fwd_prepare_wy_repr
@@ -323,6 +322,7 @@ def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
     dd[:, :, 0:BT] = 0
     return dq, dk, dv, dd
 
+
 class FusedChunkDeltaRuleFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
@@ -368,7 +368,7 @@ def fused_chunk_delta_rule(
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    assert q.dtype == k.dtype == v.dtype 
+    assert q.dtype == k.dtype == v.dtype
     assert q.dtype != torch.float32, "FusedChunkDeltaRuleFunction does not support float32. Please use bfloat16."
 
     if initial_state is not None:

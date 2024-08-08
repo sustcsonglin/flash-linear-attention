@@ -239,8 +239,8 @@ class MultiScaleRetention(nn.Module):
         state = tuple()
         if self.use_short_conv:
             state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                          param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                          param.new_zeros(batch_size, self.value_dim, self.conv_size))
+                      param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                      param.new_zeros(batch_size, self.value_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
         return state
 

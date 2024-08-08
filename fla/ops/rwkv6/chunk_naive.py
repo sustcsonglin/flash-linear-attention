@@ -97,6 +97,3 @@ if __name__ == "__main__":
                             dw.flatten(), du.flatten(), dh.flatten()])
     overall_rmsre = rmsre(all_grads1, all_grads2).item()
     print(f"\nOverall RMSRE: {overall_rmsre:.6f}")
-
-
-

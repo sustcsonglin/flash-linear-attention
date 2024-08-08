@@ -4,11 +4,10 @@ import triton.language as tl
 inv_ln2 = 1.44269504
 
 
-
 @triton.jit
 def fwd_decay_cumsum(
     g,
-    g_o, 
+    g_o,
     s_qk_h,
     s_qk_t,
     s_qk_d,
@@ -32,6 +31,7 @@ def fwd_decay_cumsum(
         tl.store(p_go, cum_decay.to(p_go.dtype.element_ty), mask=mask)
         p_g += DK
         p_go += DK
+
 
 @triton.jit
 def prepare_qg_kg(
@@ -58,7 +58,7 @@ def prepare_qg_kg(
     p_k = k + i_bh * s_qk_h + i_c * BT * DK + i_k * BK + tl.arange(0, BK)
     p_qg = qg + i_bh * s_qk_h + i_c * BT * DK + i_k * BK + tl.arange(0, BK)
     p_kg = kg + i_bh * s_qk_h + i_c * BT * DK + i_k * BK + tl.arange(0, BK)
-    
+
     mask = (i_k * BK + tl.arange(0, BK)) < DK
 
     last_decay = tl.load(g + i_bh * s_qk_h + (i_c * BT + BT - 1) * DK + i_k * BK + tl.arange(0, BK))
@@ -135,4 +135,3 @@ def bwd_decay_global_cumsum(
         p_dq_inter -= DK
         p_dk_inter -= DK
         p_dg -= DK
-

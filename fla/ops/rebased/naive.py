@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
 import torch
-from einops import rearrange
 
 from fla.ops.rebased.parallel import parallel_rebased
+
 
 def naive_parallel_rebased(q, k, v, use_scale=True, use_norm=True):
     if use_scale:
@@ -19,7 +19,7 @@ def naive_parallel_rebased(q, k, v, use_scale=True, use_norm=True):
     else:
         return o
 
-    
+
 if __name__ == "__main__":
     B = 4
     H = 4
@@ -37,17 +37,6 @@ if __name__ == "__main__":
     ref_dk, k.grad = k.grad.clone(), None
     ref_dv, v.grad = v.grad.clone(), None
 
-    # tri = naive_chunk_based(q, k, v)
-    # tri.backward(do, retain_graph=True)
-    # tri_dq, q.grad = q.grad.clone(), None
-    # tri_dk, k.grad = k.grad.clone(), None
-    # tri_dv, v.grad = v.grad.clone(), None
-
-    # assert ref.allclose(tri, 0, 1e-4), breakpoint()
-    # assert ref_dq.allclose(tri_dq, 0, 1e-4), breakpoint()
-    # assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
-    # assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
-
     tri = parallel_rebased(q, k, v, 1e-6, True, True)
     tri.backward(do, retain_graph=True)
     tri_dq, q.grad = q.grad.clone(), None
@@ -57,24 +46,3 @@ if __name__ == "__main__":
     print((ref_dq-tri_dq).abs().max())
     print((ref_dk-tri_dk).abs().max())
     print((ref_dv-tri_dv).abs().max())
-
-    # assert ref.allclose(tri, 0, 1e-4), breakpoint()
-    # assert ref_dq.allclose(tri_dq, 0, 1e-4), breakpoint()
-    # assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
-    # assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()
-
-    # tri = parallel_based(q, k, v, True, True)
-    # tri.backward(do, retain_graph=True)
-    # tri_dq, q.grad = q.grad.clone(), None
-    # tri_dk, k.grad = k.grad.clone(), None
-    # tri_dv, v.grad = v.grad.clone(), None
-
-    # print((ref-tri).abs().max())
-    # print((ref_dq-tri_dq).abs().max())
-    # print((ref_dk-tri_dk).abs().max())
-    # print((ref_dv-tri_dv).abs().max())
-
-    # assert ref.allclose(tri, 0, 1e-4), breakpoint()
-    # assert ref_dq.allclose(tri_dq, 0, 1e-4), breakpoint()
-    # assert ref_dk.allclose(tri_dk, 0, 1e-4), breakpoint()
-    # assert ref_dv.allclose(tri_dv, 0, 1e-4), breakpoint()

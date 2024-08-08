@@ -235,8 +235,8 @@ class GatedSlotAttention(nn.Module):
         state = tuple()
         if self.use_short_conv:
             state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                        param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                        param.new_zeros(batch_size, self.value_dim, self.conv_size))
+                      param.new_zeros(batch_size, self.key_dim, self.conv_size),
+                      param.new_zeros(batch_size, self.value_dim, self.conv_size))
         state += (param.new_zeros(batch_size, self.num_kv_heads, self.head_k_dim, self.num_slots),
                   param.new_zeros(batch_size, self.num_kv_heads, self.num_slots, self.head_v_dim))
         return state
