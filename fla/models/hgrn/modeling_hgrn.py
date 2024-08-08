@@ -262,14 +262,11 @@ class HGRNModel(HGRNPreTrainedModel):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = None
-        if use_cache:
-            next_cache = past_key_values.to_legacy_cache()
         if not return_dict:
-            return tuple(x for x in [hidden_states, next_cache, all_hidden_states, all_attns] if x is not None)
+            return tuple(i for i in [hidden_states, past_key_values, all_hidden_states, all_attns] if i is not None)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
-            past_key_values=next_cache,
+            past_key_values=past_key_values,
             hidden_states=all_hidden_states,
             attentions=all_attns
         )
