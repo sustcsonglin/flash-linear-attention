@@ -185,7 +185,7 @@ def fused_recurrent_bwd_kernel(
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
-    p_beta = beta + i_bh * T
+    p_beta = beta + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     p_dq = dq + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV) + DV
