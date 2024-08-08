@@ -71,7 +71,7 @@ def fused_recurrent_fwd_kernel(
         _q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
         _v_minus = tl.sum(h * _k[None, :], axis=1)
         _v -= _v_minus
-        _beta = tl.load(p_beta).to(tl.float32)
+        _beta = tl.load(p_beta, mask=mask_bv, other=0).to(tl.float32)
         # in-place overwrite
         tl.store(p_v, _v.to(p_v.dtype.element_ty), mask=mask_bv)
         _v *= _beta
@@ -107,7 +107,7 @@ def fused_recurrent_bwd_kernel(
     dq,  # gradient of query [NV, B, H, L, D_head_K]
     dk,  # gradient of key [NV, B, H, L, D_head_K]
     dv,  # gradient of value [NK, B, H, L, D_head_V]
-    dbeta,  # gradient of beta [B, H, L, D_head_V]
+    dbeta,  # gradient of beta [NK, B, H, L, D_head_V]
 
     # initial hidden state initialization [B, H, D_head_K, D_head_V]
     initial_state,
@@ -140,7 +140,7 @@ def fused_recurrent_bwd_kernel(
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
     # p_beta = beta + i_bh * T + T - 1
     # p_dbeta = dbeta + (i_bh + i_v * B * H) * T + T - 1
-    p_beta = beta + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
+    p_beta = beta + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
     p_dbeta = dbeta + (i_bh + i_k * B * H) * s_vo_h + i_v * \
         BV + tl.arange(0, BV) + (T - 1) * DV
 
