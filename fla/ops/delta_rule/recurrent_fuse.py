@@ -226,11 +226,10 @@ class FusedRecurrentFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    def forward(ctx, q, k, v, beta, initial_state=None, output_final_state=False):
+    def forward(ctx, q, k, v, beta, scale=None, initial_state=None, output_final_state=False):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
 
-        scale = d_head_qk ** -0.5
         BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 8)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         num_stages = 1
@@ -257,6 +256,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
         )
         o = o.sum(0)
         ctx.save_for_backward(q, k, v, beta, initial_state)
+        ctx.scale = scale
         return o, final_state
 
     @staticmethod
@@ -265,7 +265,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
         q, k, v, beta, initial_state = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-        scale = d_head_qk ** -0.5
+        scale = ctx.scale
         BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         assert NK == 1, "NK > 1 is not supported yet"
@@ -300,13 +300,16 @@ def fused_recurrent_linear_attn_delta_rule(
     k: torch.Tensor,
     v: torch.Tensor,
     beta: torch.Tensor = None,
+    scale: float = -2,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
-    normalize: bool = False
+    normalize: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if scale == -1:
+        scale = q.shape[-1] ** -0.5
     if initial_state is not None:
         initial_state = initial_state.detach()
     if beta is None:
         beta = torch.ones_like(q[..., 0])
-    o, final_state = FusedRecurrentFunction.apply(q, k, v, beta, initial_state, output_final_state)
+    o, final_state = FusedRecurrentFunction.apply(q, k, v, beta, scale, initial_state, output_final_state)
     return o, final_state

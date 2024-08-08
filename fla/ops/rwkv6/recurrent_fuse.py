@@ -347,7 +347,7 @@ def fused_recurrent_rwkv6(
     v: torch.Tensor,
     w: torch.Tensor,
     u: torch.Tensor,
-    scale: int = -1,
+    scale: float = -1,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
     causal: bool = True
