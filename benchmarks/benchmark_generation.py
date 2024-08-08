@@ -34,9 +34,11 @@ if __name__ == "__main__":
     dtype = torch.bfloat16
     torch.manual_seed(0)
 
-    print(f"Loading model {args.path}")
+    print(f"Loading {args.path}")
     tokenizer = AutoTokenizer.from_pretrained(args.path)
     tokenizer.pad_token_id = tokenizer.eos_token_id
+    print(f"{tokenizer}")
+
     model = AutoModelForCausalLM.from_pretrained(
         args.path,
         device_map={"": device},
@@ -70,3 +72,4 @@ if __name__ == "__main__":
     elapsed = time.time() - start
     print(f"Prompt length: {len(input_ids[0])}, generation length: {len(text[0]) - len(input_ids[0])}")
     print(f"Total prompt processing + decoding time: {elapsed * 1000:.0f}ms")
+    print(f"Max memory used: {sizeof_fmt(torch.cuda.max_memory_allocated())}")
