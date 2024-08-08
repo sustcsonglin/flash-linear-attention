@@ -35,7 +35,6 @@ def fused_recurrent_fwd_kernel(
     B,  # batch size
     H,  # n_heads
     T,  # seq_len
-    scale,  # D_head_K ** -0.5
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     DK: tl.constexpr,  # D_head_K
@@ -68,7 +67,7 @@ def fused_recurrent_fwd_kernel(
     for _ in range(0, T):
         _k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         _v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
-        _q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
+        _q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32)
         _v_minus = tl.sum(h * _k[None, :], axis=1)
         _v -= _v_minus
         _beta = tl.load(p_beta, mask=mask_bv, other=0).to(tl.float32)
@@ -123,7 +122,6 @@ def fused_recurrent_bwd_kernel(
     B,  # batch_size
     H,  # n_heads
     T,  # seq_len
-    scale,  # D_head_K ** -0.5
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     DK: tl.constexpr,  # D_head_K
@@ -152,7 +150,7 @@ def fused_recurrent_bwd_kernel(
 
     for _ in range(T):
         _do = tl.load(p_do, mask=mask_bv, other=0).to(tl.float32)
-        _q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
+        _q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32)
         _k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         _v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
         _beta = tl.load(p_beta, mask=mask_bv, other=0).to(tl.float32)
@@ -207,7 +205,7 @@ def fused_recurrent_bwd_kernel(
 
         h += _k[:, None] * _v[None, :]
         _d_q = h * _do[None, :]
-        d_q = tl.sum(_d_q, axis=1) * scale
+        d_q = tl.sum(_d_q, axis=1)
         tl.store(p_dq, d_q.to(p_dq.dtype.element_ty), mask=mask_bk)
 
         if i < T - 1:
@@ -233,7 +231,6 @@ class FusedRecurrentFunction(torch.autograd.Function):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
 
-        scale = d_head_qk ** -0.5
         BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 8)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         num_stages = 1
@@ -251,7 +248,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
             q, k, v, beta, o, initial_state, final_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
-            batch_size, n_heads, seq_len, scale,
+            batch_size, n_heads, seq_len,
             DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages,
@@ -268,7 +265,6 @@ class FusedRecurrentFunction(torch.autograd.Function):
         q, k, v, beta, initial_state = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
-        scale = d_head_qk ** -0.5
         BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
         NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
         assert NK == 1, "NK > 1 is not supported yet"
@@ -285,7 +281,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
             q, k, v, beta, do, dq, dk, dv, dbeta, initial_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
-            batch_size, n_heads, seq_len, scale,
+            batch_size, n_heads, seq_len,
             DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages,
@@ -305,8 +301,13 @@ def fused_recurrent_linear_attn_delta_rule_betavec(
     beta: torch.Tensor = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
-    normalize: bool = False
+    normalize: bool = False,
+    scale: float | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if scale is None:
+        scale = q.shape[-1] ** -0.5
+
+    q = q * scale
     if initial_state is not None:
         initial_state = initial_state.detach()
     if beta is None:
