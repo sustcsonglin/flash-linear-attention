@@ -67,10 +67,10 @@ def fused_recurrent_gated_abc_fwd_kernel(
         b_v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
         if USE_GK:
             b_gk = tl.load(p_gk, mask=mask_bk, other=0).to(tl.float32)
-            h = h * b_gk[None, :]
+            h = h * tl.exp(b_gk)[None, :]
         if USE_GV:
             b_gv = tl.load(p_gv, mask=mask_bv, other=0).to(tl.float32)
-            h = h * b_gv[:, None]
+            h = h * tl.exp(b_gv)[:, None]
         h += b_k[None, :] * b_v[:, None]
         b_o = h * b_q[None, :]
         b_o = tl.sum(b_o, axis=1)
@@ -142,10 +142,10 @@ def fused_recurrent_gated_abc_bwd_kernel(
         b_do = tl.load(p_do, mask=mask_bv, other=0).to(tl.float32)
         if USE_GK:
             b_gk = tl.load(p_gk, mask=mask_bk, other=0).to(tl.float32)
-            h = h * b_gk[:, None]
+            h = h * tl.exp(b_gk)[:, None]
         if USE_GV:
             b_gv = tl.load(p_gv, mask=mask_bv, other=0).to(tl.float32)
-            h = h * b_gv[None, :]
+            h = h * tl.exp(b_gv)[None, :]
         h += b_k[:, None] * b_v[None, :]
         b_dq = tl.sum(h * b_do[None, :], axis=1) * scale
         tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), mask=mask_bk)
@@ -185,10 +185,10 @@ def fused_recurrent_gated_abc_bwd_kernel(
         b_dv = tl.sum(b_dh * b_k[:, None], axis=0)
         if USE_GK:
             b_gk = tl.load(p_gk, mask=mask_bk, other=0).to(tl.float32)
-            b_dh *= b_gk[:, None]
+            b_dh *= tl.exp(b_gk)[:, None]
         if USE_GV:
             b_gv = tl.load(p_gv, mask=mask_bv, other=0).to(tl.float32)
-            b_dh *= b_gv[None, :]
+            b_dh *= tl.exp(b_gv)[None, :]
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), mask=mask_bk)
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), mask=mask_bv)
 
@@ -215,12 +215,10 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         if scale is None:
             scale = K ** -0.5
 
-        BK, BV, BM = min(K, 32), min(V, 32), min(M, 32)
+        BK, BV, BM = min(K, 64), min(V, 64), min(M, 64)
         NK, NV, NM = triton.cdiv(K, BK), triton.cdiv(V, BV), triton.cdiv(M, BM)
         num_stages = 1
         num_warps = 1
-
-        g = g.float().exp()
 
         if initial_state is None:
             initial_state = (None, None)
@@ -278,10 +276,9 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
     def backward(ctx, do, dht=None):
         q, k, v, s, g, qv, *initial_state, ok = ctx.saved_tensors
         B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
-        V = v.shape[-1]
         scale = ctx.scale
 
-        BK, BV, BM = min(K, 32), min(V, 32), min(M, 32)
+        BK, BV, BM = min(K, 64), min(V, 64), min(M, 64)
         NK, NV, NM = triton.cdiv(K, BK), triton.cdiv(V, BV), triton.cdiv(M, BM)
         num_stages = 1
         num_warps = 1
@@ -297,12 +294,12 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
             v.stride(1),
             scale=1.,
             B=B, H=H, T=T, K=M, V=V, BK=BM, BV=BV,
-            num_warps=num_warps,
-            num_stages=num_stages,
             USE_INITIAL_STATE=initial_state[1] is not None,
             REVERSE=ctx.reverse,
             USE_GK=gk is not None,
-            USE_GV=gv is not None
+            USE_GV=gv is not None,
+            num_warps=num_warps,
+            num_stages=num_stages
         )
         dqv = dqv.sum(0)
         dsv = dsv.sum(0)
@@ -323,12 +320,12 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
             s.stride(1),
             scale=scale,
             B=B, H=H, T=T, K=K, V=M, BK=BK, BV=BM,
-            num_warps=num_warps,
-            num_stages=num_stages,
             USE_INITIAL_STATE=initial_state[0] is not None,
             REVERSE=ctx.reverse,
             USE_GK=gk is not None,
-            USE_GV=gv is not None
+            USE_GV=gv is not None,
+            num_warps=num_warps,
+            num_stages=num_stages
         )
         dq = dq.sum(0)
         dk = dk.sum(0)
