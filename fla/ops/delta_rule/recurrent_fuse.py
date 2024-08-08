@@ -42,6 +42,7 @@ def fused_recurrent_fwd_kernel(
     DV: tl.constexpr,  # D_head_V
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
     STORE_FINAL_STATE: tl.constexpr,  # whether to store final state
+    IS_BETA_VECTOR: tl.constexpr,  # whether beta is headwise vector or scalar
 ):
 
     # indices
@@ -50,7 +51,10 @@ def fused_recurrent_fwd_kernel(
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
-    p_beta = beta + i_bh * T
+    if IS_BETA_VECTOR:
+        p_beta = beta + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
+    else:
+        p_beta = beta + i_bh * T
     p_o = o + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV)
 
     mask_bk = (i_k * BK + tl.arange(0, BK)) < DK
@@ -71,7 +75,10 @@ def fused_recurrent_fwd_kernel(
         _q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
         _v_minus = tl.sum(h * _k[None, :], axis=1)
         _v -= _v_minus
-        _beta = tl.load(p_beta).to(tl.float32)
+        if IS_BETA_VECTOR:
+            _beta = tl.load(p_beta, mask=mask_bv, other=0).to(tl.float32)
+        else:
+            _beta = tl.load(p_beta).to(tl.float32)
         # in-place overwrite
         tl.store(p_v, _v.to(p_v.dtype.element_ty), mask=mask_bv)
         _v *= _beta
@@ -84,7 +91,7 @@ def fused_recurrent_fwd_kernel(
         p_k += DK
         p_o += DV
         p_v += DV
-        p_beta += 1
+        p_beta += DV if IS_BETA_VECTOR else 1
 
     if STORE_FINAL_STATE:
         p_final_s = final_state + i_bh * DK * DV + \
@@ -129,6 +136,7 @@ def fused_recurrent_bwd_kernel(
     DK: tl.constexpr,  # D_head_K
     DV: tl.constexpr,  # D_head_V
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
+    IS_BETA_VECTOR: tl.constexpr,  # whether beta is headwise vector or scalar
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     mask_bk = i_k * BK + tl.arange(0, BK) < DK
@@ -138,8 +146,13 @@ def fused_recurrent_bwd_kernel(
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
     p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
-    p_beta = beta + i_bh * T + T - 1
-    p_dbeta = dbeta + (i_bh + i_v * B * H) * T + T - 1
+    if IS_BETA_VECTOR:
+        p_beta = beta + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
+        p_dbeta = dbeta + (i_bh + i_k * B * H) * s_vo_h + i_v * \
+                  BV + tl.arange(0, BV) + (T - 1) * DV
+    else:
+        p_beta = beta + i_bh * T + T - 1
+        p_dbeta = dbeta + (i_bh + i_v * B * H) * T + T - 1
 
     p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * \
         BK + tl.arange(0, BK) + (T - 1) * DK
@@ -152,17 +165,23 @@ def fused_recurrent_bwd_kernel(
         _q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
         _k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         _v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
-        _beta = tl.load(p_beta).to(tl.float32)
+        if IS_BETA_VECTOR:
+            _beta = tl.load(p_beta, mask=mask_bv, other=0).to(tl.float32)
+        else:
+            _beta = tl.load(p_beta).to(tl.float32)
         d_h += _q[:, None] * _do[None, :]
-        d_k = tl.sum(d_h * _v[None, :] * _beta, axis=1)
+        d_k = tl.sum(d_h * (_v * _beta)[None, :], axis=1)
         d_v = tl.sum(d_h * _k[:, None], axis=0)
 
-        d_beta = tl.sum(d_v * _v)
+        d_beta = d_v * _v if IS_BETA_VECTOR else tl.sum(d_v * _v)
         d_v = d_v * _beta
 
         tl.store(p_dk, d_k.to(p_dk.dtype.element_ty), mask=mask_bk)
         tl.store(p_dv, d_v.to(p_dv.dtype.element_ty), mask=mask_bv)
-        tl.store(p_dbeta, d_beta.to(p_dbeta.dtype.element_ty))
+        if IS_BETA_VECTOR:
+            tl.store(p_dbeta, d_beta.to(p_dbeta.dtype.element_ty), mask=mask_bv)
+        else:
+            tl.store(p_dbeta, d_beta.to(p_dbeta.dtype.element_ty))
 
         d_h -= _k[:, None] * d_v[None, :]
 
@@ -172,8 +191,8 @@ def fused_recurrent_bwd_kernel(
         p_v -= DV
         p_dk -= DK
         p_dv -= DV
-        p_dbeta -= 1
-        p_beta -= 1
+        p_dbeta -= DV if IS_BETA_VECTOR else 1
+        p_beta -= DV if IS_BETA_VECTOR else 1
 
     tl.debug_barrier()
 
@@ -182,7 +201,10 @@ def fused_recurrent_bwd_kernel(
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
-    p_beta = beta + i_bh * T
+    if IS_BETA_VECTOR:
+        p_beta = beta + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
+    else:
+        p_beta = beta + i_bh * T
     p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     p_dq = dq + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV) + DV
@@ -199,7 +221,10 @@ def fused_recurrent_bwd_kernel(
         _k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         _v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
         _do = tl.load(p_do, mask=mask_bv, other=0).to(tl.float32)
-        _beta = tl.load(p_beta).to(tl.float32)
+        if IS_BETA_VECTOR:
+            _beta = tl.load(p_beta, mask=mask_bv, other=0).to(tl.float32)
+        else:
+            _beta = tl.load(p_beta).to(tl.float32)
         _v *= _beta
 
         h += _k[:, None] * _v[None, :]
@@ -219,7 +244,7 @@ def fused_recurrent_bwd_kernel(
         p_dk += DK
         p_dv += DV
         p_dq += DK
-        p_beta += 1
+        p_beta += DV if IS_BETA_VECTOR else 1
 
 
 class FusedRecurrentFunction(torch.autograd.Function):
@@ -252,7 +277,8 @@ class FusedRecurrentFunction(torch.autograd.Function):
             num_warps=num_warps,
             num_stages=num_stages,
             USE_INITIAL_STATE=initial_state is not None,
-            STORE_FINAL_STATE=final_state is not None
+            STORE_FINAL_STATE=final_state is not None,
+            IS_BETA_VECTOR=beta.ndim == v.ndim,
         )
         o = o.sum(0)
         ctx.save_for_backward(q, k, v, beta, initial_state)
