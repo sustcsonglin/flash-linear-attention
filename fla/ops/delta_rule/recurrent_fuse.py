@@ -148,8 +148,7 @@ def fused_recurrent_bwd_kernel(
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
     if IS_BETA_VECTOR:
         p_beta = beta + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
-        p_dbeta = dbeta + (i_bh + i_k * B * H) * s_vo_h + i_v * \
-                  BV + tl.arange(0, BV) + (T - 1) * DV
+        p_dbeta = dbeta + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
     else:
         p_beta = beta + i_bh * T + T - 1
         p_dbeta = dbeta + (i_bh + i_v * B * H) * T + T - 1
