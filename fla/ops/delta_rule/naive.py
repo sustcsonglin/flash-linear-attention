@@ -10,15 +10,20 @@ def delta_rule_recurrence(q, k, v, beta):
     o = torch.zeros_like(v)
     S = torch.zeros(b, h, d_k, d_v).to(v)
     q = q * (d_k ** -0.5)
+
+    if beta.ndim < v.ndim:
+        beta = beta[..., None]
+
     for i in range(l):
         _k = k[:, :, i]
         _q = q[:, :, i]
         _v = v[:, :, i].clone()
         beta_i = beta[:, :, i]
         _v = _v - (S.clone() * _k[..., None]).sum(-2)
-        _v = _v * beta_i[..., None]
+        _v = _v * beta_i
         S = S.clone() + _k.unsqueeze(-1) * _v.unsqueeze(-2)
         o[:, :, i] = torch.einsum('bhd,bhdm->bhm', _q, S)
+
     return o
 
 
