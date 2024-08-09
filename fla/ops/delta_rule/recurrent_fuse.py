@@ -329,7 +329,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
         return dq.to(q), dk.to(k), dv.to(v), dbeta.to(beta), None, None, None
 
 
-def fused_recurrent_linear_attn_delta_rule(
+def fused_recurrent_delta_rule(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,

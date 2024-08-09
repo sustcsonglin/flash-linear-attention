@@ -2,9 +2,7 @@
 # I made some modifications to the original code to make it work with the current version of the library.
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, PretrainedConfig
-import fla.models 
-
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model = AutoModelForCausalLM.from_pretrained('fla-hub/gla-340M-15B').to('cuda').to(torch.float32)
 tokenizer = AutoTokenizer.from_pretrained('fla-hub/gla-340M-15B')

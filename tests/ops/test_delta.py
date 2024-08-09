@@ -1,12 +1,15 @@
-from fla.ops.delta_rule import fused_chunk_delta_rule, chunk_delta_rule, fused_recurrent_linear_attn_delta_rule
-import torch
 import time
 
+import torch
 
-def gen_inputs(b=8, h=8, l=2048, d=256, seed: int | None = None):
+from fla.ops.delta_rule import (chunk_delta_rule, fused_chunk_delta_rule,
+                                fused_recurrent_linear_attn_delta_rule)
+
+
+def gen_inputs(b=8, h=8, length=2048, d=256, seed: int | None = None):
     if seed is not None:
         torch.manual_seed(seed)
-    seq_len = l
+    seq_len = length
 
     k = torch.nn.functional.normalize(torch.randn(b, h, seq_len, d), p=2, dim=-1)
     v = torch.randn(b, h, seq_len, d)
@@ -40,8 +43,8 @@ def test_beta_scalar_vector_equivalence(q, k, v, beta, do):
     print((q_grad - q_grad2).abs().max())
     print((k_grad - k_grad2).abs().max())
     print((v_grad - v_grad2).abs().max())
-    breakpoint()
     print((beta_grad.sum(dim=-1) - beta_grad2).abs().max())
+
 
 def test_chunk_fused_equivalence(q, k, v, beta, do):
     o2, _ = fused_chunk_delta_rule(q.clone(), k.clone(), v.clone(), beta.clone(), 16)
@@ -93,7 +96,7 @@ if __name__ == "__main__":
     q, k, v, beta, do = gen_inputs()
 
     test_beta_scalar_vector_equivalence(q, k, v, beta, do)
-    breakpoint()
+    # breakpoint()
     test_chunk_fused_equivalence(q, k, v, beta, do)
     # breakpoint()
     test_chunk_fused_runtime(q, k, v, beta, do)
