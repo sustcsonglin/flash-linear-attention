@@ -108,13 +108,13 @@ def fused_recurrent_bwd_kernel(
     q,  # query [B, H, L, D_head_K]
     k,  # key [B, H, L, D_head_V]
     v,  # value [B, H, L, D_head_V]
-    beta,  # beta [B, H, L]
+    beta,  # beta [B, H, L, (D_head_V)]
 
     do,  # gradient of output [B, H, L, D_head_V]
     dq,  # gradient of query [NV, B, H, L, D_head_K]
     dk,  # gradient of key [NV, B, H, L, D_head_K]
     dv,  # gradient of value [NK, B, H, L, D_head_V]
-    dbeta,  # gradient of beta [B, H, L]
+    dbeta,  # gradient of beta [NV, (NK), B, H, L]
 
     # initial hidden state initialization [B, H, D_head_K, D_head_V]
     initial_state,
@@ -126,6 +126,8 @@ def fused_recurrent_bwd_kernel(
     s_vo_h,  # stride size: L * D_head_V
     s_vo_t,  # stride size: D_head_V
     s_vo_d,  # stride size: 1
+
+    NK,  # NK block size
 
     B,  # batch_size
     H,  # n_heads
@@ -148,15 +150,15 @@ def fused_recurrent_bwd_kernel(
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
     if IS_BETA_VECTOR:
         p_beta = beta + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
-        p_dbeta = dbeta + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
     else:
         p_beta = beta + i_bh * T + T - 1
-        p_dbeta = dbeta + (i_bh + i_v * B * H) * T + T - 1
 
-    p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * \
-        BK + tl.arange(0, BK) + (T - 1) * DK
-    p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * \
-        BV + tl.arange(0, BV) + (T - 1) * DV
+    p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * DK
+    p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * DV
+    if IS_BETA_VECTOR:
+        p_dbeta = dbeta + (i_bh + i_k * B * H + i_v * B * H * NK) * s_vo_h + tl.arange(0, BV) + (T - 1) * DV
+    else:
+        p_dbeta = dbeta + (i_bh + i_v * B * H) * T + T - 1
     d_h = tl.zeros([BK, BV], dtype=tl.float32)
 
     for _ in range(T):
@@ -297,27 +299,34 @@ class FusedRecurrentFunction(torch.autograd.Function):
         num_stages = 1
         num_warps = 2
 
+        beta_vector = beta.ndim == v.ndim
+
         dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
         dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
         dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
+        if beta_vector:
+            dbeta = q.new_empty(NV, NK, batch_size, n_heads, seq_len, d_head_v)
+        else:
+            dbeta = q.new_empty(NV, batch_size, n_heads, seq_len)
         grid = (NV, NK, batch_size * n_heads)
-        dbeta = q.new_empty(NV, batch_size, n_heads, seq_len)
 
         fused_recurrent_bwd_kernel[grid](
             q, k, v, beta, do, dq, dk, dv, dbeta, initial_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
+            NK,
             batch_size, n_heads, seq_len, scale,
             DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages,
-            USE_INITIAL_STATE=initial_state is not None
+            USE_INITIAL_STATE=initial_state is not None,
+            IS_BETA_VECTOR=beta_vector,
         )
         dq = dq.sum(0)
         dk = dk.sum(0)
         dv = dv.sum(0)
-        dbeta = dbeta.sum(0)
-        return dq.to(q), dk.to(k), dv.to(v), dbeta.to(beta), None, None
+        dbeta = dbeta.sum((0, 1)) if beta_vector else dbeta.sum(0)
+        return dq.to(q), dk.to(k), dv.to(v), dbeta.to(beta), None, None, None
 
 
 def fused_recurrent_linear_attn_delta_rule(
@@ -325,7 +334,7 @@ def fused_recurrent_linear_attn_delta_rule(
     k: torch.Tensor,
     v: torch.Tensor,
     beta: torch.Tensor = None,
-    scale: float = -2,
+    scale: float = -1,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
     normalize: bool = False,
