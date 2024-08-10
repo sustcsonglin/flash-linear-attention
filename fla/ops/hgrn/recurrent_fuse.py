@@ -179,7 +179,4 @@ def fused_recurrent_hgrn(
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if initial_state is not None:
-        initial_state = initial_state.detach()
-    o, final_state = FusedRecurrentHGRNFunction.apply(x, g, initial_state, output_final_state)
-    return o, final_state
+    return FusedRecurrentHGRNFunction.apply(x, g, initial_state, output_final_state)

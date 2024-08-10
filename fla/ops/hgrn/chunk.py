@@ -262,14 +262,15 @@ class ChunkHGRNFunction(torch.autograd.Function):
         num_warps = 8 if BD == 64 else 4
 
         gc = torch.empty_like(g, dtype=torch.float)
-        dx = torch.empty_like(o)
-        dg = torch.empty_like(g)
+        dx = torch.empty_like(o, dtype=torch.float)
         def grid(meta): return (triton.cdiv(D, meta['BD']), triton.cdiv(T, meta['BT']), B * H)
         chunk_hgrn_bwd_kernel_h[grid](
             g, gc, dx, do,
             T, D,
             BT=BT
         )
+
+        dg = torch.empty_like(g)
         def grid(meta): return (triton.cdiv(D, meta['BD']), B * H)
         chunk_hgrn_bwd_kernel_o[grid](
             g, gc, o, dx, dg,
@@ -279,9 +280,9 @@ class ChunkHGRNFunction(torch.autograd.Function):
             num_warps=num_warps
         )
         if initial_state is not None:
-            dg[:, :, 0] = initial_state * dx[:, :, 0] * g[:, :, 0].exp()
+            dg[:, :, 0] = (initial_state * dx[:, :, 0] * g[:, :, 0].float().exp()).to(dg.dtype)
 
-        return dx, dg, None, None
+        return dx.to(o.dtype), dg, None, None
 
 
 def chunk_hgrn(
@@ -290,84 +291,4 @@ def chunk_hgrn(
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if initial_state is not None:
-        initial_state = initial_state.detach()
-    o, final_state = ChunkHGRNFunction.apply(x, g, initial_state, output_final_state)
-    return o, final_state
-
-
-if __name__ == '__main__':
-    import torch.nn.functional as F
-
-    from fla.ops.hgrn.naive import naive_recurrent_hgrn
-    from fla.ops.hgrn.recurrent_fuse import fused_recurrent_hgrn
-    B, H, T, D = 8, 4, 512, 128
-    dtype = torch.bfloat16
-    torch.manual_seed(42)
-    # [batch_size, n_heads, seq_len, d_head]
-    x = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
-    g = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
-    x, g = (1 - g.sigmoid()) * x, F.logsigmoid(g)
-    print(f'x:\t{float(x.min()):>10.6f}\t{float(x.max()):>10.6f}')
-    print(f'g:\t{float(g.min()):>10.6f}\t{float(g.max()):>10.6f}')
-    x, g = (i.detach().clone().to(dtype).requires_grad_() for i in (x, g))
-    print(f"DTYPE:\t{x.dtype}")
-    do = torch.randn_like(x)
-    h0 = torch.randn_like(x[:, :, 0])
-    ref, ref_ht = naive_recurrent_hgrn(x, g, h0, output_final_state=True)
-    ref.backward(do)
-    ref_dx, x.grad = x.grad.clone(), None
-    ref_dg, g.grad = g.grad.clone(), None
-
-    tri, tri_ht = fused_recurrent_hgrn(x, g, h0, output_final_state=True)
-    tri.backward(do)
-    tri_dx, x.grad = x.grad.clone(), None
-    tri_dg, g.grad = g.grad.clone(), None
-    print("  \t    DIFF\t    MAX")
-    print(' o\t', f"{float((ref - tri).abs().max()):>10.6f}\t{float(ref.max()):>10.6f}")
-    print('ht\t', f"{float((ref_ht[0] - tri_ht[0]).abs().max()):>10.6f}\t{float(ref.max()):>10.6f}")
-    print('dx\t', f"{float((ref_dx - tri_dx).abs().max()):>10.6f}\t{float(ref_dx.max()):>10.6f}")
-    print('dg\t', f"{float((ref_dg - tri_dg).abs().max()):>10.6f}\t{float(ref_dg.max()):>10.6f}")
-    print('Done!')
-
-    @triton.testing.perf_report(
-        triton.testing.Benchmark(
-            # argument names to use as an x-axis for the plot
-            x_names=['seq_len'],
-            # different possible values for `x_name`
-            x_vals=[128 * 2 ** i for i in range(0, 8)],
-            # argument name whose value corresponds to a different line in the plot
-            line_arg='provider',
-            # possible values for `line_arg``
-            line_vals=['chunk', 'recurrent', 'chunk_bwd', 'recurrent_bwd'],
-            # label name for the lines
-            line_names=['chunk', 'recurrent', 'chunk_bwd', 'recurrent_bwd'],
-            # line styles
-            styles=[('green', '-'), ('blue', '--'), ('red', '-.'), ('cyan', ':'), ('yellow', 'dotted'), ('black', 'dashed')],
-            ylabel="Execution Time (ms)",  # label name for the y-axis
-            # name for the plot. Used also as a file name for saving the plot.
-            plot_name="Performance",
-            args={},
-        )
-    )
-    def benchmark(seq_len, provider):
-        dtype = torch.bfloat16
-        B, H, D = 16, 4, 128
-
-        x = torch.randn((B, H, seq_len, D), dtype=dtype, device='cuda')
-        g = torch.randn((B, H, seq_len, D), dtype=dtype, device='cuda').sigmoid()
-        x = (1 - g) * x
-        x, g = (i.detach().clone().to(dtype).requires_grad_() for i in (x, g))
-        do = torch.randn_like(x, dtype=dtype)
-        quantiles = [0.5, 0.2, 0.8]
-        results = 0, 0, 0
-        if provider == 'chunk':
-            results = triton.testing.do_bench(lambda: chunk_hgrn(x, g), quantiles=quantiles)
-        if provider == 'recurrent':
-            results = triton.testing.do_bench(lambda: fused_recurrent_hgrn(x, g), quantiles=quantiles)
-        if provider == 'chunk_bwd':
-            results = triton.testing.do_bench(lambda: chunk_hgrn(x, g)[0].backward(do), quantiles=quantiles)
-        if provider == 'recurrent_bwd':
-            results = triton.testing.do_bench(lambda: fused_recurrent_hgrn(x, g)[0].backward(do), quantiles=quantiles)
-        return results
-    benchmark.run(print_data=True)
+    return ChunkHGRNFunction.apply(x, g, initial_state, output_final_state)
