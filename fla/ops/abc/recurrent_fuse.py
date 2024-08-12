@@ -158,6 +158,7 @@ def fused_recurrent_gated_abc_bwd_kernel(
     dq,
     dk,
     dv,
+    dh0,
     h0,
     s_k_h,
     s_v_h,
@@ -261,6 +262,10 @@ def fused_recurrent_gated_abc_bwd_kernel(
         if USE_GV:
             p_gv += V if REVERSE else -V
 
+    if USE_INITIAL_STATE:
+        p_dh0 = dh0 + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[:, None]) * V + (i_v * BV + tl.arange(0, BV)[None, :])
+        tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), mask=mask_h)
+
 
 class FusedRecurrentGatedABCFunction(torch.autograd.Function):
 
@@ -275,7 +280,8 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         s: torch.Tensor,
         g: torch.Tensor,
         scale: Optional[float] = None,
-        initial_state: Optional[Tuple[torch.Tensor]] = None,
+        hk0: Optional[torch.Tensor] = None,
+        hv0: Optional[torch.Tensor] = None,
         output_final_state: bool = False,
         reverse: bool = False,
         inference_mode: bool = False
@@ -290,11 +296,9 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         num_warps = 1
         num_stages = 1
 
-        if initial_state is None:
-            initial_state = (None, None)
-        final_state = (None, None)
+        hkt, hvt = None, None
         if output_final_state:
-            final_state = initial_state if inference_mode else (q.new_empty(B, H, K, M), q.new_empty(B, H, M, V))
+            hkt, hvt = (hk0, hv0) if inference_mode else (q.new_empty(B, H, K, M), q.new_empty(B, H, M, V))
 
         if inference_mode:
             BK, BV, BM = min(K, 64), min(V, 64), min(M, 64)
@@ -303,7 +307,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
             o = torch.empty_like(v)
             grid = (B * H,)
             fused_recurrent_gated_abc_inference_kernel[grid](
-                q, k, v, s, g, o, initial_state[0], initial_state[1],
+                q, k, v, s, g, o, hk0, hv0,
                 k.stride(1),
                 v.stride(1),
                 s.stride(1),
@@ -312,19 +316,19 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
                 num_warps=num_warps,
                 num_stages=num_stages
             )
-            return o, final_state
+            return o, (hkt, hvt)
 
         ok = q.new_empty(NK, B, H, T, M, dtype=torch.float)
         gk, gv = None, g
         grid = (NM, NK, B * H)
         fused_recurrent_gated_abc_fwd_kernel[grid](
-            q, k, s, gk, gv, ok, initial_state[0], final_state[0],
+            q, k, s, gk, gv, ok, hk0, hkt,
             k.stride(1),
             s.stride(1),
             scale=scale,
             B=B, H=H, T=T, K=K, V=M, BK=BK, BV=BM,
-            USE_INITIAL_STATE=initial_state[0] is not None,
-            STORE_FINAL_STATE=final_state[0] is not None,
+            USE_INITIAL_STATE=hk0 is not None,
+            STORE_FINAL_STATE=hkt is not None,
             USE_GK=False,
             USE_GV=True,
             REVERSE=reverse,
@@ -338,13 +342,13 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         gk, gv = g, None
         grid = (NV, NM, B * H)
         fused_recurrent_gated_abc_fwd_kernel[grid](
-            qv, s, v, gk, gv, ov, initial_state[1], final_state[1],
+            qv, s, v, gk, gv, ov, hv0, hvt,
             s.stride(1),
             v.stride(1),
             scale=1.,
             B=B, H=H, T=T, K=M, V=V, BK=BM, BV=BV,
-            USE_INITIAL_STATE=initial_state[0] is not None,
-            STORE_FINAL_STATE=final_state[0] is not None,
+            USE_INITIAL_STATE=hv0 is not None,
+            STORE_FINAL_STATE=hvt is not None,
             USE_GK=True,
             USE_GV=False,
             REVERSE=reverse,
@@ -353,16 +357,16 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         )
         ov = ov.sum(0)
 
-        ctx.save_for_backward(q, k, v, s, g, qv, *initial_state, ok)
+        ctx.save_for_backward(q, k, v, s, g, qv, hk0, hv0, ok)
         ctx.scale = scale
         ctx.reverse = reverse
-        return ov.to(q.dtype), final_state
+        return ov.to(q.dtype), (hkt, hvt)
 
     @staticmethod
     @contiguous
     @custom_bwd
     def backward(ctx, do, dht=None):
-        q, k, v, s, g, qv, *initial_state, ok = ctx.saved_tensors
+        q, k, v, s, g, qv, hk0, hv0, ok = ctx.saved_tensors
         B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
         scale = ctx.scale
 
@@ -374,15 +378,18 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         dqv = q.new_empty(NV, B, H, T, M, dtype=torch.float)
         dsv = q.new_empty(NV, B, H, T, M, dtype=torch.float)
         dv = q.new_empty(NM, B, H, T, V, dtype=torch.float)
+        dhk0 = torch.empty_like(hk0)if hk0 is not None else None
+        dhv0 = torch.empty_like(hv0)if hv0 is not None else None
+
         gk, gv = g, None
         grid = (NV, NM, B * H)
         fused_recurrent_gated_abc_bwd_kernel[grid](
-            qv, s, v, gk, gv, do, dqv, dsv, dv, initial_state[1],
+            qv, s, v, gk, gv, do, dqv, dsv, dv, dhv0, hv0,
             s.stride(1),
             v.stride(1),
             scale=1.,
             B=B, H=H, T=T, K=M, V=V, BK=BM, BV=BV,
-            USE_INITIAL_STATE=initial_state[1] is not None,
+            USE_INITIAL_STATE=hv0 is not None,
             REVERSE=ctx.reverse,
             USE_GK=gk is not None,
             USE_GV=gv is not None,
@@ -403,12 +410,12 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         gk, gv = None, g
         grid = (NM, NK, B * H)
         fused_recurrent_gated_abc_bwd_kernel[grid](
-            q, k, s, gk, gv, dok, dq, dk, dsk, initial_state[0],
+            q, k, s, gk, gv, dok, dq, dk, dsk, dhk0, hk0,
             q.stride(1),
             s.stride(1),
             scale=scale,
             B=B, H=H, T=T, K=K, V=M, BK=BK, BV=BM,
-            USE_INITIAL_STATE=initial_state[0] is not None,
+            USE_INITIAL_STATE=hk0 is not None,
             REVERSE=ctx.reverse,
             USE_GK=gk is not None,
             USE_GV=gv is not None,
@@ -426,7 +433,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         ds = dsk.add_(dsv)
         dg = dgk.add_(dgv)
 
-        return dq.to(q), dk.to(k), dv.to(v), ds.to(s), dg.to(g), None, None, None, None, None
+        return dq.to(q), dk.to(k), dv.to(v), ds.to(s), dg.to(g), None, dhk0, dhv0, None, None, None
 
 
 def fused_recurrent_gated_abc(
@@ -467,6 +474,6 @@ def fused_recurrent_gated_abc(
         scale = q.shape[-1] ** -0.5
     inference_mode = q.shape[2] == 1 and not q.requires_grad
     ov, final_state = FusedRecurrentGatedABCFunction.apply(
-        q, k, v, s, g, scale, initial_state, output_final_state, False, inference_mode
+        q, k, v, s, g, scale, *initial_state, output_final_state, False, inference_mode
     )
     return ov, final_state
