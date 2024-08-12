@@ -17,25 +17,25 @@ from fla.utils import contiguous
 @triton.jit
 def fused_recurrent_gla_fwd_kernel(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
-    q,  # query [B, H, L, D_head_K]
-    k,  # key [B, H, L, D_head_K]
-    v,  # value [B, H, L, D_head_V]
-    gk,  # log gate [B, H, L, D_head_K]
-    gv,  # log gate [B, H, L, D_head_V]
-    o,  # output [B, H, L, D_head_V]
-    # initial hidden state initialization [B, H, D_head_K, D_head_V]
+    q,  # query [B, H, L, K]
+    k,  # key [B, H, L, K]
+    v,  # value [B, H, L, V]
+    gk,  # log gate [B, H, L, K]
+    gv,  # log gate [B, H, L, V]
+    o,  # output [B, H, L, V]
+    # initial hidden state initialization [B, H, K, V]
     h0,
-    ht,  # final hidden state [B, H, D_head_K, D_head_V]
-    s_qk_h,  # stride size: L * D_head_K
-    s_vo_h,  # stride size: L * D_head_V
-    scale,  # D_head_K ** -0.5
-    B: tl.constexpr,  # batch size
-    H: tl.constexpr,  # n_heads
-    T: tl.constexpr,  # seq_len
-    K: tl.constexpr,  # D_head_K
-    V: tl.constexpr,  # D_head_V
-    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
-    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
+    ht,  # final hidden state [B, H, K, V]
+    s_qk_h,  # stride size: L * K
+    s_vo_h,  # stride size: L * V
+    scale,  # K ** -0.5
+    B: tl.constexpr,
+    H: tl.constexpr,
+    T: tl.constexpr,
+    K: tl.constexpr,
+    V: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
     STORE_FINAL_STATE: tl.constexpr,  # whether to store final state
     REVERSE: tl.constexpr,  # whether to do autoregressive modeling in the reverse direction
@@ -58,13 +58,13 @@ def fused_recurrent_gla_fwd_kernel(
     mask_bk = (i_k * BK + tl.arange(0, BK)) < K
     mask_bv = (i_v * BV + tl.arange(0, BV)) < V
 
-    h = tl.zeros([BV, BK], dtype=tl.float32)
+    b_h = tl.zeros([BV, BK], dtype=tl.float32)
 
     mask_kv = mask_bk[None, :] & mask_bv[:, None]
 
     if USE_INITIAL_STATE:
         p_h0 = h0 + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[None, :]) * V + (i_v * BV + tl.arange(0, BV)[:, None])
-        h += tl.load(p_h0, mask=mask_kv, other=0).to(tl.float32)
+        b_h += tl.load(p_h0, mask=mask_kv, other=0).to(tl.float32)
 
     for _ in range(0, T):
         b_k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
@@ -72,14 +72,14 @@ def fused_recurrent_gla_fwd_kernel(
         b_q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
         if USE_GK:
             b_gk = tl.load(p_gk, mask=mask_bk, other=0).to(tl.float32)
-            h = h * tl.exp(b_gk[None, :])
+            b_h = b_h * tl.exp(b_gk[None, :])
         if USE_GV:
             b_gv = tl.load(p_gv, mask=mask_bv, other=0).to(tl.float32)
-            h = h * tl.exp(b_gv[:, None])
-        h += b_k[None, :] * b_v[:, None]
-        _o = h * b_q[None, :]
-        _o = tl.sum(_o, axis=1)
-        tl.store(p_o, _o.to(p_o.dtype.element_ty), mask=mask_bv)
+            b_h = b_h * tl.exp(b_gv[:, None])
+        b_h += b_k[None, :] * b_v[:, None]
+        b_o = b_h * b_q[None, :]
+        b_o = tl.sum(b_o, axis=1)
+        tl.store(p_o, b_o.to(p_o.dtype.element_ty), mask=mask_bv)
         p_q += -K if REVERSE else K
         p_k += -K if REVERSE else K
         p_o += -V if REVERSE else V
@@ -91,7 +91,7 @@ def fused_recurrent_gla_fwd_kernel(
 
     if STORE_FINAL_STATE:
         p_ht = ht + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[None, :]) * V + (i_v * BV + tl.arange(0, BV)[:, None])
-        tl.store(p_ht, h.to(p_ht.dtype.element_ty), mask=mask_kv)
+        tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask_kv)
 
 
 # Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
@@ -99,27 +99,27 @@ def fused_recurrent_gla_fwd_kernel(
 def fused_recurrent_gla_bwd_kernel(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
     # NV: number of split in the V dimension. NK: number of split in the K dimension
-    q,  # query [B, H, L, D_head_K]
-    k,  # key [B, H, L, D_head_V]
-    v,  # value [B, H, L, D_head_V]
-    gk,  # log gate [B, H, L, D_head_K] \alpha
-    gv,  # log gate [B, H, L, D_head_V] \bete
-    do,  # gradient of output [B, H, L, D_head_V]
-    dq,  # gradient of query [NV, B, H, L, D_head_K]
-    dk,  # gradient of key [NV, B, H, L, D_head_K]
-    dv,  # gradient of value [NK, B, H, L, D_head_V]
-    # initial hidden state initialization [B, H, D_head_K, D_head_V]
+    q,  # query [B, H, L, K]
+    k,  # key [B, H, L, V]
+    v,  # value [B, H, L, V]
+    gk,  # log gate [B, H, L, K] \alpha
+    gv,  # log gate [B, H, L, V] \bete
+    do,  # gradient of output [B, H, L, V]
+    dq,  # gradient of query [NV, B, H, L, K]
+    dk,  # gradient of key [NV, B, H, L, K]
+    dv,  # gradient of value [NK, B, H, L, V]
+    dh0,
     h0,
-    s_qk_h,  # stride size: L * D_head_K
-    s_vo_h,  # stride size: L * D_head_V
-    scale,  # D_head_K ** -0.5
-    B,  # batch_size
-    H,  # n_heads
-    T,  # seq_len
-    K: tl.constexpr,  # D_head_K
-    V: tl.constexpr,  # D_head_V
-    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
-    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
+    s_qk_h,  # stride size: L * K
+    s_vo_h,  # stride size: L * V
+    scale,  # K ** -0.5
+    B,
+    H,
+    T,
+    K: tl.constexpr,
+    V: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
     REVERSE: tl.constexpr,  # whether to do autoregressive modeling in the reverse direction
     USE_GK: tl.constexpr,  # whether to use gk
@@ -139,11 +139,11 @@ def fused_recurrent_gla_bwd_kernel(
     mask_bk = i_k * BK + tl.arange(0, BK) < K
     mask_bv = i_v * BV + tl.arange(0, BV) < V
     mask_kv = mask_bk[:, None] & mask_bv[None, :]
-    h = tl.zeros([BK, BV], dtype=tl.float32)
+    b_h = tl.zeros([BK, BV], dtype=tl.float32)
 
     if USE_INITIAL_STATE:
         p_h0 = h0 + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[:, None]) * V + (i_v * BV + tl.arange(0, BV)[None, :])
-        h += tl.load(p_h0, mask=mask_kv, other=0).to(tl.float32)
+        b_h += tl.load(p_h0, mask=mask_kv, other=0).to(tl.float32)
 
     for i in range(0, T):
         b_k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
@@ -151,12 +151,12 @@ def fused_recurrent_gla_bwd_kernel(
         b_do = tl.load(p_do, mask=mask_bv, other=0).to(tl.float32)
         if USE_GK:
             b_gk = tl.load(p_gk, mask=mask_bk, other=0).to(tl.float32)
-            h = h * tl.exp(b_gk[:, None])
+            b_h = b_h * tl.exp(b_gk[:, None])
         if USE_GV:
             b_gv = tl.load(p_gv, mask=mask_bv, other=0).to(tl.float32)
-            h = h * tl.exp(b_gv[None, :])
-        h += b_k[:, None] * b_v[None, :]
-        b_dq = h * b_do[None, :]
+            b_h = b_h * tl.exp(b_gv[None, :])
+        b_h += b_k[:, None] * b_v[None, :]
+        b_dq = b_h * b_do[None, :]
         d_q = tl.sum(b_dq, axis=1) * scale
         tl.store(p_dq, d_q.to(p_dq.dtype.element_ty), mask=mask_bk)
 
@@ -184,22 +184,22 @@ def fused_recurrent_gla_bwd_kernel(
     if USE_GV:
         p_gv = gv + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + ((T - 1) * V if not REVERSE else 0)
 
-    d_h = tl.zeros([BK, BV], dtype=tl.float32)
+    b_dh = tl.zeros([BK, BV], dtype=tl.float32)
 
     for _ in range(T):
         b_do = tl.load(p_do, mask=mask_bv, other=0).to(tl.float32)
         b_q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
         b_k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         b_v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
-        d_h += b_q[:, None] * b_do[None, :]
-        d_k = tl.sum(d_h * b_v[None, :], axis=1)
-        d_v = tl.sum(d_h * b_k[:, None], axis=0)
+        b_dh += b_q[:, None] * b_do[None, :]
+        d_k = tl.sum(b_dh * b_v[None, :], axis=1)
+        d_v = tl.sum(b_dh * b_k[:, None], axis=0)
         if USE_GK:
             b_gk = tl.load(p_gk, mask=mask_bk, other=0).to(tl.float32)
-            d_h *= tl.exp(b_gk)[:, None]
+            b_dh *= tl.exp(b_gk)[:, None]
         if USE_GV:
             b_gv = tl.load(p_gv, mask=mask_bv, other=0).to(tl.float32)
-            d_h *= tl.exp(b_gv)[None, :]
+            b_dh *= tl.exp(b_gv)[None, :]
         tl.store(p_dk, d_k.to(p_dk.dtype.element_ty), mask=mask_bk)
         tl.store(p_dv, d_v.to(p_dv.dtype.element_ty), mask=mask_bv)
 
@@ -213,6 +213,10 @@ def fused_recurrent_gla_bwd_kernel(
             p_gk += K if REVERSE else -K
         if USE_GV:
             p_gv += V if REVERSE else -V
+
+    if USE_INITIAL_STATE:
+        p_dh0 = dh0 + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[:, None]) * V + (i_v * BV + tl.arange(0, BV)[None, :])
+        tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), mask=mask_kv)
 
 
 class FusedRecurrentGLAFunction(torch.autograd.Function):
@@ -281,10 +285,11 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         dq = q.new_empty(NV, batch_size, n_heads,  seq_len, K, dtype=torch.float32)
         dk = q.new_empty(NV, batch_size, n_heads,  seq_len, K, dtype=torch.float32)
         dv = q.new_empty(NK, batch_size, n_heads, seq_len, V, dtype=torch.float32)
+        dh0 = torch.empty_like(initial_state)if initial_state is not None else None
         grid = (NV, NK, batch_size * n_heads)
 
         fused_recurrent_gla_bwd_kernel[grid](
-            q, k, v, gk, gv, do, dq, dk, dv, initial_state,
+            q, k, v, gk, gv, do, dq, dk, dv, dh0, initial_state,
             q.stride(1),
             v.stride(1), scale,
             B=batch_size, H=n_heads, T=seq_len, K=K, V=V, BK=BK, BV=BV,
@@ -318,7 +323,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         else:
             dgv = None
 
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dgk, dgv, None, None, None, None
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dgk, dgv, None, dh0, None, None
 
 
 # if scale is None, use K ** -0.5 by default. Otherwise specify the scale yourself. e.g. scale = 1.0
@@ -335,8 +340,6 @@ def fused_recurrent_gla(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if scale == -1:
         scale = q.shape[-1] ** -0.5
-    if initial_state is not None:
-        initial_state = initial_state.detach()
     if causal:
         o, final_state = FusedRecurrentGLAFunction.apply(q, k, v, gk, gv, scale, initial_state, output_final_state)
         return o, final_state
