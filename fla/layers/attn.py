@@ -89,9 +89,10 @@ class Attention(nn.Module):
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
 
-        if attention_mask is not None:
-            # to deliminate the offsets of padding tokens
-            seqlen_offset = seqlen_offset + attention_mask.sum(-1) - attention_mask.shape[-1]
+            if attention_mask is not None:
+                # to deliminate the offsets of padding tokens
+                seqlen_offset = seqlen_offset + attention_mask.sum(-1) - attention_mask.shape[-1]
+
         q, k = self.rotary(q, k, seqlen_offset, self.max_position_embeddings)
 
         k = rearrange(k, 'b t h d -> b h t d')
