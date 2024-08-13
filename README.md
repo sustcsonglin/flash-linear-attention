@@ -5,7 +5,50 @@
 [![hf_model](https://img.shields.io/badge/🤗-Models-blue.svg)](https://huggingface.co/fla-hub) | [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](https://discord.gg/vDaJTmKNcS)
 </div>
 
-This repo aims at providing a collection of efficient Triton-based implementations for state-of-the-art linear attention models. **Any pull requests are welcome!**
+>This repo aims at providing a collection of efficient Triton-based implementations for state-of-the-art linear attention models. **Any pull requests are welcome!**
+
+This repo aims at enhance fla support for RWKV6, both speed and perfermance on bf16.
+
+## FLA ChunkRWKV6 Optimized Implementation
+
+This repository contains an optimized implementation of ChunkRWKV6 using FLA (Flash Attention) techniques. Our goal is to simultaneously improve both accuracy and speed compared to standard CUDA implementations.
+
+### Performance Comparison
+
+We've conducted performance tests comparing our FLA BF16 implementation with the standard CUDA BF16 implementation. Here are some key results:
+
+#### Test Case 1: B=32, T=4096, C=4096, HEAD_SIZE=64
+
+| Implementation | Forward Time | Backward Time |
+|----------------|--------------|---------------|
+| CUDA BF16      | 32.80 ms     | 148.05 ms     |
+| FLA BF16       | 50.17 ms     | 162.42 ms     |
+
+#### Test Case 2: B=8, T=4096, C=4096, HEAD_SIZE=64
+
+| Implementation | Forward Time | Backward Time |
+|----------------|--------------|---------------|
+| CUDA BF16      | 9.69 ms      | 46.41 ms      |
+| FLA BF16       | 13.06 ms     | 40.79 ms      |
+
+Where:
+- B: Batch size
+- T: Token length
+- C: Hidden layer dimension
+- HEAD_SIZE: Size of attention heads
+
+### Accuracy
+
+We've measured the error ratios compared to FP32 CUDA implementations for various components. Our chunkRWKV6 FLA implementation achieves error levels consistent with CUDA implementations:
+
+```shell
+y:  0.0020138283862787135
+gr: 0.00250389610197927
+gk: 0.002499128980485113
+gv: 0.0028262425242107
+gw: 0.0027358097395330894
+gu: 0.001821853127644057
+```
 
 <div align="center">
   <img width="400" alt="image" src="https://github.com/sustcsonglin/flash-linear-attention/assets/18402347/02ff2e26-1495-4088-b701-e72cd65ac6cf">
@@ -44,11 +87,11 @@ The following requirements should be satisfied
 As `fla` is actively developed now, no released packages are provided at this time.
 If you do need to use `fla` ops/modules and contemplate further explorations, an alternative way is to install the package from source
 ```sh
-pip install -U git+https://github.com/sustcsonglin/flash-linear-attention
+pip install -U git+https://github.com/TorchRWKV/flash-linear-attention
 ```
 or manage `fla` with submodules
 ```sh
-git submodule add https://github.com/sustcsonglin/flash-linear-attention.git 3rdparty/flash-linear-attention
+git submodule add https://github.com/TorchRWKV/flash-linear-attentiongit 3rdparty/flash-linear-attention
 ln -s 3rdparty/flash-linear-attention/fla fla
 ```
 
