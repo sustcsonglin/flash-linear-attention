@@ -24,7 +24,7 @@ class RetNetConfig(PretrainedConfig):
         num_heads: int = 8,
         num_kv_heads: Optional[int] = None,
         feature_map: Optional[str] = None,
-        attn_mode: str = "fused_chunk",
+        attn_mode: str = "chunk",
         hidden_act: str = "swish",
         use_short_conv: bool = False,
         conv_size: int = 4,

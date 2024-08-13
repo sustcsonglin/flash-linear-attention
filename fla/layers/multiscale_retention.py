@@ -61,7 +61,7 @@ class MultiScaleRetention(nn.Module):
 
     def __init__(
         self,
-        mode: str = 'fused_chunk',
+        mode: str = 'chunk',
         hidden_size: int = 1024,
         expand_k: float = 1.0,
         expand_v: float = 2.0,
