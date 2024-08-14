@@ -4,7 +4,9 @@ import torch
 import triton
 import triton.language as tl
 from einops import rearrange
-from torch.cuda.amp import custom_bwd, custom_fwd
+from fla.utils import custom_fwd_wrapper, custom_bwd_wrapper
+from fla.utils import get_available_device
+device = get_available_device()
 
 from fla.utils import contiguous
 
@@ -304,7 +306,7 @@ def bwd_prepare_wy_repr(k, v, beta, A, dw, du, BT):
 class WYRepresentationPrepration(torch.autograd.Function):
     @staticmethod
     @contiguous
-    @custom_fwd
+    @custom_fwd_wrapper(device_type=device)
     def forward(ctx, k, v, beta, chunk_size):
         ctx.BT = chunk_size
         w, u, A = fwd_prepare_wy_repr(k, v, beta,  ctx.BT)
@@ -313,7 +315,7 @@ class WYRepresentationPrepration(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd
+    @custom_bwd_wrapper(device_type=device)
     def backward(ctx, dw, du):
         k, v, beta, A = ctx.saved_tensors
         BT = ctx.BT

@@ -7,7 +7,9 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
+from fla.utils import custom_fwd_wrapper, custom_bwd_wrapper
+from fla.utils import get_available_device
+device = get_available_device()
 
 from fla.utils import contiguous
 
@@ -223,7 +225,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_fwd
+    @custom_fwd_wrapper(device_type=device)
     def forward(ctx, q, k, v, gk, gv, scale=None, initial_state=None, output_final_state=False, reverse=False):
         B, H, T, K, V = *q.shape, v.shape[-1]
         # default scale
@@ -270,7 +272,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd
+    @custom_bwd_wrapper(device_type=device)
     def backward(ctx, do, dht=None):
         q, k, v, gk, gv, initial_state, o = ctx.saved_tensors
         batch_size, n_heads, seq_len, K = q.shape

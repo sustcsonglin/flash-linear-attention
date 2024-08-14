@@ -12,7 +12,9 @@ import triton
 import triton.language as tl
 from einops import rearrange
 from packaging import version
-from torch.cuda.amp import custom_bwd, custom_fwd
+from fla.utils import custom_fwd_wrapper, custom_bwd_wrapper
+from fla.utils import get_available_device
+device = get_available_device()
 
 from fla.ops.gla.chunk_util import (bwd_decay_global_cumsum, fwd_decay_cumsum,
                                     prepare_qg_kg)
@@ -312,7 +314,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_fwd
+    @custom_fwd_wrapper(device_type=device)
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state):
         ctx.g_dtype = g.dtype
         g_original = g
@@ -406,7 +408,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd
+    @custom_bwd_wrapper(device_type=device)
     def backward(ctx, do, d_final_state=None):
         q, k, v, g_origin, A, initial_state = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape

@@ -7,7 +7,9 @@ import torch
 import triton
 import triton.language as tl
 from packaging import version
-from torch.cuda.amp import custom_bwd, custom_fwd
+from fla.utils import custom_fwd_wrapper, custom_bwd_wrapper
+from fla.utils import get_available_device
+device = get_available_device()
 
 from fla.utils import contiguous
 
@@ -222,7 +224,7 @@ def fused_chunk_linear_attn_bwd_kernel(
 class FusedChunkLinearAttentionFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
-    @custom_fwd
+    @custom_fwd_wrapper(device_type=device)
     def forward(ctx, q, k, v, scale, initial_state, output_final_state):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
@@ -271,7 +273,7 @@ class FusedChunkLinearAttentionFunction(torch.autograd.Function):
         return o.to(q.dtype), final_state
 
     @staticmethod
-    @custom_bwd
+    @custom_bwd_wrapper(device_type=device)
     @contiguous
     def backward(ctx, do, d_final_state=None):
         q, k, v, initial_state = ctx.saved_tensors
