@@ -6,7 +6,8 @@ import torch.nn.functional as F
 
 from fla.ops.rwkv6.recurrent_naive import (naive_recurrent_rwkv6,
                                            naive_recurrent_rwkv6_bwd)
-
+from fla.utils import get_available_device
+device = get_available_device()
 
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("n_heads", [4])
@@ -22,13 +23,13 @@ def test_recurrent_naive(
 ):
     torch.manual_seed(42)
 
-    q = torch.randn(batch_size, n_heads, seq_len, hidden_size, device='cuda').to(dtype).requires_grad_(True)
-    k = torch.randn(batch_size, n_heads, seq_len, hidden_size, device='cuda').to(dtype).requires_grad_(True)
-    v = torch.randn(batch_size, n_heads, seq_len, 2*hidden_size, device='cuda').to(dtype).requires_grad_(True)
-    w = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, hidden_size, device='cuda')).to(dtype).requires_grad_(True)
-    u = torch.randn(n_heads, hidden_size, device='cuda').to(dtype).requires_grad_(True)
-    do = torch.rand_like(v, device='cuda')
-    h = torch.randn(batch_size, n_heads, hidden_size, 2*hidden_size, device='cuda', dtype=dtype, requires_grad=True)
+    q = torch.randn(batch_size, n_heads, seq_len, hidden_size, device=device).to(dtype).requires_grad_(True)
+    k = torch.randn(batch_size, n_heads, seq_len, hidden_size, device=device).to(dtype).requires_grad_(True)
+    v = torch.randn(batch_size, n_heads, seq_len, 2*hidden_size, device=device).to(dtype).requires_grad_(True)
+    w = F.logsigmoid(torch.randn(batch_size, n_heads, seq_len, hidden_size, device=device)).to(dtype).requires_grad_(True)
+    u = torch.randn(n_heads, hidden_size, device=device).to(dtype).requires_grad_(True)
+    do = torch.rand_like(v, device=device)
+    h = torch.randn(batch_size, n_heads, hidden_size, 2*hidden_size, device=device, dtype=dtype, requires_grad=True)
 
     o, _ = naive_recurrent_rwkv6(q, k, v, w, u, scale=1.0, initial_state=h)
     o.backward(do)
@@ -47,3 +48,6 @@ def test_recurrent_naive(
     assert dw.allclose(dw2, atol=1e-3)
     assert du.allclose(du2, atol=1e-3)
     assert dh.allclose(dh2, atol=1e-3)
+
+if __name__ == "__main__":
+    test_recurrent_naive(4, 4, 1000, 100, torch.float)

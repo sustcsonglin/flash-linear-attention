@@ -32,7 +32,7 @@ def naive_chunk_rwkv6(
     wkv_new = torch.zeros_like(wkv)
 
     for i in range(num_chunk - 1):
-        wkv_new[:, :, i+1] = (wkv_new[:, :, i] * w_cumsum[:, :, i, -1, :, None].exp()) + wkv[:, :, i]
+        wkv_new[:, :, i + 1] = (wkv_new[:, :, i] * w_cumsum[:, :, i, -1, :, None].exp()) + wkv[:, :, i]
 
     o_inter = torch.einsum('b h n d p, b h n c d -> b h n c p', wkv_new, (q * (w_cumsum - w).exp()))
 
@@ -49,21 +49,25 @@ def naive_chunk_rwkv6(
 
 
 if __name__ == "__main__":
+    from fla.utils import get_available_device
+    from fla.ops.rwkv6.recurrent_naive import naive_recurrent_rwkv6
+    device = get_available_device()
     B = 4
-    H = 4
+    H = 32
     L = 4096
-    D = 100
+    D = 64
     dtype = torch.bfloat16
     require_grad = True
-    q = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(require_grad)
-    k = (torch.randn(B, H, L, D).cuda().to(dtype)).requires_grad_(require_grad)
-    v = torch.randn(B, H, L, 2*D).cuda().to(dtype).requires_grad_(require_grad)
-    w = torch.nn.functional.logsigmoid(torch.randn(B, H, L, D)).cuda().to(dtype).requires_grad_(require_grad)
-    u = (torch.randn(H, D).cuda().to(dtype)).requires_grad_(require_grad)
-    h = (torch.randn(B, H, D, 2*D).cuda().to(dtype)).requires_grad_(require_grad)
-    do = torch.rand_like(v).cuda()
-    o2, _ = chunk_rwkv6(q, k, v, w.clone(), u)
-    o, _ = fused_recurrent_rwkv6(q, k, v, w, u, scale=1.0)
+    torch.manual_seed(42)
+    q = (torch.randn(B, H, L, D).uniform_(-1, 1).to(device).to(dtype)).requires_grad_(require_grad)
+    k = (torch.randn(B, H, L, D).uniform_(-1, 1).to(device).to(dtype)).requires_grad_(require_grad)
+    v = torch.randn(B, H, L, D).uniform_(-1, 1).to(device).to(dtype).requires_grad_(require_grad)
+    w = torch.randn(B, H, L, D).uniform_(-8, 1).to(device).to(dtype).requires_grad_(require_grad)
+    u = (torch.randn(H, D).uniform_(-1, 1).to(device).to(dtype)).requires_grad_(require_grad)
+    h = torch.randn(B, H, D, D, device=device, dtype=dtype, requires_grad=True)
+    do = torch.rand_like(v).to(device)
+
+    o, _ = fused_recurrent_rwkv6(q, k, v, w, u, initial_state=h, scale=1.0)
     o.backward(do)
     dq, q.grad = q.grad.clone(), None
     dk, k.grad = k.grad.clone(), None
@@ -72,6 +76,7 @@ if __name__ == "__main__":
     du, u.grad = u.grad.clone(), None
     dh, h.grad = h.grad.clone(), None
 
+    o2, _ = chunk_rwkv6(q, k, v, w, u, initial_state=h, scale=1.0)
     o2.backward(do)
 
     def rmsre(pred, target, eps=1e-8):
@@ -82,6 +87,13 @@ if __name__ == "__main__":
         max_diff = abs_diff.max().item()
         rmsre_value = rmsre(grad1, grad2).item()
         print(f"{name}: Max Abs Diff = {max_diff:.6f}, RMSRE = {rmsre_value:.6f}")
+
+    assert not torch.isnan(q.grad).any()
+    assert not torch.isnan(k.grad).any()
+    assert not torch.isnan(v.grad).any()
+    assert not torch.isnan(w.grad).any()
+    assert not torch.isnan(u.grad).any()
+    assert not torch.isnan(h.grad).any()
 
     print(f"o: {(o - o2).abs().max().item():.6f}")
     print_diff("q", q.grad, dq)
