@@ -750,7 +750,9 @@ class ChunkRWKV6Function(torch.autograd.Function):
             B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             scale=scale
         )
-        dh, dh0 = dh.to(q), dh0.to(q)
+        dh = dh.to(q)
+        if initial_state is not None:
+            dh0 = dh0.to(q)
         dq = torch.empty_like(q, dtype=torch.float)
         dk = torch.empty_like(k, dtype=torch.float)
         dv = v.new_empty(NK, *v.shape)
