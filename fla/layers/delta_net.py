@@ -15,6 +15,8 @@ from torch.nn import functional as F
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.ops.delta_rule import (chunk_delta_rule, fused_chunk_delta_rule,
                                 fused_recurrent_delta_rule)
+from fla.modules.l2norm import l2_norm_fn
+
 
 if TYPE_CHECKING:
     from fla.models.utils import Cache
@@ -194,8 +196,8 @@ class DeltaNet(nn.Module):
 
         if self.qk_norm is not None:
             if self.qk_norm == 'l2':
-                k = nn.functional.normalize(k, dim=-1, p=2).to(v)  # auto mixed precision type transfer is annoying.
-                q = nn.functional.normalize(q, dim=-1, p=2).to(v)
+                q = l2_norm_fn(q)
+                k = l2_norm_fn(k)
             elif self.qk_norm == 'sum':
                 q = sum_norm(q).to(v)
                 k = sum_norm(k).to(v)
