@@ -9,18 +9,17 @@ https://github.com/state-spaces/mamba/blob/v2.2.2/mamba_ssm/modules/ssd_minimal.
 """
 
 # Disable the prints:
-# FutureWarning: `torch.cuda.amp.custom_bwd(args...)` is deprecated. Please use `torch.amp.custom_bwd(args..., device_type='cuda')` instead.
+# FutureWarning: `torch.cuda.amp.custom_bwd(args...)` is deprecated.
+# Please use `torch.amp.custom_bwd(args..., device_type='cuda')` instead.
+from mamba_ssm.modules.ssd_minimal import ssd_minimal_discrete
+from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+from fla.ops.simple_gla import chunk_simple_gla
+from fla.ops.simple_gla.naive import torch_simple_gla, torch_simple_gla_recurrent
+import torch
+import pytest
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-import pytest
-import torch
-
-from fla.ops.simple_gla.naive import torch_simple_gla, torch_simple_gla_recurrent
-from fla.ops.simple_gla import chunk_simple_gla
-
-from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
-from mamba_ssm.modules.ssd_minimal import ssd_minimal_discrete
 
 dtype_mapping = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 
@@ -33,7 +32,7 @@ def test_gla_to_mamba2(vary_A, dtype_str):
     # Dimensions, Denoted (B, T, Q, D, P) in Mamba2 paper
     batch, seqlen, chunk_size, dim, headdim = 2, 512, 8, 64, 16
     nheads = dim // headdim  # (H) in the paper
-    ngroups = nheads # (G) in the paper; NOTE: do not use group-query here
+    ngroups = nheads  # (G) in the paper; NOTE: do not use group-query here
     dstate = 64  # (N) in the paper
     device = "cuda"
     dtype = dtype_mapping[dtype_str]
@@ -50,7 +49,7 @@ def test_gla_to_mamba2(vary_A, dtype_str):
     B = 0.1 * torch.randn(batch, seqlen, ngroups, dstate, dtype=dtype, device=device)
     C = 0.1 * torch.randn(batch, seqlen, ngroups, dstate, dtype=dtype, device=device)
 
-    y_ssd, final_ssd = ssd_minimal_discrete(x*dt.unsqueeze(-1), A*dt, B, C, chunk_size)
+    y_ssd, final_ssd = ssd_minimal_discrete(x * dt.unsqueeze(-1), A * dt, B, C, chunk_size)
 
     if not vary_A:
         # NOTE: fused kernel does not support varying A with time
@@ -73,7 +72,7 @@ def test_gla_to_mamba2(vary_A, dtype_str):
     q = C.transpose(1, 2)
     k = B.transpose(1, 2)
     v = x.transpose(1, 2)
-    g = (A*dt).transpose(1, 2)
+    g = (A * dt).transpose(1, 2)
 
     # mapping outputs Mamba2 -> FLA
     y_rearrange = y_ssd.transpose(1, 2)
@@ -94,7 +93,7 @@ def test_gla_to_mamba2(vary_A, dtype_str):
         f"y diff: {torch.abs(y_rearrange - outputs_gla_simple).max()}"
     )
 
-    outputs_gla_fuse ,final_gla_fuse = chunk_simple_gla(
+    outputs_gla_fuse, final_gla_fuse = chunk_simple_gla(
         q, k, v, g, scale=1.0, output_final_state=True
     )
     assert y_rearrange.allclose(outputs_gla_fuse, 0, atol), (
