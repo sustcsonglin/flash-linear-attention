@@ -20,54 +20,67 @@ def fused_recurrent_gated_abc_inference_kernel(
     s,
     g,
     o,
-    hk,
-    hv,
-    s_k_h,
-    s_v_h,
-    s_m_h,
+    hk0,
+    hv0,
+    hkt,
+    hvt,
     scale,
     K: tl.constexpr,
     V: tl.constexpr,
     M: tl.constexpr,
     BK: tl.constexpr,
-    BV: tl.constexpr
+    BV: tl.constexpr,
+    NG: tl.constexpr
 ):
     i_bh = tl.program_id(0)
+    i_bg = i_bh // NG
 
-    b_s = tl.load(s + i_bh * s_m_h + tl.arange(0, M))
-    b_g = tl.load(g + i_bh * s_m_h + tl.arange(0, M)).to(tl.float32)
+    b_s = tl.load(s + i_bg * M + tl.arange(0, M)).to(tl.float32)
+    b_g = tl.load(g + i_bg * M + tl.arange(0, M)).to(tl.float32)
     b_g = tl.exp(b_g)
 
     b_ok = tl.zeros([M], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
-        p_hk0 = hk + i_bh * K * M + (i_k * BK + tl.arange(0, BK)[None, :]) * M + tl.arange(0, M)[:, None]
-        mask = (i_k * BK + tl.arange(0, BK)) < K
-        # [M, BK]
-        b_hk = tl.load(p_hk0, mask=mask[None, :], other=0).to(tl.float32)
+        o_k = i_k * BK + tl.arange(0, BK)
+
+        p_hk0 = hk0 + i_bg * K * M + (o_k[None, :]) * M + tl.arange(0, M)[:, None]
         # [BK,]
-        b_q = tl.load(q + i_bh * s_k_h + i_k * BK + tl.arange(0, BK), mask=mask, other=0).to(tl.float32) * scale
-        b_k = tl.load(k + i_bh * s_k_h + i_k * BK + tl.arange(0, BK), mask=mask, other=0).to(tl.float32)
+        mask_k = o_k < K
+        # [M, BK]
+        mask_hk = (tl.arange(0, M) < M)[:, None] & mask_k[None, :]
+        # [M, BK]
+        b_hk = tl.load(p_hk0, mask=mask_hk, other=0.).to(tl.float32)
+        # [BK,]
+        b_q = tl.load(q + i_bh * K + o_k, mask=mask_k, other=0.).to(tl.float32) * scale
+        b_k = tl.load(k + i_bg * K + o_k, mask=mask_k, other=0.).to(tl.float32)
         b_hk = b_hk * b_g[:, None] + b_k[None, :] * b_s[:, None]
         b_ok += tl.sum(b_hk * b_q[None, :], axis=1)
 
-        p_hkt = hk + i_bh * K * M + (i_k * BK + tl.arange(0, BK)[None, :]) * M + tl.arange(0, M)[:, None]
-        tl.store(p_hkt, b_hk.to(p_hkt.dtype.element_ty), mask=mask[None, :])
+        if i_bh % NG == 0:
+            p_hkt = hkt + i_bg * K * M + o_k[None, :] * M + tl.arange(0, M)[:, None]
+            tl.store(p_hkt, b_hk.to(p_hkt.dtype.element_ty), mask=mask_hk)
 
     b_qv = tl.softmax(b_ok)
     for i_v in range(tl.cdiv(V, BV)):
-        p_hv0 = hv + i_bh * M * V + tl.arange(0, M)[None, :] * V + (i_v * BV + tl.arange(0, BV)[:, None])
-        mask = (i_v * BV + tl.arange(0, BV)) < V
-        # [BV, M]
-        b_hv = tl.load(p_hv0, mask=mask[:, None], other=0).to(tl.float32)
+        o_v = i_v * BV + tl.arange(0, BV)
+
+        p_hv0 = hv0 + i_bg * M * V + tl.arange(0, M)[None, :] * V + o_v[:, None]
         # [BV,]
-        b_v = tl.load(v + i_bh * s_v_h + i_v * BV + tl.arange(0, BV), mask=mask, other=0).to(tl.float32)
+        mask_v = o_v < V
+        # [BV, M]
+        mask_hv = mask_v[:, None] & (tl.arange(0, M) < M)[None, :]
+        # [BV, M]
+        b_hv = tl.load(p_hv0, mask=mask_hv, other=0).to(tl.float32)
+        # [BV,]
+        b_v = tl.load(v + i_bg * V + o_v, mask=mask_v, other=0).to(tl.float32)
         b_hv = b_hv * b_g[None, :] + b_s[None, :] * b_v[:, None]
         b_ov = tl.sum(b_hv * b_qv[None, :], axis=1)
 
-        tl.store(o + i_bh * s_v_h + i_v * BV + tl.arange(0, BV), b_ov.to(o.dtype.element_ty), mask=mask)
+        tl.store(o + i_bh * V + o_v, b_ov.to(o.dtype.element_ty), mask=mask_v)
 
-        p_hvt = hv + i_bh * M * V + tl.arange(0, M)[None, :] * V + (i_v * BV + tl.arange(0, BV)[:, None])
-        tl.store(p_hvt, b_hv.to(p_hvt.dtype.element_ty), mask=mask[:, None])
+        if i_bh % NG == 0:
+            p_hvt = hvt + i_bg * M * V + tl.arange(0, M)[None, :] * V + o_v[:, None]
+            tl.store(p_hvt, b_hv.to(p_hvt.dtype.element_ty), mask=mask_hv)
 
 
 @triton.jit
@@ -94,7 +107,7 @@ def fused_recurrent_gated_abc_fwd_kernel(
     STORE_FINAL_STATE: tl.constexpr,
     REVERSE: tl.constexpr,
     USE_GK: tl.constexpr,
-    USE_GV: tl.constexpr,
+    USE_GV: tl.constexpr
 ):
     # indices
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -286,33 +299,29 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         reverse: bool = False,
         inference_mode: bool = False
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor]]:
-        B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
-        # default scale
-        if scale is None:
-            scale = K ** -0.5
+        B, H, T, K, V, M = *k.shape, v.shape[-1], s.shape[-1]
+        HQ = q.shape[1]
 
         BK, BV, BM = min(K, 64), min(V, 64), min(M, 64)
         NK, NV, NM = triton.cdiv(K, BK), triton.cdiv(V, BV), triton.cdiv(M, BM)
+        NG = HQ // H
         num_warps = 1
         num_stages = 1
 
         hkt, hvt = None, None
         if output_final_state:
-            hkt, hvt = (hk0, hv0) if inference_mode else (q.new_empty(B, H, K, M), q.new_empty(B, H, M, V))
+            hkt, hvt = (hk0, hv0) if inference_mode and NG == 1 else (q.new_empty(B, H, K, M), q.new_empty(B, H, M, V))
 
         if inference_mode:
-            BK, BV, BM = min(K, 64), min(V, 64), min(M, 64)
-            NK, NV, NM = triton.cdiv(K, BK), triton.cdiv(V, BV), triton.cdiv(M, BM)
+            BK, BV = min(triton.next_power_of_2(K), 64), min(triton.next_power_of_2(V), 16)
+            NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
 
-            o = torch.empty_like(v)
-            grid = (B * H,)
+            o = v.new_empty(B, HQ, T, V)
+            grid = (B * HQ,)
             fused_recurrent_gated_abc_inference_kernel[grid](
-                q, k, v, s, g, o, hk0, hv0,
-                k.stride(1),
-                v.stride(1),
-                s.stride(1),
+                q, k, v, s, g, o, hk0, hv0, hkt, hvt,
                 scale=scale,
-                K=K, V=V, M=M, BK=BK, BV=BV,
+                K=K, V=V, M=M, BK=BK, BV=BV, NG=NG,
                 num_warps=num_warps,
                 num_stages=num_stages
             )
@@ -472,6 +481,8 @@ def fused_recurrent_gated_abc(
         s = torch.exp(s - z).to(k.dtype)
     if scale is None:
         scale = q.shape[-1] ** -0.5
+    if initial_state is None:
+        initial_state = (None, None)
     inference_mode = q.shape[2] == 1 and not q.requires_grad
     ov, final_state = FusedRecurrentGatedABCFunction.apply(
         q, k, v, s, g, scale, *initial_state, output_final_state, False, inference_mode

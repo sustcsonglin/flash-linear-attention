@@ -121,6 +121,7 @@ def test_chunk(
 
 
 @pytest.mark.parametrize("B", [4])
+@pytest.mark.parametrize("HQ", [8, 16])
 @pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("T", [300, 512])
 @pytest.mark.parametrize("K", [32, 64, 100])
@@ -129,6 +130,7 @@ def test_chunk(
 @pytest.mark.parametrize("dtype", [torch.float])
 def test_inference(
     B: int,
+    HQ: int,
     H: int,
     T: int,
     K: int,
@@ -137,17 +139,18 @@ def test_inference(
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
-    atol = 1e-2 if dtype == torch.float else 1e-1
+    atol = 1e-3
 
-    q = torch.randn((B, H, T, K), dtype=dtype, device='cuda')
+    q = torch.randn((B, HQ, T, K), dtype=dtype, device='cuda')
     k = torch.randn((B, H, T, K), dtype=dtype, device='cuda')
     v = torch.randn((B, H, T, V), dtype=dtype, device='cuda')
     s = torch.randn((B, H, T, M), dtype=dtype, device='cuda')
     g = F.logsigmoid(torch.randn((B, H, T, M), dtype=dtype, device='cuda'))
+    h0 = (torch.zeros(B, H, K, M, dtype=dtype, device='cuda'),
+          torch.zeros(B, H, M, V, dtype=dtype, device='cuda'))
 
-    ref, _ = fused_recurrent_gated_abc(q, k, v, s, g)
+    ref, _ = naive_recurrent_abc(q, k, v, s, g, initial_state=h0)
     tri = torch.empty_like(ref)
-    ht = (q.new_zeros(B, H, K, M), q.new_zeros(B, H, M, V))
     for i in range(T):
         o, ht = fused_recurrent_gated_abc(
             q[:, :, i:i+1],
@@ -155,8 +158,9 @@ def test_inference(
             v[:, :, i:i+1],
             s[:, :, i:i+1],
             g[:, :, i:i+1],
-            initial_state=ht,
+            initial_state=h0,
             output_final_state=True
         )
         tri[:, :, i] = o.squeeze(2)
-    assert ref.allclose(tri, 0, atol), f"o diff: {torch.abs(ref - tri).max()}"
+        assert ref[:, :, i].allclose(tri[:, :, i], 0, atol), f"o diff: {torch.abs(ref[:, :, i] - tri[:, :, i]).max()} {i}"
+        h0 = ht
