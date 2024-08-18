@@ -305,7 +305,7 @@ class SimpleGLAFunction(torch.autograd.Function):
         NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
         num_stages = 1
         num_warps = 4 if BK == 64 else 2
-        scale = K ** -0.5
+        scale = 1.0 # K ** -0.5
 
         BT = 64
         assert T % BT == 0, 'sequence length must be divisible by BT'
@@ -359,7 +359,7 @@ class SimpleGLAFunction(torch.autograd.Function):
         NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
         num_stages = 1
         num_warps = 4 if BK == 64 else 2
-        scale = K ** -0.5
+        scale = 1.0 # K ** -0.5
 
         dh = q.new_empty(B, H, NT * K, V)
         grid = (NK, NV, B * H)
