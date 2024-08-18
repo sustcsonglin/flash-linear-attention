@@ -297,7 +297,7 @@ class SimpleGLAFunction(torch.autograd.Function):
     @staticmethod
     @custom_fwd
     @contiguous
-    def forward(ctx, q, k, v, g, initial_state, output_final_state):
+    def forward(ctx, q, k, v, g, scale, initial_state, output_final_state):
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT = 64
         BK, BV = min(64, triton.next_power_of_2(K)), min(
@@ -305,7 +305,9 @@ class SimpleGLAFunction(torch.autograd.Function):
         NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
         num_stages = 1
         num_warps = 4 if BK == 64 else 2
-        scale = 1.0 # K ** -0.5
+
+        if scale is None:
+            scale = K ** -0.5
 
         BT = 64
         assert T % BT == 0, 'sequence length must be divisible by BT'
@@ -349,7 +351,7 @@ class SimpleGLAFunction(torch.autograd.Function):
     @staticmethod
     @custom_bwd
     @contiguous
-    def backward(ctx, do, d_ht=None):
+    def backward(ctx, do, scale, d_ht=None):
         q, k, v, h, g = ctx.saved_tensors
 
         B, H, T, K, V = *q.shape, v.shape[-1]
@@ -359,7 +361,9 @@ class SimpleGLAFunction(torch.autograd.Function):
         NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
         num_stages = 1
         num_warps = 4 if BK == 64 else 2
-        scale = 1.0 # K ** -0.5
+
+        if scale is None:
+            scale = K ** -0.5
 
         dh = q.new_empty(B, H, NT * K, V)
         grid = (NK, NV, B * H)
@@ -405,11 +409,12 @@ def chunk_simple_gla(
     k: torch.Tensor,
     v: torch.Tensor,
     g: torch.Tensor,  # log decay
+    scale: float = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if initial_state is not None:
         initial_state = initial_state.detach()
     g = g.float()
-    o, final_state = SimpleGLAFunction.apply(q, k, v, g, initial_state, output_final_state)
+    o, final_state = SimpleGLAFunction.apply(q, k, v, g, scale, initial_state, output_final_state)
     return o, final_state
