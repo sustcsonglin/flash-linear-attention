@@ -20,7 +20,7 @@ def sizeof_fmt(num, suffix='B'):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generation benchmarking")
-    parser.add_argument("--path", type=str, default="fla-hub/transformer-340M-15B")
+    parser.add_argument("--path", type=str, default="fla-hub/transformer-1.3B-100B")
     parser.add_argument("--prompt", type=str, default="Hello everyone, I'm Songlin Yang")
     parser.add_argument("--maxlen", type=int, default=64)
     parser.add_argument("--cache", action='store_true')
@@ -35,7 +35,7 @@ if __name__ == "__main__":
     torch.manual_seed(0)
 
     print(f"Loading {args.path}")
-    tokenizer = AutoTokenizer.from_pretrained(args.path)
+    tokenizer = AutoTokenizer.from_pretrained(args.path, trust_remote_code=True)
     tokenizer.pad_token_id = tokenizer.eos_token_id
     print(f"{tokenizer}")
 
