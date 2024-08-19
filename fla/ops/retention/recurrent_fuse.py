@@ -196,8 +196,8 @@ def fused_recurrent_retention_bwd_kernel(
 
 class FusedRecurrentRetentionFunction(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def forward(ctx, q, k, v, initial_state=None, output_final_state=False):
         batch_size, n_heads, seq_len, d_head_qk = q.shape
         d_head_v = v.shape[-1]
@@ -232,8 +232,8 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
         ctx.save_for_backward(q, k, v, initial_state)
         return o, final_state
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def backward(ctx, do, d_final_state=None):
         q, k, v, initial_state = ctx.saved_tensors
         batch_size, n_heads, seq_len, d_head_qk = q.shape
@@ -245,8 +245,8 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
         num_stages = 1
         num_warps = 1
 
-        dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-        dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
+        dq = q.new_empty(NV, batch_size, n_heads, seq_len, d_head_qk)
+        dk = q.new_empty(NV, batch_size, n_heads, seq_len, d_head_qk)
         dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
         grid = (NV, NK, batch_size * n_heads)
 

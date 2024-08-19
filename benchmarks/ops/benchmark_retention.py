@@ -72,11 +72,11 @@ def benchmark(T, provider):
             return results
         results = triton.testing.do_bench(lambda: naive_retention(q, k, v).backward(do), quantiles=quantiles)
     elif provider == 'recurrent_bwd':
-        results = triton.testing.do_bench(lambda: fused_recurrent_retention(q, k, v).backward(do), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: fused_recurrent_retention(q, k, v)[0].backward(do), quantiles=quantiles)
     elif provider == 'chunk_bwd':
-        results = triton.testing.do_bench(lambda: chunk_retention(q, k, v).backward(do), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: chunk_retention(q, k, v)[0].backward(do), quantiles=quantiles)
     elif provider == 'fused_chunk_bwd':
-        results = triton.testing.do_bench(lambda: fused_chunk_retention(q, k, v).backward(do), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: fused_chunk_retention(q, k, v)[0].backward(do), quantiles=quantiles)
     elif provider == 'parallel_bwd':
         results = triton.testing.do_bench(lambda: parallel_retention(q, k, v).backward(do), quantiles=quantiles)
 
