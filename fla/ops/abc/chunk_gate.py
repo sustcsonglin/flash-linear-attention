@@ -84,8 +84,8 @@ def chunk_gated_abc_fwd_kernel_h(
 
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
     if USE_INITIAL_STATE:
-        p_h = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
+        p_h0 = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        b_h += tl.load(p_h0, boundary_check=(0, 1)).to(tl.float32)
     for i_t in range(NT):
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
@@ -918,7 +918,7 @@ def chunk_gated_abc_bwd_kernel_intra_KV(
     b_gv = tl.load(p_gv, boundary_check=(0, 1))
     b_dv = tl.zeros([BC, BV], dtype=tl.float32)
     for i_j in range(i_i + 1, NC):
-        p_g = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_j * BC, i_v * BV),  (BC, BV), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
         p_A = tl.make_block_ptr(A + i_bh * T * BT, (BT, T), (1, BT), (i_i * BC, i_t * BT + i_j * BC), (BC, BC), (0, 1))
         p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
         # [BC, BV]
@@ -1209,26 +1209,26 @@ def bwd_k(q, k, v, g, h, o, do, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
 
 class ChunkGatedABCFunction(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
-    def forward(ctx, q, k, v, s, g, scale, initial_state, output_final_state, checkpoint_level):
+    @staticmethod
+    def forward(ctx, q, k, v, s, g, scale, hk0, hv0, output_final_state, checkpoint_level):
         B, H, T, K, V, M = *k.shape, v.shape[-1], s.shape[-1]
         BT, BC = 64, 16
         BK = min(64, triton.next_power_of_2(K))
         BV = min(64, triton.next_power_of_2(V))
         BM = min(64, triton.next_power_of_2(M))
 
-        final_state = None
+        hkt, hvt = None, None
         if output_final_state:
-            final_state = (q.new_empty(B, H, K, M, dtype=torch.float),
-                           q.new_empty(B, H, M, V, dtype=torch.float))
+            hkt = q.new_empty(B, H, K, M, dtype=torch.float)
+            hvt = q.new_empty(B, H, M, V, dtype=torch.float)
 
         g_org, g = g, fwd_pre(g, B, H, T, M, BT)
         ok, hk, _ = fwd_k(
             q=q, k=k, v=s, g=g,
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, BC=BC,
-            h0=initial_state[0] if initial_state is not None else None,
-            ht=final_state[0] if final_state is not None else None,
+            h0=hk0,
+            ht=hkt,
             scale=scale
         )
 
@@ -1246,8 +1246,8 @@ class ChunkGatedABCFunction(torch.autograd.Function):
         ov, hv, Av = fwd_v(
             q=p.to(q.dtype), k=s, v=v, g=g,
             B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, BC=BC,
-            h0=initial_state[1] if initial_state is not None else None,
-            ht=final_state[1] if final_state is not None else None,
+            h0=hv0,
+            ht=hvt,
             scale=1.
         )
 
@@ -1258,20 +1258,19 @@ class ChunkGatedABCFunction(torch.autograd.Function):
             del hk
             del hv
             hk, hv = None, None
-            initial_state = tuple() if initial_state is None else initial_state
         else:
-            initial_state = tuple()
+            hk0, hv0 = None, None
 
-        ctx.save_for_backward(q, k, v, s, g, ok, p, hk, hv, Av, *initial_state)
+        ctx.save_for_backward(q, k, v, s, g, ok, p, hk, hv, Av, hk0, hv0)
         ctx.checkpoint_level = checkpoint_level
         ctx.scale = scale
         ctx.BT = BT
-        return ov, final_state
+        return ov, (hkt, hvt)
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def backward(ctx, dov, dht=None):
-        q, k, v, s, g, ok, p, hk, hv, Av, *initial_state = ctx.saved_tensors
+        q, k, v, s, g, ok, p, hk, hv, Av, hk0, hv0 = ctx.saved_tensors
         qv = p.to(q.dtype)
         B, H, T, K, V, M = *k.shape, v.shape[-1], s.shape[-1]
         BT, BC = ctx.BT, 16
@@ -1288,14 +1287,14 @@ class ChunkGatedABCFunction(torch.autograd.Function):
                 q=q, k=k, v=s, g=g,
                 B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM,
                 gatek=False,
-                h0=initial_state[0] if len(initial_state) > 0 else None,
+                h0=hk0,
                 ht=None
             )
             hv = fwd_inner(
                 q=qv, k=s, v=v, g=g,
                 B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV,
                 gatek=True,
-                h0=initial_state[1] if len(initial_state) > 0 else None,
+                h0=hv0,
                 ht=None
             )
 
@@ -1330,7 +1329,7 @@ class ChunkGatedABCFunction(torch.autograd.Function):
         dg = chunk_reversed_cumsum_fwd(dg).to(s.dtype)
         if q.shape[1] != H:
             dk, dv, ds, dg = map(lambda x: reduce(x, 'b (h g) ... -> b h ...', 'sum', h=H), (dk, dv, ds, dg))
-        return dq, dk, dv, ds, dg, None, None, None, None
+        return dq, dk, dv, ds, dg, None, None, None, None, None
 
 
 def chunk_gated_abc(
@@ -1370,8 +1369,6 @@ def chunk_gated_abc(
             - Level `2`: recompute the fp32 cumulative values and forward hidden states during backward.
     """
     assert checkpoint_level in [0, 1, 2]
-    if initial_state is not None:
-        initial_state = tuple(i.detach() for i in initial_state)
     if g is None:
         # TODO: this 3 steps took huge amount of time, ought to be optimized
         z = s.float().logcumsumexp(2)
@@ -1379,5 +1376,9 @@ def chunk_gated_abc(
         s = torch.exp(s - z).to(k.dtype)
     if scale is None:
         scale = q.shape[-1] ** -0.5
-    ov, final_state = ChunkGatedABCFunction.apply(q, k, v, s, g, scale, initial_state, output_final_state, checkpoint_level)
+
+    hk0, hv0 = None, None
+    if initial_state is not None:
+        hk0, hv0 = initial_state
+    ov, final_state = ChunkGatedABCFunction.apply(q, k, v, s, g, scale, hk0, hv0, output_final_state, checkpoint_level)
     return ov, final_state

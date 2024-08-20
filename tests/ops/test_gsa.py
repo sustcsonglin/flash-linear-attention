@@ -74,7 +74,7 @@ def test_fused_recurrent(
 @pytest.mark.parametrize("K", [32, 64, 100])
 @pytest.mark.parametrize("V", [64, 128, 200])
 @pytest.mark.parametrize("M", [32, 64, 128])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.float])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float])
 def test_chunk(
     B: int,
     H: int,
@@ -85,18 +85,18 @@ def test_chunk(
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
-    atol = 1e-2 if dtype == torch.float else 1e-1
+    atol = 1e-3 if dtype == torch.float else 1e-1
 
     q = torch.randn((B, H, T, K), dtype=dtype, device='cuda').requires_grad_()
     k = torch.randn((B, H, T, K), dtype=dtype, device='cuda').requires_grad_()
     v = torch.randn((B, H, T, V), dtype=dtype, device='cuda').requires_grad_()
     s = torch.randn((B, H, T, M), dtype=dtype, device='cuda').requires_grad_()
     g = F.logsigmoid(torch.randn((B, H, T, M), dtype=dtype, device='cuda')).requires_grad_()
-    h0 = (torch.randn(B, H, K, M, device='cuda').requires_grad_(),
-          torch.randn(B, H, M, V, device='cuda').requires_grad_())
+    hk0 = torch.randn(B, H, K, M, device='cuda').requires_grad_()
+    hv0 = torch.randn(B, H, M, V, device='cuda').requires_grad_()
 
     do = torch.randn_like(v)
-    ref, _ = fused_recurrent_gated_abc(q, k, v, s, g, initial_state=h0)
+    ref, _ = fused_recurrent_gated_abc(q, k, v, s, g, initial_state=(hk0, hv0))
     ref.backward(do)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
@@ -104,7 +104,7 @@ def test_chunk(
     ref_ds, s.grad = s.grad.clone(), None
     ref_dg, g.grad = g.grad.clone(), None
 
-    tri, _ = chunk_gated_abc(q, k, v, s, g, initial_state=h0)
+    tri, _ = chunk_gated_abc(q, k, v, s, g, initial_state=(hk0, hv0))
     tri.backward(do)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
