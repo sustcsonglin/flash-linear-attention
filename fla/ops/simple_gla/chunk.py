@@ -358,7 +358,7 @@ class SimpleGLAFunction(torch.autograd.Function):
             rev_cumsum_x = cumsum_x[..., -1, None] - cumsum_x
             return rev_cumsum_x + x
         dg = rev_cumsum(dg)
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, None
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, None, None
 
 
 def chunk_simple_gla(
