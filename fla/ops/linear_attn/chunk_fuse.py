@@ -246,7 +246,7 @@ class FusedChunkLinearAttentionFunction(torch.autograd.Function):
             num_warps=num_warps,
             num_stages=num_stages
         )
-        o = o.sum(0)
+        o = o.sum(0) if NK > 1 else o[0]
 
         ctx.save_for_backward(q, k, v, initial_state)
         ctx.scale = scale
