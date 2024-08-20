@@ -164,8 +164,8 @@ def fused_recurrent_linear_attn_bwd_kernel(
 
 class FusedRecurrentLinearAttentionFunction(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def forward(ctx, q, k, v, scale, initial_state=None, output_final_state=False):
         B, H, T, K = q.shape
         V = v.shape[-1]
@@ -195,8 +195,8 @@ class FusedRecurrentLinearAttentionFunction(torch.autograd.Function):
         ctx.scale = scale
         return o, final_state
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def backward(ctx, do, dht=None):
         q, k, v, initial_state = ctx.saved_tensors
         B, H, T, K = q.shape

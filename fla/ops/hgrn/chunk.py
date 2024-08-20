@@ -222,8 +222,8 @@ def chunk_hgrn_bwd_kernel_o(
 
 class ChunkHGRNFunction(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def forward(ctx, x, g, initial_state=None, output_final_state=False):
         B, H, T, D = x.shape
         BT, BD = 128, min(64, triton.next_power_of_2(D))
@@ -253,8 +253,8 @@ class ChunkHGRNFunction(torch.autograd.Function):
         ctx.save_for_backward(g, o, initial_state)
         return o, final_state
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def backward(ctx, do, dht=None):
         g, o, initial_state = ctx.saved_tensors
         B, H, T, D = do.shape

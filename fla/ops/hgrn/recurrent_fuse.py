@@ -135,8 +135,8 @@ def fused_recurrent_hgrn_bwd_kernel(
 
 class FusedRecurrentHGRNFunction(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def forward(ctx, x, g, initial_state=None, output_final_state=False):
         B, H, T, D = x.shape
 
@@ -155,8 +155,8 @@ class FusedRecurrentHGRNFunction(torch.autograd.Function):
         ctx.save_for_backward(g, o, initial_state)
         return o, final_state
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def backward(ctx, do, dht=None):
         g, o, initial_state = ctx.saved_tensors
         B, H, T, D = do.shape

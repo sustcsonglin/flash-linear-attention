@@ -8,7 +8,8 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.utils import (logcumsumexp_fwd_kernel, softmax_bwd_kernel, softmax_fwd_kernel)
+from fla.ops.utils import (logcumsumexp_fwd_kernel, softmax_bwd_kernel,
+                           softmax_fwd_kernel)
 from fla.utils import contiguous
 
 
@@ -902,8 +903,8 @@ def chunk_abc_bwd_kernel_rcum_intra(
 
 class ChunkABCFunction(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def forward(ctx, q, k, v, s, initial_state, output_final_state):
         B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
         BT, BC = 64, 16
@@ -1030,8 +1031,8 @@ class ChunkABCFunction(torch.autograd.Function):
         ctx.BT = BT
         return ov, final_state
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def backward(ctx, dov, dht=None):
         q, k, v, s, z, ok, p, hk, hv, Av = ctx.saved_tensors
         B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]
@@ -1187,7 +1188,5 @@ def chunk_abc(
     initial_state: Optional[Tuple[torch.Tensor]] = None,
     output_final_state: Optional[bool] = False
 ) -> Tuple[torch.Tensor, Tuple[torch.Tensor]]:
-    if initial_state is not None:
-        initial_state = tuple(i.detach() for i in initial_state)
     ov, final_state = ChunkABCFunction.apply(q, k, v, s, initial_state, output_final_state)
     return ov, final_state

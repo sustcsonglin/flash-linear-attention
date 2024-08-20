@@ -438,8 +438,8 @@ def _layer_norm_bwd(
 
 class LayerNormSwishGateFn(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def forward(
         ctx,
         x,
@@ -479,8 +479,8 @@ class LayerNormSwishGateFn(torch.autograd.Function):
         y = y.reshape(x_shape_og)
         return y if not prenorm else (y, residual_out.reshape(x_shape_og))
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def backward(ctx, dy, *args):
         x, o, weight, bias, mean, rstd = ctx.saved_tensors
         dy = dy.reshape(-1, dy.shape[-1])
@@ -520,8 +520,8 @@ class LayerNormSwishGateFn(torch.autograd.Function):
 
 class LayerNormSwishGateLinearFn(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def forward(
         ctx,
         x,
@@ -576,8 +576,8 @@ class LayerNormSwishGateLinearFn(torch.autograd.Function):
         ctx.linear_bias_is_none = linear_bias is None
         return out if not prenorm else (out, residual_out.reshape(x_shape_og))
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def backward(ctx, dout, *args):
         x, o, norm_weight, norm_bias, linear_weight, mean, rstd = ctx.saved_tensors
         dout = dout.reshape(-1, dout.shape[-1])

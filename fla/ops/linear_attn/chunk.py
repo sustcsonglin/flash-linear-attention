@@ -236,9 +236,9 @@ def chunk_linear_attn_bwd_kernel_dqkv(
 
 class ChunkLinearAttentionFunction(torch.autograd.Function):
 
-    @staticmethod
-    @custom_fwd
     @contiguous
+    @custom_fwd
+    @staticmethod
     def forward(ctx, q, k, v, scale, initial_state, output_final_state):
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT = 64
@@ -280,9 +280,9 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
         ctx.save_for_backward(q, k, v, h)
         return o.to(q.dtype), final_state
 
-    @staticmethod
-    @custom_bwd
     @contiguous
+    @custom_bwd
+    @staticmethod
     def backward(ctx, do, dht=None):
         q, k, v, h = ctx.saved_tensors
 

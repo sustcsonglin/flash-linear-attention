@@ -232,8 +232,8 @@ def fused_recurrent_bwd_kernel(
 
 class FusedRecurrentFunction(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def forward(ctx, q, k, v, beta, scale=None, initial_state=None, output_final_state=False):
         B, H, T, K, V = *q.shape, v.shape[-1]
 
@@ -268,8 +268,8 @@ class FusedRecurrentFunction(torch.autograd.Function):
         ctx.scale = scale
         return o, final_state
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def backward(ctx, do, dht=None):
         q, k, v, beta, initial_state = ctx.saved_tensors
         B, H, T, K, V = *q.shape, v.shape[-1]

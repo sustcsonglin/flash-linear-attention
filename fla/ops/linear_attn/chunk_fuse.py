@@ -192,11 +192,11 @@ def fused_chunk_linear_attn_bwd_kernel(
         # [BT, BV]
         b_dv = tl.dot(b_s, b_do, allow_tf32=False)
         if CHECK and i == 1:
-            b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype),  allow_tf32=False)
+            b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), allow_tf32=False)
             b_dv += tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False)
             b_dh += tl.dot(b_q, b_do, allow_tf32=False)
         else:
-            b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype),  allow_tf32=False)
+            b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), allow_tf32=False)
             b_dv += tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False)
             b_dh += tl.dot(b_q, b_do, allow_tf32=False)
 
@@ -206,9 +206,9 @@ def fused_chunk_linear_attn_bwd_kernel(
 
 class FusedChunkLinearAttentionFunction(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
     @custom_fwd
+    @staticmethod
     def forward(ctx, q, k, v, scale, initial_state, output_final_state):
         B, H, T, K, V = *k.shape, v.shape[-1]
         BT = 64
@@ -253,9 +253,9 @@ class FusedChunkLinearAttentionFunction(torch.autograd.Function):
         ctx.CHECK = CHECK
         return o.to(q.dtype), final_state
 
-    @staticmethod
-    @custom_bwd
     @contiguous
+    @custom_bwd
+    @staticmethod
     def backward(ctx, do, dht=None):
         q, k, v, initial_state = ctx.saved_tensors
         B, H, T, K, V = *k.shape, v.shape[-1]

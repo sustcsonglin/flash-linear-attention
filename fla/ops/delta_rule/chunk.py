@@ -496,9 +496,9 @@ def chunk_bwd_dqkw_fn(q, k, v_new, w, h, du, do, dh, BT):
 
 class ChunkDeltaRuleFunction(torch.autograd.Function):
 
-    @staticmethod
-    @custom_fwd
     @contiguous
+    @custom_fwd
+    @staticmethod
     def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=1):
         # obtain WY representation. u is actually the new v.
         w, u, A = fwd_prepare_wy_repr(k, v, beta, BT)
@@ -517,9 +517,9 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
         ctx.BT = BT
         return o.to(q.dtype), final_state
 
-    @staticmethod
-    @custom_bwd
     @contiguous
+    @custom_bwd
+    @staticmethod
     def backward(ctx, do, d_ht=None):
         q, k, v, beta, A, h, v_new, initial_state = ctx.saved_tensors
         BT = ctx.BT
@@ -546,7 +546,5 @@ def chunk_delta_rule(
 ):
     assert q.dtype == k.dtype == v.dtype
     assert q.dtype != torch.float32, "FusedChunkDeltaRuleFunction does not support float32. Please use bfloat16."
-    if initial_state is not None:
-        initial_state = initial_state.detach()
-    o, final_state = ChunkDeltaRuleFunction.apply(q, k, v, beta, BT,  initial_state, output_final_state)
+    o, final_state = ChunkDeltaRuleFunction.apply(q, k, v, beta, BT, initial_state, output_final_state)
     return o, final_state

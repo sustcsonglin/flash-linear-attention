@@ -302,18 +302,19 @@ def bwd_prepare_wy_repr(k, v, beta, A, dw, du, BT):
 
 
 class WYRepresentationPrepration(torch.autograd.Function):
-    @staticmethod
+
     @contiguous
     @custom_fwd
+    @staticmethod
     def forward(ctx, k, v, beta, chunk_size):
         ctx.BT = chunk_size
-        w, u, A = fwd_prepare_wy_repr(k, v, beta,  ctx.BT)
+        w, u, A = fwd_prepare_wy_repr(k, v, beta, ctx.BT)
         ctx.save_for_backward(k, v, beta, A)
         return w, u
 
-    @staticmethod
     @contiguous
     @custom_bwd
+    @staticmethod
     def backward(ctx, dw, du):
         k, v, beta, A = ctx.saved_tensors
         BT = ctx.BT

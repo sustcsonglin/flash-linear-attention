@@ -71,7 +71,7 @@ def fwd_prepare_wy_repr_kernel(
     b_w = tl.dot(b_A, b_kb, allow_tf32=False)
     b_u = tl.dot(b_A, b_v, allow_tf32=False)
 
-    p_o = o + i_bh * T * K + (i_t * BT + tl.arange(0, BT)[:,  None]) * K + tl.arange(0, BK)[None, :]
+    p_o = o + i_bh * T * K + (i_t * BT + tl.arange(0, BT)[:, None]) * K + tl.arange(0, BK)[None, :]
     tl.store(p_o, b_w.to(p_o.dtype.element_ty), mask=mask_bk)
     p_o2 = o2 + i_bh * T * V + (i_t * BT + tl.arange(0, BT)[:, None]) * V + tl.arange(0, BV)[None, :]
     tl.store(p_o2, b_u.to(p_o2.dtype.element_ty), mask=mask_bv)
@@ -190,18 +190,18 @@ def bwd_prepare_wy_repr(k, v, beta, o_cumdecay, v_new, do, do2, chunk_size):
 
 
 class WYRepresentationPrepration(torch.autograd.Function):
-    @staticmethod
     @contiguous
     @custom_fwd
+    @staticmethod
     def forward(ctx, k, v, beta, chunk_size):
         o_cumdecay, v_new = fwd_prepare_wy_repr(k, v, beta, chunk_size)
         ctx.chunk_size = chunk_size
         ctx.save_for_backward(k.to(v), v, beta, o_cumdecay, v_new)
         return o_cumdecay, v_new
 
-    @staticmethod
     @contiguous
     @custom_bwd
+    @staticmethod
     def backward(ctx, do, do2):
         k, v, beta, o_cumdecay, v_new = ctx.saved_tensors
         dk, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, o_cumdecay, v_new, do, do2, ctx.chunk_size)

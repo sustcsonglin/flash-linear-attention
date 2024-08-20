@@ -494,8 +494,8 @@ def chunk_gla_bwd_kernel_intra(
 
 class ChunkGLAFunction(torch.autograd.Function):
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state, checkpoint_level):
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT, BC = 64, 16
@@ -580,8 +580,8 @@ class ChunkGLAFunction(torch.autograd.Function):
         ctx.checkpoint_level = checkpoint_level
         return o, final_state
 
-    @staticmethod
     @contiguous
+    @staticmethod
     def backward(ctx, do, dht=None):
         q, k, v, g, h, initial_state, A = ctx.saved_tensors
         B, H, T, K, V = *q.shape, v.shape[-1]
