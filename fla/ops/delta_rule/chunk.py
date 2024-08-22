@@ -10,8 +10,6 @@ from fla.ops.delta_rule.wy_fast import (bwd_prepare_wy_repr,
                                         fwd_prepare_wy_repr, fwd_recompute_w_u)
 from fla.ops.utils import contiguous
 
-# from fla.ops.delta_rule.utils import bwd_prepare_wy_repr
-
 
 @triton.autotune(
     configs=[
@@ -19,8 +17,7 @@ from fla.ops.utils import contiguous
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-        triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=16)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -87,8 +84,7 @@ def fwd_prepare_dv(q, k, do, BT):
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-        triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=16)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -166,8 +162,7 @@ def chunk_delta_rule_fwd_kernel_h(
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-        triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=16)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -230,8 +225,7 @@ def chunk_linear_attn_fwd_kernel_o(
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-        triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=16)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -308,8 +302,7 @@ def chunk_delta_rule_bwd_kernel_dhu(
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-        triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=16)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -496,9 +489,9 @@ def chunk_bwd_dqkw_fn(q, k, v_new, w, h, du, do, dh, BT):
 
 class ChunkDeltaRuleFunction(torch.autograd.Function):
 
+    @staticmethod
     @contiguous
     @custom_fwd
-    @staticmethod
     def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=1):
         # obtain WY representation. u is actually the new v.
         w, u, A = fwd_prepare_wy_repr(k, v, beta, BT)
@@ -517,9 +510,9 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
         ctx.BT = BT
         return o.to(q.dtype), final_state
 
+    @staticmethod
     @contiguous
     @custom_bwd
-    @staticmethod
     def backward(ctx, do, d_ht=None):
         q, k, v, beta, A, h, v_new, initial_state = ctx.saved_tensors
         BT = ctx.BT
