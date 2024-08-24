@@ -804,11 +804,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
             )
 
         # recompute cumulative log decays.
-        g_org, g, gs, dq, dk, dv, dA, du, dh, dh0 = g, torch.empty_like(g, dtype=torch.float), torch.empty_like(g, dtype=torch.float), \
-            torch.empty_like(q, dtype=torch.float), torch.empty_like(k, dtype=torch.float), \
-            v.new_empty(NK, *v.shape), torch.zeros(B, H, T, BT, dtype=torch.float, device=q.device), \
-            torch.empty_like(g), torch.zeros(B, H, NT * K, V, dtype=torch.float, device=q.device), \
-            torch.empty_like(initial_state) if initial_state is not None else None
+        g_org, g, gs = g, torch.empty_like(g, dtype=torch.float), torch.empty_like(g, dtype=torch.float)
 
         def grid(meta): return ((triton.cdiv(meta['S'], meta['BS']), NT, BH))
         # keep cummulative normalizer in fp32
@@ -819,7 +815,8 @@ class ChunkRWKV6Function(torch.autograd.Function):
             s_s_h=g.stride(1), s_s_t=g.stride(2), s_s_d=g.stride(3),
             T=T, S=K, BT=BT
         )
-        # del g_org
+        del g_org
+
         # rerun the forward pass to get h if checkpoint_level >= 1
         if ctx.checkpoint_level == 1:
             h = torch.zeros(B, H, NT * K, V, dtype=torch.float, device=q.device)
@@ -829,6 +826,12 @@ class ChunkRWKV6Function(torch.autograd.Function):
                 h0=initial_state,
                 ht=None
             )
+        dq, dk, dv, dA, dh, dh0 = torch.empty_like(q, dtype=torch.float), torch.empty_like(k, dtype=torch.float), \
+            v.new_empty(NK, *v.shape), torch.zeros(B, H, T, BT, dtype=torch.float, device=q.device), \
+            torch.zeros(B, H, NT * K, V, dtype=torch.float, device=q.device), \
+            torch.empty_like(initial_state) if initial_state is not None else None
+
+
 
         # bwd_inner
         NV = triton.cdiv(V, BV)
@@ -859,6 +862,9 @@ class ChunkRWKV6Function(torch.autograd.Function):
             k.stride(1), k.stride(2), k.stride(3),
             T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC,
         )
+
+        du = g
+        del g, gs, dA, A, dh
 
         # TODO: fuse?
         dg = torch.nn.functional.pad((dq * q)[:, :, 1:] - (dk * k)[:, :, 0:-1], (0, 0, 0, 1, 0, 0, 0, 0), value=0)
