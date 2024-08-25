@@ -6,9 +6,8 @@ from typing import Optional
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.utils import contiguous
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 # Based: An Educational and Effective Sequence Mixer
 # https://hazyresearch.stanford.edu/blog/2023-12-11-zoology2-based
@@ -314,7 +313,7 @@ class ParallelBasedFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_fwd
+    @autocast_custom_fwd
     def forward(ctx, q, k, v, scale):
         BTL, BTS = 128, 32
         assert BTL % BTS == 0
@@ -349,7 +348,7 @@ class ParallelBasedFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd
+    @autocast_custom_bwd
     def backward(ctx, do, dz):
         q, k, v = ctx.saved_tensors
         scale = ctx.scale

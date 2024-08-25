@@ -6,9 +6,8 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.utils import contiguous
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 @triton.autotune(
@@ -375,7 +374,7 @@ class ChunkRetentionFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_fwd
+    @autocast_custom_fwd
     def forward(ctx, q, k, v, initial_state, output_final_state, scale, checkpoint_level):
         BT = 64
         h, final_state = chunk_fwd_h_fn(k, v, BT, initial_state, output_final_state)
@@ -388,7 +387,7 @@ class ChunkRetentionFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd
+    @autocast_custom_bwd
     def backward(ctx, do, d_ht=None):
         BT, scale = ctx.BT, ctx.scale
         q, k, v, h, initial_state = ctx.saved_tensors

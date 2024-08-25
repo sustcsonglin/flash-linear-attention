@@ -7,10 +7,9 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
 from fla.ops.utils import chunk_global_reversed_cumsum
-from fla.utils import contiguous
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 @triton.jit
@@ -239,7 +238,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_fwd
+    @autocast_custom_fwd
     def forward(ctx, r, k, v, w, u, scale=None, initial_state=None, output_final_state=False, reverse=False):
         q = r
         B, H, T, K, V = *q.shape, v.shape[-1]
@@ -274,7 +273,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd
+    @autocast_custom_bwd
     def backward(ctx, do, dht=None):
         q, k, v, w, u, initial_state = ctx.saved_tensors
         B, H, T, K, V = *q.shape, v.shape[-1]

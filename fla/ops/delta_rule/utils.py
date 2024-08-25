@@ -4,10 +4,9 @@ import torch
 import triton
 import triton.language as tl
 from einops import rearrange
-from torch.cuda.amp import custom_bwd, custom_fwd
 
 from fla.ops.delta_rule.wy_fast import prepare_wy_repr as prepare_wy_repr2
-from fla.utils import contiguous
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 # Inspired by "THE WY REPRESENTATION FOR PRODUCTS OF HOUSEHOLDER MATRICES" https://epubs.siam.org/doi/pdf/10.1137/0908009
@@ -191,7 +190,7 @@ def bwd_prepare_wy_repr(k, v, beta, o_cumdecay, v_new, do, do2, chunk_size):
 
 class WYRepresentationPrepration(torch.autograd.Function):
     @contiguous
-    @custom_fwd
+    @autocast_custom_fwd
     @staticmethod
     def forward(ctx, k, v, beta, chunk_size):
         o_cumdecay, v_new = fwd_prepare_wy_repr(k, v, beta, chunk_size)
@@ -200,7 +199,7 @@ class WYRepresentationPrepration(torch.autograd.Function):
         return o_cumdecay, v_new
 
     @contiguous
-    @custom_bwd
+    @autocast_custom_bwd
     @staticmethod
     def backward(ctx, do, do2):
         k, v, beta, o_cumdecay, v_new = ctx.saved_tensors

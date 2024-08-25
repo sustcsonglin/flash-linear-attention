@@ -4,9 +4,8 @@
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.utils import contiguous
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 @triton.jit
@@ -290,7 +289,7 @@ class ParallelRetentionFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_fwd
+    @autocast_custom_fwd
     def forward(ctx, q, k, v):
         BTL, BTS = 128, 32
         assert BTL % BTS == 0
@@ -319,7 +318,7 @@ class ParallelRetentionFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd
+    @autocast_custom_bwd
     def backward(ctx, do):
         q, k, v = ctx.saved_tensors
         BTL, BTS = 64, 32

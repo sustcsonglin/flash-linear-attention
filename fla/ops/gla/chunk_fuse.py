@@ -12,11 +12,10 @@ import triton
 import triton.language as tl
 from einops import rearrange
 from packaging import version
-from torch.cuda.amp import custom_bwd, custom_fwd
 
 from fla.ops.gla.chunk_util import (bwd_decay_global_cumsum, fwd_decay_cumsum,
                                     prepare_qg_kg)
-from fla.utils import contiguous
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 @triton.jit
@@ -304,7 +303,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_fwd
+    @autocast_custom_fwd
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state):
         ctx.g_dtype = g.dtype
         g_original = g
@@ -396,7 +395,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd
+    @autocast_custom_bwd
     def backward(ctx, do, dht=None):
         q, k, v, g_origin, A, initial_state = ctx.saved_tensors
         B, H, T, K, V = *k.shape, v.shape[-1]

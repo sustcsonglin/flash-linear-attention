@@ -3,6 +3,7 @@
 import functools
 
 import torch
+from packaging import version
 
 
 def contiguous(fn):
@@ -31,3 +32,11 @@ def checkpoint(func):
     def wrapper(*args, **kwargs):
         return torch.utils.checkpoint.checkpoint(func, *args, **kwargs)
     return wrapper
+
+
+if version.parse(torch.__version__) >= version.parse("2.4"):
+    autocast_custom_fwd = functools.partial(torch.amp.custom_fwd, device_type="cuda")
+    autocast_custom_bwd = functools.partial(torch.amp.custom_bwd, device_type="cuda")
+else:
+    autocast_custom_fwd = torch.cuda.amp.custom_fwd
+    autocast_custom_bwd = torch.cuda.amp.custom_bwd
