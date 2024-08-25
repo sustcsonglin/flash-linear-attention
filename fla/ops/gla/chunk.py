@@ -8,46 +8,8 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.utils import chunk_reversed_cumsum_fwd
+from fla.ops.utils import chunk_global_reversed_cumsum, chunk_local_cumsum
 from fla.utils import contiguous
-
-
-@triton.autotune(
-    configs=[
-        triton.Config({'BS': 16}, num_warps=2),
-        triton.Config({'BS': 16}, num_warps=4),
-        triton.Config({'BS': 16}, num_warps=8),
-        triton.Config({'BS': 32}, num_warps=2),
-        triton.Config({'BS': 32}, num_warps=4),
-        triton.Config({'BS': 32}, num_warps=8),
-        triton.Config({'BS': 64}, num_warps=2),
-        triton.Config({'BS': 64}, num_warps=4),
-        triton.Config({'BS': 64}, num_warps=8),
-    ],
-    key=['S']
-)
-@triton.jit
-def chunk_gla_fwd_kernel_cum(
-    s,
-    o,
-    s_s_h,
-    s_s_t,
-    s_s_d,
-    T: tl.constexpr,
-    S: tl.constexpr,
-    BT: tl.constexpr,
-    BS: tl.constexpr
-):
-    i_s, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    o_i = tl.arange(0, BT)
-    m_s = tl.where(o_i[:, None] >= o_i[None, :], 1., 0.)
-
-    p_s = tl.make_block_ptr(s + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-    p_o = tl.make_block_ptr(o + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-    # [BT, BS]
-    b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
-    b_o = tl.dot(m_s, b_s, allow_tf32=False)
-    tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -528,16 +490,9 @@ class ChunkGLAFunction(torch.autograd.Function):
         if output_final_state:
             final_state = q.new_empty(B, H, K, V, dtype=torch.float)
 
-        g_org, g = g, torch.empty_like(g, dtype=torch.float)
-        def grid(meta): return ((triton.cdiv(meta['S'], meta['BS']), NT, B * H))
-        # keep cummulative normalizer in fp32
-        # this kernel is equivalent to
-        # g = g.view(B, H, NT, BT, -1).cumsum(-2).view(B, H, T, -1)
-        chunk_gla_fwd_kernel_cum[grid](
-            g_org, g,
-            g.stride(1), g.stride(2), g.stride(3),
-            T=T, S=K, BT=BT
-        )
+        g_cumsum = chunk_local_cumsum(g, BT=BT)
+        g_org, g = g, g_cumsum
+
         h = fwd_inner(
             q=q, k=k, v=v, g=g,
             B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
@@ -627,17 +582,8 @@ class ChunkGLAFunction(torch.autograd.Function):
             return dh
 
         if ctx.checkpoint_level >= 1:
-            # save the original g and compute its fp32 cumsum during the backward pass for memory consideration
-            g_org, g = g, torch.zeros_like(g, dtype=torch.float)
-            def grid(meta): return ((triton.cdiv(meta['S'], meta['BS']), NT, B * H))
-            # keep cummulative normalizer in fp32
-            # this kernel is equivalent to
-            # g = g.view(B, H, NT, BT, -1).cumsum(-2).view(B, H, T, -1)
-            chunk_gla_fwd_kernel_cum[grid](
-                g_org, g,
-                g.stride(1), g.stride(2), g.stride(3),
-                T=T, S=K, BT=BT
-            )
+            g_cumsum = chunk_local_cumsum(g, BT=BT)
+            g_org, g = g, g_cumsum
 
         # rerun the forward pass to get h if checkpoint_level >= 1
         if ctx.checkpoint_level > 1:
@@ -679,15 +625,13 @@ class ChunkGLAFunction(torch.autograd.Function):
             num_warps=num_warps,
             num_stages=num_stages
         )
-
         dq = dq.to(q.dtype)
         dk = dk.to(q.dtype)
         # reversed cumsum, equivalent to:
-        #
         # def reversed_cumsum(x, dim=-1):
         #     c = x.cumsum(dim)
         #     return x + c.index_select(dim, x.new_tensor([c.shape[dim]-1], dtype=torch.long)) - c
-        dg = chunk_reversed_cumsum_fwd(dg).to(k.dtype)
+        dg = chunk_global_reversed_cumsum(dg).to(k.dtype)
         return dq, dk, dv, dg, None, None, None, None
 
 
