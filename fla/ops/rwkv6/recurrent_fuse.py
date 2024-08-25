@@ -2,8 +2,6 @@
 
 # Copyright (c) 2024, Songlin Yang
 
-from fla.utils import contiguous
-from fla.ops.utils import chunk_reversed_cumsum_fwd
 from typing import Tuple
 
 import torch
@@ -12,6 +10,9 @@ import triton.language as tl
 from fla.utils import custom_fwd_wrapper, custom_bwd_wrapper
 from fla.utils import get_available_device
 device = get_available_device()
+from fla.ops.utils import chunk_global_reversed_cumsum
+from fla.utils import contiguous
+
 
 
 @triton.autotune(
@@ -346,7 +347,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
 
         dw = (dq_aux * q * scale)[:, :, 1:] - (dk_aux * k)[:, :, 0:-1]
         dw = torch.nn.functional.pad(dw, (0, 0, 0, 1, 0, 0, 0, 0), value=0)
-        dw = chunk_reversed_cumsum_fwd(dw).to(w)
+        dw = chunk_global_reversed_cumsum(dw).to(w)
 
         du = ((do * v).sum(-1)[..., None] * k * q * scale).sum([0, -2]).to(u)
         return dq, dk, dv, dw, du, None, dh0, None, None, None

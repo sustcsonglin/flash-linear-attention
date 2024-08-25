@@ -8,7 +8,7 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.utils import chunk_reversed_cumsum_fwd
+from fla.ops.utils import chunk_global_reversed_cumsum
 from fla.utils import contiguous, device_capacity
 
 
@@ -867,8 +867,9 @@ class ChunkRWKV6Function(torch.autograd.Function):
         del g, gs, dA, A, dh
 
         # TODO: fuse?
-        dg = torch.nn.functional.pad((dq * q)[:, :, 1:] - (dk * k)[:, :, 0:-1], (0, 0, 0, 1, 0, 0, 0, 0), value=0)
-        dg = chunk_reversed_cumsum_fwd(dg)
+        dg = (dq * q)[:, :, 1:] - (dk * k)[:, :, 0:-1]
+        dg = torch.nn.functional.pad(dg, (0, 0, 0, 1, 0, 0, 0, 0), value=0)
+        dg = chunk_global_reversed_cumsum(dg).to(g)
         # equivalent to the following pytorch code.
         # du = ((do * v).sum(-1)[..., None] * k * q * scale).sum(-2).to(u)
         # dq += ((do * v).sum(-1)[..., None] * k * scale * u[:, :, None, :])
