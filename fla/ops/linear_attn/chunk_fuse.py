@@ -206,9 +206,9 @@ def fused_chunk_linear_attn_bwd_kernel(
 
 class FusedChunkLinearAttentionFunction(torch.autograd.Function):
 
+    @staticmethod
     @contiguous
     @custom_fwd
-    @staticmethod
     def forward(ctx, q, k, v, scale, initial_state, output_final_state):
         B, H, T, K, V = *k.shape, v.shape[-1]
         BT = 64
@@ -253,9 +253,9 @@ class FusedChunkLinearAttentionFunction(torch.autograd.Function):
         ctx.CHECK = CHECK
         return o.to(q.dtype), final_state
 
+    @staticmethod
     @contiguous
     @custom_bwd
-    @staticmethod
     def backward(ctx, do, dht=None):
         q, k, v, initial_state = ctx.saved_tensors
         B, H, T, K, V = *k.shape, v.shape[-1]

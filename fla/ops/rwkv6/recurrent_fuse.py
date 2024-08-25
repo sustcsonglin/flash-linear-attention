@@ -237,9 +237,9 @@ def fused_recurrent_rwkv6_bwd_kernel_dkv(
 
 class FusedRecurrentRWKV6Function(torch.autograd.Function):
 
+    @staticmethod
     @contiguous
     @custom_fwd
-    @staticmethod
     def forward(ctx, r, k, v, w, u, scale=None, initial_state=None, output_final_state=False, reverse=False):
         q = r
         B, H, T, K, V = *q.shape, v.shape[-1]
@@ -272,9 +272,9 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
         ctx.reverse = reverse
         return o.to(q.dtype), final_state
 
+    @staticmethod
     @contiguous
     @custom_bwd
-    @staticmethod
     def backward(ctx, do, dht=None):
         q, k, v, w, u, initial_state = ctx.saved_tensors
         B, H, T, K, V = *q.shape, v.shape[-1]

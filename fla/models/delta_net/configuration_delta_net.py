@@ -25,7 +25,7 @@ class DeltaNetConfig(PretrainedConfig):
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
         num_heads: int = 16,
-        attn_mode: str = "fused_chunk",
+        attn_mode: str = "chunk",
         qk_norm: str = 'l2',
         qk_activation: str = 'silu',
         hidden_act: str = "swish",

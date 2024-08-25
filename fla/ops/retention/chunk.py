@@ -373,9 +373,9 @@ def chunk_bwd_dqkv_fn(do, q, k, v, h, dh, scale):
 
 class ChunkRetentionFunction(torch.autograd.Function):
 
+    @staticmethod
     @contiguous
     @custom_fwd
-    @staticmethod
     def forward(ctx, q, k, v, initial_state, output_final_state, scale, checkpoint_level):
         BT = 64
         h, final_state = chunk_fwd_h_fn(k, v, BT, initial_state, output_final_state)
@@ -386,9 +386,9 @@ class ChunkRetentionFunction(torch.autograd.Function):
         ctx.BT, ctx.scale = BT, scale
         return o.to(q.dtype), final_state
 
+    @staticmethod
     @contiguous
     @custom_bwd
-    @staticmethod
     def backward(ctx, do, d_ht=None):
         BT, scale = ctx.BT, ctx.scale
         q, k, v, h, initial_state = ctx.saved_tensors

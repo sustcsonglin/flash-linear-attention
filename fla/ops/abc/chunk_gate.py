@@ -1209,8 +1209,8 @@ def bwd_k(q, k, v, g, h, o, do, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
 
 class ChunkGatedABCFunction(torch.autograd.Function):
 
-    @contiguous
     @staticmethod
+    @contiguous
     def forward(ctx, q, k, v, s, g, scale, hk0, hv0, output_final_state, checkpoint_level):
         B, H, T, K, V, M = *k.shape, v.shape[-1], s.shape[-1]
         BT, BC = 64, 16
@@ -1267,8 +1267,8 @@ class ChunkGatedABCFunction(torch.autograd.Function):
         ctx.BT = BT
         return ov, (hkt, hvt)
 
-    @contiguous
     @staticmethod
+    @contiguous
     def backward(ctx, dov, dht=None):
         q, k, v, s, g, ok, p, hk, hv, Av, hk0, hv0 = ctx.saved_tensors
         qv = p.to(q.dtype)

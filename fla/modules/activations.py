@@ -130,8 +130,8 @@ def logsigmoid_bwd_kernel(
 
 class LogSigmoidFunction(torch.autograd.Function):
 
-    @contiguous
     @staticmethod
+    @contiguous
     def forward(ctx, x):
         T, D = x.numel(), x.shape[-1]
         y = torch.empty_like(x)
@@ -139,8 +139,8 @@ class LogSigmoidFunction(torch.autograd.Function):
         ctx.save_for_backward(x,)
         return y
 
-    @contiguous
     @staticmethod
+    @contiguous
     def backward(ctx, dy):
         x, = ctx.saved_tensors
         T, D = x.numel(), x.shape[-1]

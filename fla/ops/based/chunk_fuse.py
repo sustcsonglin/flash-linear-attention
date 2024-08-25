@@ -303,9 +303,9 @@ def fused_chunk_based_bwd_kernel(
 
 class FusedChunkBasedFunction(torch.autograd.Function):
 
+    @staticmethod
     @contiguous
     @custom_fwd
-    @staticmethod
     def forward(ctx, q, k, v, scale=1):
         B, H, T, K, V = *k.shape, v.shape[-1]
 
@@ -336,9 +336,9 @@ class FusedChunkBasedFunction(torch.autograd.Function):
         ctx.scale = scale
         return o.to(q.dtype), z.to(z.dtype)
 
+    @staticmethod
     @contiguous
     @custom_bwd
-    @staticmethod
     def backward(ctx, do, dz):
         q, k, v = ctx.saved_tensors
         B, H, T, K, V = *k.shape, v.shape[-1]

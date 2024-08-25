@@ -257,9 +257,9 @@ def chunk_simple_gla_bwd_kernel_dqkv(
 
 class SimpleGLAFunction(torch.autograd.Function):
 
+    @staticmethod
     @contiguous
     @custom_fwd
-    @staticmethod
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state):
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT = 64
@@ -306,10 +306,10 @@ class SimpleGLAFunction(torch.autograd.Function):
         ctx.save_for_backward(q, k, v, h, g)
         ctx.scale = scale
         return o.to(q.dtype), final_state
-
+    
+    @staticmethod
     @contiguous
     @custom_bwd
-    @staticmethod
     def backward(ctx, do, dht=None):
         q, k, v, h, g = ctx.saved_tensors
 

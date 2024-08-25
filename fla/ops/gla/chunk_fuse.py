@@ -302,9 +302,9 @@ def bwd_inner_chunk(
 
 class FusedChunkGLAFunction(torch.autograd.Function):
 
+    @staticmethod
     @contiguous
     @custom_fwd
-    @staticmethod
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state):
         ctx.g_dtype = g.dtype
         g_original = g
@@ -394,9 +394,9 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         ctx.CHECK = CHECK
         return o.to(v), final_state
 
+    @staticmethod
     @contiguous
     @custom_bwd
-    @staticmethod
     def backward(ctx, do, dht=None):
         q, k, v, g_origin, A, initial_state = ctx.saved_tensors
         B, H, T, K, V = *k.shape, v.shape[-1]

@@ -288,9 +288,9 @@ def parallel_retention_bwd_kernel(
 
 class ParallelRetentionFunction(torch.autograd.Function):
 
+    @staticmethod
     @contiguous
     @custom_fwd
-    @staticmethod
     def forward(ctx, q, k, v):
         BTL, BTS = 128, 32
         assert BTL % BTS == 0
@@ -317,9 +317,9 @@ class ParallelRetentionFunction(torch.autograd.Function):
         ctx.save_for_backward(q, k, v)
         return o.sum(0).to(q.dtype)
 
+    @staticmethod
     @contiguous
     @custom_bwd
-    @staticmethod
     def backward(ctx, do):
         q, k, v = ctx.saved_tensors
         BTL, BTS = 64, 32

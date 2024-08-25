@@ -325,9 +325,9 @@ def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
 
 class FusedChunkDeltaRuleFunction(torch.autograd.Function):
 
+    @staticmethod
     @contiguous
     @custom_fwd
-    @staticmethod
     def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=0):
         # lvl=1 will recompute ``fwd_prepare_wy_repr`` for saving memory.
         assert checkpoint_level in [0, 1]
@@ -343,9 +343,9 @@ class FusedChunkDeltaRuleFunction(torch.autograd.Function):
         ctx.chunk_size = BT
         return o.to(q.dtype), final_state
 
+    @staticmethod
     @contiguous
     @custom_bwd
-    @staticmethod
     def backward(ctx, do, d_final_state=None):
         q, k_origin, v, v_new, v_new2, d, beta, initial_state = ctx.saved_tensors
         chunk_size = ctx.chunk_size

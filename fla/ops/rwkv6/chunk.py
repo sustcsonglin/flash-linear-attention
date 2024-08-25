@@ -586,8 +586,8 @@ def chunk_rwkv6_bwd_kernel_intra(
 
 class ChunkRWKV6Function(torch.autograd.Function):
 
-    @contiguous
     @staticmethod
+    @contiguous
     def forward(ctx, r, k, v, g, u, scale, initial_state, output_final_state, checkpoint_level):
         q = r  # alias
         B, H, T, K, V = *q.shape, v.shape[-1]
@@ -674,8 +674,8 @@ class ChunkRWKV6Function(torch.autograd.Function):
         ctx.checkpoint_level = checkpoint_level
         return o, final_state
 
-    @contiguous
     @staticmethod
+    @contiguous
     def backward(ctx, do, dht=None):
         q, k, v, g, u, h, initial_state, A = ctx.saved_tensors
         B, H, T, K, V = *q.shape, v.shape[-1]

@@ -337,9 +337,9 @@ def parallel_rebased_bwd_kernel(
 
 class ParallelBasedFunction(torch.autograd.Function):
 
+    @staticmethod
     @contiguous
     @custom_fwd
-    @staticmethod
     def forward(ctx, q, k, v, scale):
         BTL, BTS = 128, 32
         assert BTL % BTS == 0
@@ -372,9 +372,9 @@ class ParallelBasedFunction(torch.autograd.Function):
         ctx.scale = scale
         return o.sum(0).to(q.dtype), z.sum(0).to(q.dtype)
 
+    @staticmethod
     @contiguous
     @custom_bwd
-    @staticmethod
     def backward(ctx, do, dz):
         q, k, v = ctx.saved_tensors
         scale = ctx.scale
