@@ -7,11 +7,9 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
-from fla.utils import custom_fwd_wrapper, custom_bwd_wrapper
-from fla.utils import get_available_device
-device = get_available_device()
 
-from fla.utils import contiguous
+
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
 
 # on-the-fly computation without materializing hidden statets into HBMs
 
@@ -225,7 +223,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_fwd_wrapper(device_type=device)
+    @autocast_custom_fwd(device_type=device)
     def forward(ctx, q, k, v, gk, gv, scale=None, initial_state=None, output_final_state=False, reverse=False):
         B, H, T, K, V = *q.shape, v.shape[-1]
         # default scale
@@ -272,7 +270,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd_wrapper(device_type=device)
+    @autocast_custom_bwd(device_type=device)
     def backward(ctx, do, dht=None):
         q, k, v, gk, gv, initial_state, o = ctx.saved_tensors
         batch_size, n_heads, seq_len, K = q.shape
@@ -284,8 +282,8 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
         num_stages = 1
         num_warps = 1
 
-        dq = q.new_empty(NV, batch_size, n_heads,  seq_len, K, dtype=torch.float32)
-        dk = q.new_empty(NV, batch_size, n_heads,  seq_len, K, dtype=torch.float32)
+        dq = q.new_empty(NV, batch_size, n_heads, seq_len, K, dtype=torch.float32)
+        dk = q.new_empty(NV, batch_size, n_heads, seq_len, K, dtype=torch.float32)
         dv = q.new_empty(NK, batch_size, n_heads, seq_len, V, dtype=torch.float32)
         dh0 = torch.empty_like(initial_state)if initial_state is not None else None
         grid = (NV, NK, batch_size * n_heads)

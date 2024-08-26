@@ -1,0 +1,7 @@
+contact_links:
+  - name: 🤗 FLA Hub
+    url: https://huggingface.co/fla-hub
+    about: For questions or issues related to released models, datasets, or other resources, please open an issue on our Hugging Face hub.
+  - name: 💬 Discord Forum
+    url: https://discord.gg/vDaJTmKNcS
+    about: Join our Discord community to ask questions, get support, share ideas, and interact with other members. This is the best place for general discussions and quick queries.

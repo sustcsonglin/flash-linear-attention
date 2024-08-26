@@ -63,7 +63,7 @@ def _l2_norm_fwd_1pass_kernel(
 @triton.jit
 def _l2_norm_bwd_kernel(
     X,  # pointer to the input
-    # Y,  # pointer to the output to be recomputed
+    # Y, # pointer to the output to be recomputed
     DY,  # pointer to the output gradient
     DX,  # pointer to the input gradient
     stride_x_row,  # how much to increase the pointer when moving by 1 row

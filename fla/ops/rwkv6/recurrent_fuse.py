@@ -7,11 +7,9 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
-from fla.utils import custom_fwd_wrapper, custom_bwd_wrapper
-from fla.utils import get_available_device
-device = get_available_device()
+
 from fla.ops.utils import chunk_global_reversed_cumsum
-from fla.utils import contiguous
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
 
 
 
@@ -120,10 +118,10 @@ def fused_recurrent_rwkv6_bwd_kernel_dq(
     B: tl.constexpr,  # B
     H: tl.constexpr,  # H
     T: tl.constexpr,  # T
-    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
-    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     K: tl.constexpr,  # K
     V: tl.constexpr,  # V
+    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
+    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
     REVERSE: tl.constexpr,  # whether to do autoregressive modeling in the reverse direction
 ):
@@ -191,13 +189,13 @@ def fused_recurrent_rwkv6_bwd_kernel_dkv(
     s_v_h,  # stride size: T * V
 
     scale,  # K ** -0.5
-    B,  # B
-    H,  # H
-    T,  # T
-    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
-    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
+    B: tl.constexpr,  # B
+    H: tl.constexpr,  # H
+    T: tl.constexpr,  # T
     K: tl.constexpr,  # K
     V: tl.constexpr,  # V
+    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
+    BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
     REVERSE: tl.constexpr,  # whether to do autoregressive modeling in the reverse direction
 ):
@@ -254,7 +252,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_fwd_wrapper(device_type=device)
+    @autocast_custom_fwd(device_type=device)
     def forward(ctx, r, k, v, w, u, scale=None, initial_state=None, output_final_state=False, reverse=False, training=True):
         # alias
         q = r
@@ -263,10 +261,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
         BK, BV = min(triton.next_power_of_2(K), 32), min(triton.next_power_of_2(V), 32)
         NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
 
-        if output_final_state:
-            final_state = q.new_empty(B, H, K, V)
-        else:
-            final_state = None
+        final_state = q.new_empty(B, H, K, V) if output_final_state else None
 
         o = q.new_empty(NK, B, H, T, V, dtype=torch.float32)
         grid = (NV, NK, B * H)
@@ -294,7 +289,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd_wrapper(device_type=device)
+    @autocast_custom_bwd(device_type=device)
     def backward(ctx, do, d_final_state=None):
         q, k, v, w, u, initial_state, o = ctx.saved_tensors
         B, H, T, K, V = *q.shape, v.shape[-1]
@@ -314,10 +309,10 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
             v.stride(1),
             scale,
             B=B, H=H, T=T, K=K, V=V, BK=BK, BV=BV,
-            num_warps=num_warps,
-            num_stages=num_stages,
             USE_INITIAL_STATE=initial_state is not None,
             REVERSE=ctx.reverse,
+            num_warps=num_warps,
+            num_stages=num_stages
         )
         dq = dq.sum(0).to(q)
         dq_aux = dq_aux.sum(0)

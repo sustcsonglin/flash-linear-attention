@@ -8,7 +8,8 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.utils import (logcumsumexp_fwd_kernel, softmax_bwd_kernel, softmax_fwd_kernel)
+from fla.ops.utils import (logcumsumexp_fwd_kernel, softmax_bwd_kernel,
+                           softmax_fwd_kernel)
 from fla.utils import contiguous
 
 
@@ -1187,7 +1188,5 @@ def chunk_abc(
     initial_state: Optional[Tuple[torch.Tensor]] = None,
     output_final_state: Optional[bool] = False
 ) -> Tuple[torch.Tensor, Tuple[torch.Tensor]]:
-    if initial_state is not None:
-        initial_state = tuple(i.detach() for i in initial_state)
     ov, final_state = ChunkABCFunction.apply(q, k, v, s, initial_state, output_final_state)
     return ov, final_state

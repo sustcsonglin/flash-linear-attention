@@ -245,8 +245,8 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
         num_stages = 1
         num_warps = 1
 
-        dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-        dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
+        dq = q.new_empty(NV, batch_size, n_heads, seq_len, d_head_qk)
+        dk = q.new_empty(NV, batch_size, n_heads, seq_len, d_head_qk)
         dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
         grid = (NV, NK, batch_size * n_heads)
 

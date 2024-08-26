@@ -869,7 +869,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
         # TODO: fuse?
         dg = (dq * q)[:, :, 1:] - (dk * k)[:, :, 0:-1]
         dg = torch.nn.functional.pad(dg, (0, 0, 0, 1, 0, 0, 0, 0), value=0)
-        dg = chunk_global_reversed_cumsum(dg).to(g)
+        dg = chunk_global_reversed_cumsum(dg)
         # equivalent to the following pytorch code.
         # du = ((do * v).sum(-1)[..., None] * k * q * scale).sum(-2).to(u)
         # dq += ((do * v).sum(-1)[..., None] * k * scale * u[:, :, None, :])
