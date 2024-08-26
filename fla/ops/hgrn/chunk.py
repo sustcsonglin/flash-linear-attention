@@ -213,7 +213,7 @@ def chunk_hgrn_bwd_kernel_o(
         b_gc = tl.load(p_gc, boundary_check=(0, 1)).to(tl.float32)
         b_o = tl.load(p_o, boundary_check=(0, 1)).to(tl.float32)
         b_dx = tl.load(p_dx, boundary_check=(0, 1)).to(tl.float32)
-        b_dg = tl.load(p_dg, boundary_check=(0, 1)).to(tl.float32)
+
         b_dx = b_dx + tl.exp(b_gc) * b_ht[None, :]
         b_dg = b_o * b_dx * tl.exp(b_g)
         tl.store(p_dx, b_dx.to(p_dx.dtype.element_ty), boundary_check=(0, 1))
@@ -234,16 +234,14 @@ class ChunkHGRNFunction(torch.autograd.Function):
         def grid(meta): return (triton.cdiv(D, meta['BD']), triton.cdiv(T, meta['BT']), B * H)
         chunk_hgrn_fwd_kernel_h[grid](
             x, g, gc, o, initial_state,
-            T, D,
-            BT=BT,
+            T=T, D=D, BT=BT,
             USE_INITIAL_STATE=initial_state is not None
         )
         def grid(meta): return (triton.cdiv(D, meta['BD']), B * H)
         chunk_hgrn_fwd_kernel_o[grid](
             gc, o,
             o.stride(1), o.stride(2), o.stride(3),
-            T, D,
-            BT=BT, BD=BD,
+            T=T, D=D, BT=BT, BD=BD,
             num_warps=num_warps
         )
         final_state = None
@@ -266,17 +264,15 @@ class ChunkHGRNFunction(torch.autograd.Function):
         def grid(meta): return (triton.cdiv(D, meta['BD']), triton.cdiv(T, meta['BT']), B * H)
         chunk_hgrn_bwd_kernel_h[grid](
             g, gc, dx, do,
-            T, D,
-            BT=BT
+            T=T, D=D, BT=BT
         )
 
-        dg = torch.empty_like(g)
+        dg = torch.empty_like(g, dtype=torch.float)
         def grid(meta): return (triton.cdiv(D, meta['BD']), B * H)
         chunk_hgrn_bwd_kernel_o[grid](
             g, gc, o, dx, dg,
             o.stride(1), o.stride(2), o.stride(3),
-            T, D,
-            BT=BT, BD=BD,
+            T=T, D=D, BT=BT, BD=BD,
             num_warps=num_warps
         )
         if initial_state is not None:

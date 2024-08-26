@@ -105,23 +105,23 @@ def check_compute_capacity(device):
     else:
         return False
 
-
-device_capacity = check_compute_capacity(get_available_device())
+device = get_available_device()
+device_capacity = check_compute_capacity(device)
 
 
 if version.parse(torch.__version__) >= version.parse('2.4'):
     from torch.amp import custom_fwd, custom_bwd
 
-    def custom_fwd_wrapper(**kwargs):
+    def autocast_custom_fwd(**kwargs):
         return custom_fwd(**kwargs)
 
-    def custom_bwd_wrapper(**kwargs):
+    def autocast_custom_bwd(**kwargs):
         return custom_bwd(**kwargs)
 
 else:
     from torch.cuda.amp import custom_fwd, custom_bwd
 
-    def custom_fwd_wrapper(**decorator_kwargs):
+    def autocast_custom_fwd(**decorator_kwargs):
         def decorator(func):
             @functools.wraps(func)
             def wrapper(*args, **func_kwargs):
@@ -131,7 +131,7 @@ else:
             return wrapper
         return decorator
 
-    def custom_bwd_wrapper(**decorator_kwargs):
+    def autocast_custom_bwd(**decorator_kwargs):
         def decorator(func):
             @functools.wraps(func)
             def wrapper(*args, **func_kwargs):

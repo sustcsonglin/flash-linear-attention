@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023, Yu Zhang, Songlin Yang
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.utils import contiguous
+
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
 
 
 @torch.jit.script
@@ -25,8 +25,8 @@ def chunk_linear_attn_fwd_kernel_h(
     k,
     v,
     h,
-    initial_state,  # initial state of the chunk [B, H, D_head_K, D_head_V]
-    final_state,  # final state of the chunk [B, H, D_head_K, D_head_V]
+    h0,
+    ht,
     s_qk_h,
     s_qk_t,
     s_qk_d,
@@ -35,7 +35,6 @@ def chunk_linear_attn_fwd_kernel_h(
     s_vo_d,
     s_h_h,
     s_h_t,
-    H: tl.constexpr,
     T: tl.constexpr,
     K: tl.constexpr,
     V: tl.constexpr,
@@ -52,7 +51,7 @@ def chunk_linear_attn_fwd_kernel_h(
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
 
     if USE_INITIAL_STATE:
-        p_h0 = tl.make_block_ptr(initial_state + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_h0 = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_h = tl.load(p_h0, boundary_check=(0, 1)).to(tl.float32)
 
     for i_t in range(NT):
@@ -69,7 +68,7 @@ def chunk_linear_attn_fwd_kernel_h(
         b_h += tl.dot(b_k, b_v, allow_tf32=False)
 
     if STORE_FINAL_STATE:
-        p_ht = tl.make_block_ptr(final_state + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_ht = tl.make_block_ptr(ht + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
 
 
@@ -89,7 +88,6 @@ def chunk_linear_attn_fwd_kernel_o(
     s_h_h,
     s_h_t,
     scale,
-    H: tl.constexpr,
     T: tl.constexpr,
     K: tl.constexpr,
     V: tl.constexpr,
@@ -116,12 +114,14 @@ def chunk_linear_attn_fwd_kernel_o(
         b_h = tl.load(p_h, boundary_check=(0, 1))
         b_o += tl.dot(b_q, b_h, allow_tf32=False)
         b_s += tl.dot(b_q, b_k, allow_tf32=False)
-
     b_s = tl.where(m_s, b_s, 0)
+
     p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+
     b_v = tl.load(p_v, boundary_check=(0, 1))
     b_o = (b_o + tl.dot(b_s.to(b_v.dtype), b_v, allow_tf32=False)) * scale
-    p_o = tl.make_block_ptr(o + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
@@ -139,7 +139,6 @@ def chunk_linear_attn_bwd_kernel_dh(
     s_h_h,
     s_h_t,
     scale,
-    H: tl.constexpr,
     T: tl.constexpr,
     K: tl.constexpr,
     V: tl.constexpr,
@@ -187,7 +186,6 @@ def chunk_linear_attn_bwd_kernel_dqkv(
     s_h_h,
     s_h_t,
     scale,
-    H: tl.constexpr,
     T: tl.constexpr,
     K: tl.constexpr,
     V: tl.constexpr,
@@ -247,8 +245,8 @@ def chunk_linear_attn_bwd_kernel_dqkv(
 class ChunkLinearAttentionFunction(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd
     @contiguous
+    @autocast_custom_fwd(device_type=device)
     def forward(ctx, q, k, v, scale, initial_state, output_final_state):
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT = 64
@@ -269,7 +267,7 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             h.stride(1), h.stride(2),
-            H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
+            T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             USE_INITIAL_STATE=initial_state is not None,
             STORE_FINAL_STATE=output_final_state,
             num_warps=num_warps,
@@ -283,18 +281,17 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
             v.stride(1), v.stride(2), v.stride(3),
             h.stride(1), h.stride(2),
             scale,
-            H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+            T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages
         )
-
         ctx.save_for_backward(q, k, v, h)
         return o.to(q.dtype), final_state
 
     @staticmethod
-    @custom_bwd
     @contiguous
-    def backward(ctx, do, d_ht=None):
+    @autocast_custom_bwd(device_type=device)
+    def backward(ctx, do, dht=None):
         q, k, v, h = ctx.saved_tensors
 
         B, H, T, K, V = *q.shape, v.shape[-1]
@@ -313,7 +310,7 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
             v.stride(1), v.stride(2), v.stride(3),
             dh.stride(1), dh.stride(2),
             scale,
-            H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
+            T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -330,7 +327,7 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
             v.stride(1), v.stride(2), v.stride(3),
             dh.stride(1), dh.stride(2),
             scale,
-            H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
+            T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -342,18 +339,32 @@ def chunk_linear_attn(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    scale: float = -1,
+    scale: Optional[float] = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
     normalize: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if scale == -1:
+    r"""
+    Args:
+        q (torch.Tensor):
+            queries of shape `(B, H, T, K)`
+        k (torch.Tensor):
+            keys of shape `(B, H, T, K)`
+        v (torch.Tensor):
+            values of shape `(B, H, T, V)`
+        scale (Optional[int]):
+            Scale factor for the linear attention scores.
+            If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
+        initial_state (Optional[torch.Tensor]):
+            Initial state of shape `(B, H, K, V)`. Default: `None`.
+        output_final_state (Optional[bool]):
+            Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
+        normalize (bool):
+            Whether to normalize the output. Default: `True`.
+    """
+    if scale is None:
         scale = q.shape[-1] ** -0.5
-    if initial_state is not None:
-        initial_state = initial_state.detach()
     o, final_state = ChunkLinearAttentionFunction.apply(q, k, v, scale, initial_state, output_final_state)
-
     if normalize:
         o = normalize_output(q * scale, k, o)
-
     return o, final_state

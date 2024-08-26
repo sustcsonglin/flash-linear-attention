@@ -20,14 +20,13 @@ def sizeof_fmt(num, suffix='B'):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generation benchmarking")
-    parser.add_argument("--path", type=str, default="fla-hub/transformer-340M-15B")
+    parser.add_argument("--path", type=str, default="fla-hub/transformer-1.3B-100B")
     parser.add_argument("--prompt", type=str, default="Hello everyone, I'm Songlin Yang")
-    parser.add_argument("--maxlen", type=int, default=64)
-    parser.add_argument("--cache", action='store_true')
-    parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--topk", type=int, default=1)
-    parser.add_argument("--topp", type=float, default=1.0)
-    parser.add_argument("--repetition_penalty", type=float, default=2.0)
+    parser.add_argument("--maxlen", type=int, default=128)
+    parser.add_argument("--no_cache", action='store_true')
+    parser.add_argument("--temperature", type=float, default=0.5)
+    parser.add_argument("--topp", type=float, default=0.2)
+    parser.add_argument("--repetition_penalty", type=float, default=1.1)
     args = parser.parse_args()
 
     device = "cuda"
@@ -35,7 +34,11 @@ if __name__ == "__main__":
     torch.manual_seed(0)
 
     print(f"Loading {args.path}")
-    tokenizer = AutoTokenizer.from_pretrained(args.path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.path,
+        trust_remote_code=True,
+        add_eos_token=False
+    )
     tokenizer.pad_token_id = tokenizer.eos_token_id
     print(f"{tokenizer}")
 
@@ -43,11 +46,10 @@ if __name__ == "__main__":
         args.path,
         device_map={"": device},
         torch_dtype=dtype,
-        use_cache=args.cache
+        use_cache=not args.no_cache
     )
     model.eval()
-    print(f"{model}")
-    print(f"Number of parameters: {sizeof_fmt(model.num_parameters())}\n")
+    print(f"{model}\nNumber of parameters: {sizeof_fmt(model.num_parameters())}\n")
 
     tokens = tokenizer(args.prompt, return_tensors="pt")
     input_ids = tokens.input_ids.to(device=device)
@@ -57,12 +59,11 @@ if __name__ == "__main__":
     start = time.time()
     text = model.generate(
         input_ids=input_ids,
-        use_cache=args.cache,
+        use_cache=not args.no_cache,
         max_length=max_length,
         pad_token_id=tokenizer.eos_token_id,
         do_sample=True,
         temperature=args.temperature,
-        top_k=args.topk,
         top_p=args.topp,
         repetition_penalty=args.repetition_penalty
     )

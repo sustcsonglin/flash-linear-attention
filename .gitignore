@@ -1,7 +1,6 @@
 # test file
 test.py
-mingpt/
-
+mingpt
 
 # data files
 data
@@ -45,3 +44,6 @@ __pycache__
 
 # vscode
 .vscode
+
+# macOS
+.DS_Store

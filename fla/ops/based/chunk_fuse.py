@@ -1,38 +1,39 @@
 # -*- coding: utf-8 -*-
 
+from typing import Optional
+
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
-from fla.utils import contiguous
+
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
 
 # on-the-fly computation without materializing hidden statets into HBMs
 
 
 @triton.jit
 def fused_chunk_based_fwd_kernel(
-    # B: batch_size, H: n_heads, T: seq_len, D: d_head
-    q,  # query [B, H, L, D_head_K]
-    k,  # key [B, H, L, D_head_V]
-    v,  # value [B, H, L, D_head_V]
-    o,  # output [B, H, L, D_head_V]
+    q,  # query [B, H, L, K]
+    k,  # key [B, H, L, V]
+    v,  # value [B, H, L, V]
+    o,  # output [B, H, L, V]
     z,  # normalizer [B, H, L, 1]
-    s_qk_h,  # stride size: L * D_head_K
-    s_qk_t,  # stride size: D_head_K
+    s_qk_h,  # stride size: L * K
+    s_qk_t,  # stride size: K
     s_qk_d,  # stride size: 1
-    s_vo_h,  # stride size: L * D_head_V
-    s_vo_t,  # stride size: D_head_V
+    s_vo_h,  # stride size: L * V
+    s_vo_t,  # stride size: V
     s_vo_d,  # stride size: 1
-    B,  # batch size
-    H,  # n_heads
-    T,  # seq_len
-    scale,  # D_head_K ** -0.5
+    scale,  # K ** -0.5
+    B: tl.constexpr,  # batch size
+    H: tl.constexpr,  # H
+    T: tl.constexpr,  # T
+    K: tl.constexpr,  # K
+    V: tl.constexpr,  # V
     BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
-    DK: tl.constexpr,  # D_head_K
-    DV: tl.constexpr,  # D_head_V
 ):
     # indices
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -50,14 +51,10 @@ def fused_chunk_based_fwd_kernel(
     b_h_2o = tl.zeros([BK*BK, BV], dtype=tl.float32)
 
     # make block pointers
-    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, DK),
-                            (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
-    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (DK, T),
-                            (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
-    p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV),
-                            (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o + (i_bh + i_k*B*H) * s_vo_h, (T, DV),
-                            (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
+    p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + (i_bh + i_k*B*H) * s_vo_h, (T, V), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
 
     p_z = z + (i_bh + i_k * B * H) * T + tl.arange(0, BT)
     k_2o = tl.zeros([1, BK * BK], dtype=tl.float32)
@@ -104,8 +101,7 @@ def fused_chunk_based_fwd_kernel(
         b_o += tl.dot(b_s.to(b_q.dtype), b_v, allow_tf32=False)
         # [TB, BV]
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
-        tl.store(p_z, b_z.to(p_z.dtype.element_ty),
-                 mask=(i * BT + tl.arange(0, BT)) < T)
+        tl.store(p_z, b_z.to(p_z.dtype.element_ty), mask=(i * BT + tl.arange(0, BT)) < T)
 
         # update hidden state
         # [BK, BV]
@@ -123,31 +119,30 @@ def fused_chunk_based_fwd_kernel(
 # Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
 @triton.jit
 def fused_chunk_based_bwd_kernel(
-    # B: batch_size, H: n_heads, T: seq_len, D: d_head
     # NV: number of split in the V dimension. NK: number of split in the K dimension
-    q,  # query [B, H, L, D_head_K]
-    k,  # key [B, H, L, D_head_V]
-    v,  # value [B, H, L, D_head_V]
-    do,  # gradient of output [B, H, L, D_head_V]
+    q,  # query [B, H, L, K]
+    k,  # key [B, H, L, V]
+    v,  # value [B, H, L, V]
+    do,  # gradient of output [B, H, L, V]
     dz,  # gradient of normalizer [B, H, L]
-    dq,  # gradient of query [NV, B, H, L, D_head_K]
-    dk,  # gradient of key [NV, B, H, L, D_head_K]
-    dv,  # gradient of value [NK, B, H, L, D_head_V]
-    s_qk_h,  # stride size: L * D_head_K
-    s_qk_t,  # stride size: D_head_K
+    dq,  # gradient of query [NV, B, H, L, K]
+    dk,  # gradient of key [NV, B, H, L, K]
+    dv,  # gradient of value [NK, B, H, L, V]
+    s_qk_h,  # stride size: L * K
+    s_qk_t,  # stride size: K
     s_qk_d,  # stride size: 1
-    s_vo_h,  # stride size: L * D_head_V
-    s_vo_t,  # stride size: D_head_V
+    s_vo_h,  # stride size: L * V
+    s_vo_t,  # stride size: V
     s_vo_d,  # stride size: 1
-    B,  # batch_size
-    H,  # n_heads
-    T,  # seq_len
-    scale,  # D_head_K ** -0.5
+    scale,  # K ** -0.5
+    B: tl.constexpr,  # B
+    H: tl.constexpr,  # H
+    T: tl.constexpr,  # T
+    K: tl.constexpr,  # K
+    V: tl.constexpr,  # V
     BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
-    DK: tl.constexpr,  # D_head_K
-    DV: tl.constexpr,  # D_head_V
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
@@ -165,26 +160,21 @@ def fused_chunk_based_bwd_kernel(
     k_2o = tl.zeros([1, BK * BK], dtype=tl.float32)
 
     for i in range(0, tl.cdiv(T, BT)):
-        p_q = tl.make_block_ptr(
-            q + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_k = tl.make_block_ptr(
-            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_v = tl.make_block_ptr(
-            v + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
-        p_do = tl.make_block_ptr(
-            do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dq = tl.make_block_ptr(dq + (i_bh + i_v*B*H) * s_qk_h,
-                                 (T, DK), (s_qk_t, s_qk_d), (i*BT, i_k*BK), (BT, BK), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (V, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
+        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dq = tl.make_block_ptr(dq + (i_bh + i_v*B*H) * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i*BT, i_k*BK), (BT, BK), (1, 0))
         p_dz = dz + (i_bh) * T + tl.arange(0, BT) + i * BT
         b_dq = tl.zeros([BT, BK], dtype=tl.float32)
 
         # load tensors
         # [BT, BK]
-        b_dz = tl.load(p_dz, mask=(tl.arange(0, BT) + i * BT) < T)
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_q = (b_q * scale).to(b_q.dtype)
-        b_do = tl.load(p_do, boundary_check=(0, 1)).to(b_q.dtype)
         b_k = tl.load(p_k, boundary_check=(0, 1))
+        b_do = tl.load(p_do, boundary_check=(0, 1)).to(b_q.dtype)
+        b_dz = tl.load(p_dz, mask=(tl.arange(0, BT) + i * BT) < T)
         # [BV, BT]
         b_v = tl.load(p_v, boundary_check=(0, 1))
 
@@ -242,28 +232,22 @@ def fused_chunk_based_bwd_kernel(
     dq_2o = tl.zeros([BK * BK, 1], dtype=tl.float32)
 
     for i in range(tl.cdiv(T, BT) * BT - BT, -BT, -BT):
-        p_q = tl.make_block_ptr(
-            q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, i), (BK, BT), (0, 1))
-        p_k = tl.make_block_ptr(
-            k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i, i_k * BK), (BT, BK), (1, 0))
-        p_v = tl.make_block_ptr(
-            v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i, i_v * BV), (BT, BV), (1, 0))
-        p_do = tl.make_block_ptr(
-            do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i, i_v * BV), (BT, BV), (1, 0))
-        p_dk = tl.make_block_ptr(dk + (i_bh+i_v*B*H) * s_qk_h, (T, DK),
-                                 (s_qk_t, s_qk_d), (i, i_k*BK), (BT, BK), (1, 0))
-        p_dv = tl.make_block_ptr(dv + (i_bh+i_k*B*H) * s_vo_h, (T, DV),
-                                 (s_vo_t, s_vo_d), (i, i_v*BV), (BT, BV), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i), (BK, BT), (0, 1))
+        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i, i_k * BK), (BT, BK), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i, i_v * BV), (BT, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i, i_v * BV), (BT, BV), (1, 0))
+        p_dk = tl.make_block_ptr(dk + (i_bh+i_v*B*H) * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i, i_k*BK), (BT, BK), (1, 0))
+        p_dv = tl.make_block_ptr(dv + (i_bh+i_k*B*H) * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i, i_v*BV), (BT, BV), (1, 0))
         p_dz = dz + (i_bh) * T + tl.arange(0, BT) + i
 
         b_dk = tl.zeros([BT, BK], dtype=tl.float32)
         b_dv = tl.zeros([BT, BV], dtype=tl.float32)
 
-        b_dz = tl.load(p_dz, mask=(tl.arange(0, BT)+i) < T)
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_do = tl.load(p_do, boundary_check=(0, 1)).to(b_q.dtype)
+        b_dz = tl.load(p_dz, mask=(tl.arange(0, BT)+i) < T)
         b_q = (b_q * scale).to(b_k.dtype)
 
         # intra chunk
@@ -293,8 +277,7 @@ def fused_chunk_based_bwd_kernel(
         if i_v == 0:
             b_dk += dq_1o
 
-        b_dk_2o = tl.dot(b_dh_2o.to(b_k.dtype),
-                         tl.trans(b_v), allow_tf32=False)
+        b_dk_2o = tl.dot(b_dh_2o.to(b_k.dtype), tl.trans(b_v), allow_tf32=False)
         if i_v == 0:
             b_dk_2o += dq_2o
         b_dk_2o = tl.reshape(b_dk_2o, [BK, BK, BT])
@@ -322,32 +305,29 @@ class FusedChunkBasedFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_fwd
+    @autocast_custom_fwd(device_type=device)
     def forward(ctx, q, k, v, scale=1):
-        batch_size, n_heads, seq_len, d_head_qk = q.shape
-        # assert d_head_qk == 16, "currently we do not support feature dim other than 16"
-        d_head_v = v.shape[-1]
+        B, H, T, K, V = *k.shape, v.shape[-1]
 
         scale = scale
         BT = 16
-        BK, BV = min(d_head_qk, 16), min(d_head_v, 32)
+        BK, BV = min(K, 16), min(V, 32)
         BK, BV = max(BK, 16), max(BV, 16)
-        NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
+        NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
 
         num_warps = 4
 
         # the norm of o might explode, so we need to use float32 here
-        o = q.new_empty(NK, batch_size, n_heads, seq_len,
-                        d_head_v, dtype=torch.float32)
-        z = q.new_empty(NK, batch_size, n_heads, seq_len, dtype=torch.float32)
+        o = q.new_empty(NK, B, H, T, V, dtype=torch.float32)
+        z = q.new_empty(NK, B, H, T, dtype=torch.float32)
 
-        grid = (NV, NK, batch_size * n_heads)
+        grid = (NV, NK, B * H)
         fused_chunk_based_fwd_kernel[grid](
             q, k, v, o, z,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
-            batch_size, n_heads, seq_len, scale,
-            BT=BT, DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
+            scale,
+            B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
             num_warps=num_warps,
         )
         o = o.sum(0)
@@ -358,31 +338,30 @@ class FusedChunkBasedFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @custom_bwd
+    @autocast_custom_bwd(device_type=device)
     def backward(ctx, do, dz):
         q, k, v = ctx.saved_tensors
-        batch_size, n_heads, seq_len, d_head_qk = q.shape
-        d_head_v = v.shape[-1]
+        B, H, T, K, V = *k.shape, v.shape[-1]
         scale = ctx.scale
 
         BT = 16
-        BK, BV = min(d_head_qk, 16), min(d_head_v, 32)
+        BK, BV = min(K, 16), min(V, 32)
         BK, BV = max(BK, 16), max(BV, 16)
-        NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
+        NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
         num_stages = 1
         num_warps = 4
 
-        dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-        dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-        dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
-        grid = (NV, NK, batch_size * n_heads)
+        dq = q.new_empty(NV, B, H, T, K)
+        dk = q.new_empty(NV, B, H, T, K)
+        dv = q.new_empty(NK, B, H, T, V)
+        grid = (NV, NK, B * H)
 
         fused_chunk_based_bwd_kernel[grid](
             q, k, v, do, dz, dq, dk, dv,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
-            batch_size, n_heads, seq_len, scale,
-            BT=BT, DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
+            scale,
+            B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -395,16 +374,17 @@ class FusedChunkBasedFunction(torch.autograd.Function):
 triton_fused_chunk_based = FusedChunkBasedFunction.apply
 
 
-def fused_chunk_based(q, k, v, use_scale=True, use_normalize=True):
+def fused_chunk_based(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    scale: Optional[float] = None,
+    use_norm: bool = True
+):
     assert q.shape[-1] <= 16, 'only support feature dimension up to 16.'
-    if use_scale:
+    if scale is None:
         scale = q.shape[-1] ** -0.5
-    else:
-        scale = 1
     o, z = triton_fused_chunk_based(q, k, v, scale)
-    if use_normalize:
+    if use_norm:
         o = o / (z[..., None] + 1e-6)
-    else:
-        o = o
-
     return o.to(q.dtype)

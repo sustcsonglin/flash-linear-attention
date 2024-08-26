@@ -5,10 +5,10 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
+
 
 from fla.ops.delta_rule.utils import bwd_prepare_wy_repr, fwd_prepare_wy_repr
-from fla.utils import contiguous
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
 
 
 # on-the-fly computation without materializing hidden statets into HBMs
@@ -192,12 +192,12 @@ def fused_chunk_delta_rule_bwd_kernel(
         b_dv = tl.dot(b_s, b_do, allow_tf32=False)
         b_d = tl.load(p_d, boundary_check=(0, 1))
         if CHECK and i == 1:
-            b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype),  allow_tf32=False)
+            b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), allow_tf32=False)
             b_dv += tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False)
             b_dh += tl.dot(b_q, b_do, allow_tf32=False)
             b_dh -= tl.dot(b_d, b_dv.to(b_d.dtype), allow_tf32=False)
         else:
-            b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype),  allow_tf32=False)
+            b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), allow_tf32=False)
             b_dv += tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False)
             b_dh += tl.dot(b_q, b_do, allow_tf32=False)
             b_dh -= tl.dot(b_d, b_dv.to(b_d.dtype), allow_tf32=False)
@@ -293,15 +293,15 @@ def fused_chunk_delta_rule_fwd(q, k, v, d, BT, initial_state, output_final_state
 
 
 def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
-    batch_size, n_heads,  seq_len, d_head_qk = q.shape
+    batch_size, n_heads, seq_len, d_head_qk = q.shape
     d_head_v = v.shape[-1]
     scale = d_head_qk ** -0.5
     BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
     NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
     assert NK == 1
-    dq = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-    dk = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
-    dd = q.new_empty(NV, batch_size, n_heads,  seq_len, d_head_qk)
+    dq = q.new_empty(NV, batch_size, n_heads, seq_len, d_head_qk)
+    dk = q.new_empty(NV, batch_size, n_heads, seq_len, d_head_qk)
+    dd = q.new_empty(NV, batch_size, n_heads, seq_len, d_head_qk)
     dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
     grid = (NV, NK, batch_size * n_heads)
     fused_chunk_delta_rule_bwd_kernel[grid](
@@ -324,9 +324,10 @@ def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
 
 
 class FusedChunkDeltaRuleFunction(torch.autograd.Function):
+
     @staticmethod
     @contiguous
-    @custom_fwd
+    @autocast_custom_fwd(device_type=device)
     def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=0):
         # lvl=1 will recompute ``fwd_prepare_wy_repr`` for saving memory.
         assert checkpoint_level in [0, 1]
@@ -343,8 +344,8 @@ class FusedChunkDeltaRuleFunction(torch.autograd.Function):
         return o.to(q.dtype), final_state
 
     @staticmethod
-    @custom_bwd
     @contiguous
+    @autocast_custom_bwd(device_type=device)
     def backward(ctx, do, d_final_state=None):
         q, k_origin, v, v_new, v_new2, d, beta, initial_state = ctx.saved_tensors
         chunk_size = ctx.chunk_size
