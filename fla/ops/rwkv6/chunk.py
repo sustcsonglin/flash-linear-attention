@@ -883,7 +883,8 @@ class ChunkRWKV6Function(torch.autograd.Function):
             T=T, BT=BT, K=K, V=V, BK=next_pk_2, BV=next_pv_2,
         )
         du = du.sum([0, 2])
-        return dq.to(dtype), dk.to(dtype), dv.to(dtype), dg.to(dtype), du.to(dtype), None, dh0.to(dtype), None, None, None
+        return dq.to(dtype), dk.to(dtype), dv.to(dtype), dg.to(dtype), du.to(dtype), None, \
+                dh0.to(q) if initial_state is not None else dh0, None, None, None
 
 
 def chunk_rwkv6(
