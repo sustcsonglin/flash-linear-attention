@@ -8,19 +8,8 @@ import triton
 import triton.language as tl
 from packaging import version
 
-
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
-
-# on-the-fly computation without materializing hidden statets into HBMs
-
-
-@torch.jit.script
-def normalize_output(q, k, o):
-    k = k.transpose(-2, -1)
-    k = k.cumsum(-1)
-    k = k.transpose(-2, -1)
-    z = (q * k).sum(-1, keepdim=True)
-    return o / (z + 1e-5)
+from fla.ops.linear_attn.utils import normalize_output
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 @triton.jit
@@ -218,7 +207,7 @@ class FusedChunkLinearAttentionFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_fwd(device_type=device)
+    @autocast_custom_fwd
     def forward(ctx, q, k, v, scale, initial_state, output_final_state):
         B, H, T, K, V = *k.shape, v.shape[-1]
         BT = 64
@@ -265,7 +254,7 @@ class FusedChunkLinearAttentionFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_bwd(device_type=device)
+    @autocast_custom_bwd
     def backward(ctx, do, dht=None):
         q, k, v, initial_state = ctx.saved_tensors
         B, H, T, K, V = *k.shape, v.shape[-1]

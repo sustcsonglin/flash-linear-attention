@@ -7,8 +7,6 @@ import torch.nn.functional as F
 from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
 from fla.ops.rwkv6.recurrent_naive import (naive_recurrent_rwkv6,
                                            naive_recurrent_rwkv6_bwd)
-from fla.utils import get_available_device
-device = get_available_device()
 
 @pytest.mark.parametrize("B", [4])
 @pytest.mark.parametrize("H", [4])

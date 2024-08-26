@@ -8,8 +8,7 @@ import triton
 import triton.language as tl
 from packaging import version
 
-
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 # on-the-fly computation without materializing hidden statets into HBMs
 
@@ -231,7 +230,7 @@ class FusedChunkRetentionFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_fwd(device_type=device)
+    @autocast_custom_fwd
     def forward(ctx, q, k, v, initial_state, output_final_state):
         B, H, T, K, V = *k.shape, v.shape[-1]
 
@@ -283,7 +282,7 @@ class FusedChunkRetentionFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_bwd(device_type=device)
+    @autocast_custom_bwd
     def backward(ctx, do, dht=None):
         q, k, v, initial_state = ctx.saved_tensors
         B, H, T, K, V = *k.shape, v.shape[-1]

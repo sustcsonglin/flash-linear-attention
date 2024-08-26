@@ -8,8 +8,7 @@ import torch
 import triton
 import triton.language as tl
 
-
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 # on-the-fly computation without materializing hidden statets into HBMs
 
@@ -223,7 +222,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_fwd(device_type=device)
+    @autocast_custom_fwd
     def forward(ctx, q, k, v, gk, gv, scale=None, initial_state=None, output_final_state=False, reverse=False):
         B, H, T, K, V = *q.shape, v.shape[-1]
         # default scale
@@ -270,7 +269,7 @@ class FusedRecurrentGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_bwd(device_type=device)
+    @autocast_custom_bwd
     def backward(ctx, do, dht=None):
         q, k, v, gk, gv, initial_state, o = ctx.saved_tensors
         batch_size, n_heads, seq_len, K = q.shape

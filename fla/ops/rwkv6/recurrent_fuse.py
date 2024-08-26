@@ -2,8 +2,8 @@
 
 # Copyright (c) 2024, Songlin Yang
 
-from fla.utils import contiguous
-from fla.ops.utils import chunk_reversed_cumsum_fwd
+
+
 from typing import Tuple
 
 import torch
@@ -11,7 +11,7 @@ import triton
 import triton.language as tl
 
 from fla.ops.utils import chunk_global_reversed_cumsum
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 
@@ -254,7 +254,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_fwd(device_type=device)
+    @autocast_custom_fwd
     def forward(ctx, r, k, v, w, u, scale=None, initial_state=None, output_final_state=False, reverse=False, training=True):
         # alias
         q = r
@@ -291,7 +291,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_bwd(device_type=device)
+    @autocast_custom_bwd
     def backward(ctx, do, d_final_state=None):
         q, k, v, w, u, initial_state, o = ctx.saved_tensors
         B, H, T, K, V = *q.shape, v.shape[-1]

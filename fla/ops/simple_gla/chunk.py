@@ -7,8 +7,7 @@ import torch
 import triton
 import triton.language as tl
 
-
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 @triton.jit
@@ -259,7 +258,7 @@ class SimpleGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_fwd(device_type=device)
+    @autocast_custom_fwd
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state):
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT = 64
@@ -309,7 +308,7 @@ class SimpleGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_bwd(device_type=device)
+    @autocast_custom_bwd
     def backward(ctx, do, dht=None):
         q, k, v, h, g = ctx.saved_tensors
 

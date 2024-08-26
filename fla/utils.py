@@ -112,31 +112,41 @@ device_capacity = check_compute_capacity(device)
 if version.parse(torch.__version__) >= version.parse('2.4'):
     from torch.amp import custom_fwd, custom_bwd
 
-    def autocast_custom_fwd(**kwargs):
+    def autocast_custom_fwd(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]):
+            return custom_fwd(device_type=device)(args[0])
+        kwargs.setdefault('device_type', device)
         return custom_fwd(**kwargs)
 
-    def autocast_custom_bwd(**kwargs):
+    def autocast_custom_bwd(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]):
+            return custom_bwd(device_type=device)(args[0])
+        kwargs.setdefault('device_type', device)
         return custom_bwd(**kwargs)
 
 else:
     from torch.cuda.amp import custom_fwd, custom_bwd
 
-    def autocast_custom_fwd(**decorator_kwargs):
+    def autocast_custom_fwd(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]):
+            return custom_fwd(device_type=device)(args[0])
+
+        kwargs.setdefault('device_type', device)
         def decorator(func):
             @functools.wraps(func)
-            def wrapper(*args, **func_kwargs):
-                all_kwargs = {**decorator_kwargs, **func_kwargs}
-                all_kwargs.pop('device_type', None)
-                return custom_fwd(func)(*args, **all_kwargs)
+            def wrapper(*func_args, **func_kwargs):
+                return custom_fwd(**kwargs)(func)(*func_args, **func_kwargs)
             return wrapper
         return decorator
 
-    def autocast_custom_bwd(**decorator_kwargs):
+    def autocast_custom_bwd(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]):
+            return custom_bwd(device_type=device)(args[0])
+
+        kwargs.setdefault('device_type', device)
         def decorator(func):
             @functools.wraps(func)
-            def wrapper(*args, **func_kwargs):
-                all_kwargs = {**decorator_kwargs, **func_kwargs}
-                all_kwargs.pop('device_type', None)
-                return custom_bwd(func)(*args, **all_kwargs)
+            def wrapper(*func_args, **func_kwargs):
+                return custom_bwd(**kwargs)(func)(*func_args, **func_kwargs)
             return wrapper
         return decorator

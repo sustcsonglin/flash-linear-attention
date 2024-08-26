@@ -6,9 +6,8 @@ import torch
 import triton
 import triton.language as tl
 
-
 from fla.ops.delta_rule.utils import bwd_prepare_wy_repr, fwd_prepare_wy_repr
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 # on-the-fly computation without materializing hidden statets into HBMs
@@ -327,7 +326,7 @@ class FusedChunkDeltaRuleFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_fwd(device_type=device)
+    @autocast_custom_fwd
     def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=0):
         # lvl=1 will recompute ``fwd_prepare_wy_repr`` for saving memory.
         assert checkpoint_level in [0, 1]
@@ -345,7 +344,7 @@ class FusedChunkDeltaRuleFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_bwd(device_type=device)
+    @autocast_custom_bwd
     def backward(ctx, do, d_final_state=None):
         q, k_origin, v, v_new, v_new2, d, beta, initial_state = ctx.saved_tensors
         chunk_size = ctx.chunk_size

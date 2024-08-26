@@ -7,10 +7,7 @@ from typing import Optional, Tuple
 import torch
 import triton
 import triton.language as tl
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
-
-
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 @triton.jit
@@ -285,7 +282,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_fwd(device_type=device)
+    @autocast_custom_fwd
     def forward(
         ctx,
         q: torch.Tensor,
@@ -375,7 +372,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_bwd(device_type=device)
+    @autocast_custom_bwd
     def backward(ctx, do, dht=None):
         q, k, v, s, g, qv, hk0, hv0, ok = ctx.saved_tensors
         B, H, T, K, V, M = *q.shape, v.shape[-1], s.shape[-1]

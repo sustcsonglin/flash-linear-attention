@@ -5,10 +5,9 @@ import torch
 import triton
 import triton.language as tl
 
-
 from fla.ops.delta_rule.wy_fast import (bwd_prepare_wy_repr,
                                         fwd_prepare_wy_repr, fwd_recompute_w_u)
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 @triton.autotune(
@@ -491,7 +490,7 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_fwd(device_type=device)
+    @autocast_custom_fwd
     def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=1):
         # obtain WY representation. u is actually the new v.
         w, u, A = fwd_prepare_wy_repr(k, v, beta, BT)
@@ -512,7 +511,7 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_bwd(device_type=device)
+    @autocast_custom_bwd
     def backward(ctx, do, d_ht=None):
         q, k, v, beta, A, h, v_new, initial_state = ctx.saved_tensors
         BT = ctx.BT

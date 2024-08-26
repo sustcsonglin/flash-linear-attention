@@ -5,9 +5,7 @@ from typing import Optional
 import torch
 import triton
 import triton.language as tl
-
-
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous, device
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 # on-the-fly computation without materializing hidden statets into HBMs
 
@@ -305,7 +303,7 @@ class FusedChunkBasedFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_fwd(device_type=device)
+    @autocast_custom_fwd
     def forward(ctx, q, k, v, scale=1):
         B, H, T, K, V = *k.shape, v.shape[-1]
 
@@ -338,7 +336,7 @@ class FusedChunkBasedFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    @autocast_custom_bwd(device_type=device)
+    @autocast_custom_bwd
     def backward(ctx, do, dz):
         q, k, v = ctx.saved_tensors
         B, H, T, K, V = *k.shape, v.shape[-1]
