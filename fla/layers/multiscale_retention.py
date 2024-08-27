@@ -183,14 +183,16 @@ class MultiScaleRetention(nn.Module):
         if self.feature_map_fn is not None:
             q, k = map(self.feature_map_fn, (q, k))
 
-        seqlen_offset, max_seqlen = 0, None
+        seqlen_offset, max_seqlen = 0, q.shape[1]
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
             max_seqlen = q.shape[1] + seqlen_offset
-        if attention_mask is not None:
-            # to deliminate the offsets of padding tokens
-            seqlen_offset = seqlen_offset + attention_mask.sum(-1) - attention_mask.shape[-1]
-            max_seqlen = q.shape[1] + max(seqlen_offset)
+
+            if attention_mask is not None:
+                # to deliminate the offsets of padding tokens
+                seqlen_offset = (seqlen_offset + attention_mask.sum(-1) - attention_mask.shape[-1]).clamp(min=0)
+                max_seqlen = q.shape[1] + max(seqlen_offset)
+
         q, k = self.rotary(q, k, seqlen_offset, max_seqlen)
         q = q.transpose(1, 2)
         if self.num_kv_groups > 1:
