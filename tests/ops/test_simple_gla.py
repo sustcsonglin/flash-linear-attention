@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from fla.ops.simple_gla import chunk_simple_gla, fused_recurrent_simple_gla
+from fla.ops.simple_gla.naive import torch_simple_gla, torch_simple_gla_recurrent
 import torch.nn.functional as F
 
 
@@ -11,7 +12,7 @@ import torch.nn.functional as F
 @pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("T", [300, 512])
 @pytest.mark.parametrize("D", [64, 100])
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float])
+@pytest.mark.parametrize("dtype", [torch.float, torch.bfloat16])
 def test_chunk(
     B: int,
     H: int,
@@ -26,32 +27,36 @@ def test_chunk(
     k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
     v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
     g = torch.randn((B, H, T), dtype=dtype, device='cuda')
-    g = F.logsigmoid(g).clamp_min(-3).requires_grad_(True)
+    h0 = torch.rand((B, H, D, D), dtype=torch.float32, device='cuda').requires_grad_(True)
+    g = F.logsigmoid(g).requires_grad_(True)
     do = torch.randn_like(v)
-    ref, _ = fused_recurrent_simple_gla(q, k, v, g)
-    ref.backward(do)
+    ref, ref_ht = torch_simple_gla_recurrent(q, k, v, g, initial_state=h0)
+    d_ht = torch.randn_like(ref_ht)
+    ((ref * do).sum()).backward()
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
     ref_dv, v.grad = v.grad.clone(), None
     ref_dg, g.grad = g.grad.clone(), None
+    ref_dh0, h0.grad = h0.grad.clone(), None
 
     # triton implementation
-    tri, _ = chunk_simple_gla(q, k, v, g)
-    
-    tri.backward(do)
+    tri, tri_ht = chunk_simple_gla(q, k, v, g, initial_state=h0, output_final_state=True)
+    ((tri * do).sum()).backward()
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
     tri_dv, v.grad = v.grad.clone(), None
     tri_dg, g.grad = g.grad.clone(), None
+    tri_dh0, h0.grad = h0.grad.clone(), None
 
     assert ref.allclose(tri, 0, atol), f" o diff: {torch.abs(ref - tri).max()}"
+    assert ref_ht.allclose(tri_ht, 0, atol), f" o diff: {torch.abs(ref_ht - tri_ht).max()}"
     assert ref_dq.allclose(tri_dq, 0, atol), f"dq diff: {torch.abs(ref_dq - tri_dq).max()}"
     assert ref_dk.allclose(tri_dk, 0, atol), f"dk diff: {torch.abs(ref_dk - tri_dk).max()}"
     assert ref_dv.allclose(tri_dv, 0, atol), f"dv diff: {torch.abs(ref_dv - tri_dv).max()}"
+    assert ref_dh0.allclose(tri_dh0, 0, atol), f"dh0 diff: {torch.abs(ref_dh0 - tri_dh0).max()}"
     # TO FIX: bf16 will have a large rel err. 
     if dtype == torch.float:
         assert ref_dg.allclose(tri_dg, 0, atol), f"dg diff: {torch.abs(ref_dg - tri_dg).max()}"
-
 
 
 @pytest.mark.parametrize("vary_A", [True, False])

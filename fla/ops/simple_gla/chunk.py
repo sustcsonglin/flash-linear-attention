@@ -8,74 +8,7 @@ import triton
 import triton.language as tl
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 from fla.ops.utils import chunk_local_cumsum, chunk_global_reversed_cumsum
-
-
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-    ],
-    key=["BT", "BK", "BV"],
-)
-@triton.jit
-def chunk_simple_gla_fwd_kernel_h(
-    k,
-    v,
-    h,
-    g,
-    h0,
-    ht,
-    s_qk_h,
-    s_qk_t,
-    s_qk_d,
-    s_vo_h,
-    s_vo_t,
-    s_vo_d,
-    s_h_h,
-    s_h_t,
-    T: tl.constexpr,
-    K: tl.constexpr,
-    V: tl.constexpr,
-    BT: tl.constexpr,
-    BK: tl.constexpr,
-    BV: tl.constexpr,
-    NT: tl.constexpr,
-    USE_INITIAL_STATE: tl.constexpr,
-    STORE_FINAL_STATE: tl.constexpr
-):
-    i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-
-    # [BK, BV]
-    b_h = tl.zeros([BK, BV], dtype=tl.float32)
-
-    if USE_INITIAL_STATE:
-        p_h0 = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        b_h = tl.load(p_h0, boundary_check=(0, 1)).to(tl.float32)
-
-    for i_t in range(NT):
-        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_h = tl.make_block_ptr(h + i_bh * s_h_h + i_t * K * V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
-
-        tl.store(p_h, b_h.to(p_h.dtype.element_ty), boundary_check=(0, 1))
-        # [BK, BT]
-        b_k = tl.load(p_k, boundary_check=(0, 1))
-        # [BT, BV]
-        b_v = tl.load(p_v, boundary_check=(0, 1))
-        # [BK, BV]
-        if i_t < NT - 1:
-            b_g_last = tl.load(g + i_bh * T + i_t * BT + BT - 1)
-        else:
-            b_g_last = tl.load(g + i_bh * T + T - 1)
-        b_h *= tl.exp(b_g_last)
-        b_g = tl.load(p_g, boundary_check=(0,))
-        b_h += tl.dot(b_k, (b_v * tl.exp(b_g_last - b_g)[:, None]).to(b_k.dtype), allow_tf32=False)
-
-    if STORE_FINAL_STATE:
-        p_ht = tl.make_block_ptr(ht + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
+from fla.ops.common.chunk_h import chunk_fwd_h_fn, chunk_bwd_dh_fn
 
 @triton.autotune(
     configs=[
@@ -139,61 +72,6 @@ def chunk_simple_gla_fwd_kernel_o(
     p_o = tl.make_block_ptr(o + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
-
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-    ],
-    key=["BT", "BK", "BV"],
-)
-@triton.jit
-def chunk_simple_gla_bwd_kernel_dh(
-    q,
-    g,
-    do,
-    dh,
-    s_qk_h,
-    s_qk_t,
-    s_qk_d,
-    s_vo_h,
-    s_vo_t,
-    s_vo_d,
-    s_h_h,
-    s_h_t,
-    scale,
-    T: tl.constexpr,
-    K: tl.constexpr,
-    V: tl.constexpr,
-    BT: tl.constexpr,
-    BK: tl.constexpr,
-    BV: tl.constexpr,
-    NT: tl.constexpr
-):
-    i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-
-    # [BK, BV]
-    b_dh = tl.zeros([BK, BV], dtype=tl.float32)
-    for i_t in range(NT - 1, -1, -1):
-        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dh = tl.make_block_ptr(dh + i_bh * s_h_h + i_t * K * V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-
-        tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
-        # [BK, BT]
-        b_q = tl.load(p_q, boundary_check=(0, 1))
-        p_g = tl.make_block_ptr(g + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
-        b_g = tl.load(p_g, boundary_check=(0,))
-        b_q = (b_q * scale * tl.exp(b_g)[None, :]).to(b_q.dtype)
-        # [BT, V]
-        b_do = tl.load(p_do, boundary_check=(0, 1))
-        # [BK, BV]
-        if i_t == NT - 1:
-            b_dh *= tl.exp(tl.load(g + i_bh * T + T - 1))
-        else:
-            b_dh *= tl.exp(tl.load(g + i_bh * T + i_t * BT + BT - 1))
-        b_dh += tl.dot(b_q, b_do.to(b_q.dtype), allow_tf32=False)
 
 @triton.autotune(
     configs=[
@@ -300,29 +178,6 @@ def chunk_simple_gla_bwd_kernel_dqkvg(
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0,))
 
     
-
-def chunk_fwd_h_fn(k, v, g, BT, initial_state, output_final_state):
-    B, H, T, K, V = *k.shape, v.shape[-1]
-    final_state = None
-    if output_final_state:
-        final_state = k.new_empty(B, H, K, V, dtype=torch.float32)
-
-    BK, BV = min(64, triton.next_power_of_2(K)), min(64, triton.next_power_of_2(V))
-    NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
-    h = k.new_empty(B, H, NT * K, V)
-    grid = (NK, NV, B * H)
-    chunk_simple_gla_fwd_kernel_h[grid](
-        k, v, h, g, initial_state, final_state,
-        k.stride(1), k.stride(2), k.stride(3),
-        v.stride(1), v.stride(2), v.stride(3),
-        h.stride(1), h.stride(2),
-        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-        USE_INITIAL_STATE=initial_state is not None,
-        STORE_FINAL_STATE=output_final_state
-    )
-    return h, final_state
-
-
 def chunk_fwd_o_fn(h, q, k, v, g, BT, scale):
     B, H, T, K, V = *k.shape, v.shape[-1]
     o = torch.empty_like(v)
@@ -340,25 +195,6 @@ def chunk_fwd_o_fn(h, q, k, v, g, BT, scale):
         T=T, K=K, V=V, BT=BT, BK=BK, BV=BV
     )
     return o
-
-
-def chunk_bwd_dh_fn(do, q, k, v, g, BT, scale):
-    B, H, T, K, V = *k.shape, v.shape[-1]
-    BT = 64
-    BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(V), 64)
-    NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
-    dh = k.new_empty(B, H, NT * K, V)
-    grid = (NK, NV, B * H)
-    chunk_simple_gla_bwd_kernel_dh[grid](
-        q, g, do, dh,
-        q.stride(1), q.stride(2), q.stride(3),
-        v.stride(1), v.stride(2), v.stride(3),
-        dh.stride(1), dh.stride(2),
-        scale,
-        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-    )
-    return dh
 
 
 def chunk_bwd_dqkvg_fn(do, q, k, v, g, h, dh, scale):
@@ -396,7 +232,7 @@ class SimpleGLAFunction(torch.autograd.Function):
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT = 64
         g = chunk_local_cumsum(g, BT)
-        h, final_state = chunk_fwd_h_fn(k, v, g, BT, initial_state, output_final_state)
+        h, final_state = chunk_fwd_h_fn(k=k, v=v, g=g, gk=None, gv=None, BT=BT, h0=initial_state, output_final_state=output_final_state)
         o = chunk_fwd_o_fn(h, q, k, v, g, BT, scale)        
         if checkpoint_level == 1:
             h = None
@@ -408,14 +244,14 @@ class SimpleGLAFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @autocast_custom_bwd
-    def backward(ctx, do, dht=None):
+    def backward(ctx, do, dht):
         BT, scale = ctx.BT, ctx.scale
         q, k, v, h, g, initial_state = ctx.saved_tensors
         if h is None:
-            h, _ = chunk_fwd_h_fn(k, v, g, BT, initial_state, False)
-        dh = chunk_bwd_dh_fn(do, q, k, v, g, BT, scale)
+            h, final_state = chunk_fwd_h_fn(k=k, v=v, g=g, gk=None, gv=None, BT=BT, h0=initial_state, output_final_state=False)
+        dh, dh0 = chunk_bwd_dh_fn(q=q, k=k, v=v, g=g, gk=None, gv=None, do=do, h0=initial_state, dht=dht, BT=BT, scale=scale)
         dq, dk, dv, dg = chunk_bwd_dqkvg_fn(do, q, k, v, g, h, dh, scale)
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, None, None, None
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, dh0, None, None
 
 
 
