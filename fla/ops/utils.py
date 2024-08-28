@@ -153,7 +153,7 @@ def softmax_bwd_kernel(
     key=['S']
 )
 @triton.jit
-def chunk_global_reversed_cumsum_kernel(
+def chunk_global_reversed_cumsum_vector_kernel(
     s,
     z,
     s_s_h,
@@ -179,6 +179,36 @@ def chunk_global_reversed_cumsum_kernel(
 
         if i_t >= 0:
             b_z += tl.sum(b_s, 0)
+
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BT': 16}, num_warps=2),
+        triton.Config({'BT': 32}, num_warps=4),
+        triton.Config({'BT': 32}, num_warps=2),
+        triton.Config({'BT': 64}, num_warps=8),
+        triton.Config({'BT': 64}, num_warps=4),
+    ],
+    key=[]
+)
+@triton.jit
+def chunk_global_reversed_cumsum_scalar_kernel(
+    s,
+    o,
+    T: tl.constexpr,
+    BT: tl.constexpr,
+):
+    i_bh = tl.program_id(0)
+    b_z = tl.zeros([], dtype=tl.float32)
+    for i_t in range(tl.cdiv(T, BT) - 1, -1, -1):
+        p_s = tl.make_block_ptr(s + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
+        p_o = tl.make_block_ptr(o + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
+        b_s = tl.load(p_s, boundary_check=(0,)).to(tl.float32)
+        b_zz = tl.sum(b_s, axis=0)
+        b_z += b_zz
+        b_o = b_s - tl.cumsum(b_s, axis=0) + b_z[None]
+        tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
 
 
 @triton.autotune(
@@ -283,7 +313,7 @@ def chunk_local_cumsum(g, BT):
 
 
 @contiguous
-def chunk_global_reversed_cumsum(
+def chunk_global_reversed_cumsum_vector(
     s: torch.Tensor,
     dtype: Optional[torch.dtype] = None,
 ) -> torch.Tensor:
@@ -292,9 +322,36 @@ def chunk_global_reversed_cumsum(
     dtype = dtype or s.dtype
     grid = (triton.cdiv(S, BS), B * H)
     z = torch.empty_like(s, dtype=dtype)
-    chunk_global_reversed_cumsum_kernel[grid](
+    chunk_global_reversed_cumsum_vector_kernel[grid](
         s, z,
         s.stride(1), s.stride(2), s.stride(3),
         T=T, S=S, BS=BS
     )
     return z
+
+
+
+@contiguous
+def chunk_global_reversed_cumsum_scalar(
+    s: torch.Tensor,
+    dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    B, H, T = s.shape
+    dtype = dtype or s.dtype
+    grid = (B * H,)
+    z = torch.empty_like(s, dtype=dtype)
+    chunk_global_reversed_cumsum_scalar_kernel[grid](
+        s, z, 
+        T=T
+    )
+    return z
+
+
+@contiguous
+def chunk_global_reversed_cumsum(s, dtype=None):
+    if len(s.shape) == 3:
+        return chunk_global_reversed_cumsum_scalar(s, dtype)
+    elif len(s.shape) == 4:
+        return chunk_global_reversed_cumsum_vector(s, dtype)
+    else:
+        raise ValueError(f"Unsupported shape {s.shape}. Should be either (batch size, num head, seq len) or (Batch size, num head, seq len, dim)")

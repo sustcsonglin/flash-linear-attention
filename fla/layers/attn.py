@@ -85,15 +85,17 @@ class Attention(nn.Module):
         k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_kv_heads)
         v = rearrange(self.v_proj(hidden_states), 'b t (h d) -> b h t d', h=self.num_kv_heads)
 
-        seqlen_offset = 0
+        seqlen_offset, max_seqlen = 0, q.shape[1]
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
+            max_seqlen = q.shape[1] + seqlen_offset
 
             if attention_mask is not None:
                 # to deliminate the offsets of padding tokens
-                seqlen_offset = seqlen_offset + attention_mask.sum(-1) - attention_mask.shape[-1]
+                seqlen_offset = (seqlen_offset + attention_mask.sum(-1) - attention_mask.shape[-1]).clamp(min=0)
+                max_seqlen = q.shape[1] + max(seqlen_offset)
 
-        q, k = self.rotary(q, k, seqlen_offset, self.max_position_embeddings)
+        q, k = self.rotary(q, k, seqlen_offset, max(max_seqlen, self.max_position_embeddings))
 
         k = rearrange(k, 'b t h d -> b h t d')
         if past_key_values is not None:

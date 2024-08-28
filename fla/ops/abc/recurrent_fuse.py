@@ -308,7 +308,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
 
         hkt, hvt = None, None
         if output_final_state:
-            hkt, hvt = (hk0, hv0) if inference_mode and NG == 1 else (q.new_empty(B, H, K, M), q.new_empty(B, H, M, V))
+            hkt, hvt = (hk0, hv0) if inference_mode and NG == 1 else (q.new_empty(B, H, K, M, dtype=torch.float), q.new_empty(B, H, M, V, dtype=torch.float))
 
         if inference_mode:
             BK, BV = min(triton.next_power_of_2(K), 64), min(triton.next_power_of_2(V), 16)
