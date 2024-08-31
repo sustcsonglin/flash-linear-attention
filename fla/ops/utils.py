@@ -137,7 +137,6 @@ def softmax_bwd_kernel(
     tl.store(p_ds, b_ds.to(p_ds.dtype.element_ty), boundary_check=(0, 1))
 
 
-
 @triton.autotune(
     configs=[
         triton.Config({'BT': 16}, num_warps=2),
@@ -222,7 +221,6 @@ def chunk_global_cumsum_vector_kernel(
             b_z += tl.sum(b_s, 0)
 
 
-
 @triton.autotune(
     configs=[
         triton.Config({'BT': 16}, num_warps=2),
@@ -251,6 +249,7 @@ def chunk_global_reversed_cumsum_scalar_kernel(
         b_o = b_s - tl.cumsum(b_s, axis=0) + b_z[None]
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
 
+
 @triton.autotune(
     configs=[
         triton.Config({'BT': 16}, num_warps=2),
@@ -278,7 +277,6 @@ def chunk_global_cumsum_scalar_kernel(
         b_zz = tl.sum(b_s, axis=0)
         b_z += b_zz
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
-
 
 
 @triton.autotune(
@@ -317,6 +315,7 @@ def chunk_local_cumsum_vector_kernel(
     b_o = tl.dot(m_s, b_s, allow_tf32=False)
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
+
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=1),
@@ -342,7 +341,6 @@ def chunk_local_cumsum_scalar_kernel(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
 
 
-
 def chunk_local_cumsum_vector(g, BT):
     B, H, T, S = g.shape
     NT = triton.cdiv(T, BT)
@@ -365,11 +363,11 @@ def chunk_local_cumsum_scalar(g, BT):
     g_org, g = g, torch.empty_like(g, dtype=torch.float)
     grid = (NT, B * H)
     chunk_local_cumsum_scalar_kernel[grid](
-        g_org, g, 
+        g_org, g,
         T=T, BT=BT
     )
     return g
-    
+
 
 @contiguous
 def chunk_local_cumsum(g, BT):
@@ -378,8 +376,8 @@ def chunk_local_cumsum(g, BT):
     elif len(g.shape) == 4:
         return chunk_local_cumsum_vector(g, BT)
     else:
-        raise ValueError(f"Unsupported shape {g.shape}. Should be either (batch size, num head, seq len, dim) or (Batch size, num head, seq len)")
-
+        raise ValueError(f"Unsupported shape {
+                         g.shape}. Should be either (batch size, num_heads, seq_len, dim) or (batch_size, num_heads, seq_len)")
 
 
 @contiguous
@@ -400,7 +398,6 @@ def chunk_global_reversed_cumsum_vector(
     return z
 
 
-
 @contiguous
 def chunk_global_reversed_cumsum_scalar(
     s: torch.Tensor,
@@ -411,11 +408,10 @@ def chunk_global_reversed_cumsum_scalar(
     grid = (B * H,)
     z = torch.empty_like(s, dtype=dtype)
     chunk_global_reversed_cumsum_scalar_kernel[grid](
-        s, z, 
+        s, z,
         T=T
     )
     return z
-
 
 
 @contiguous
@@ -436,7 +432,6 @@ def chunk_global_cumsum_vector(
     return z
 
 
-
 @contiguous
 def chunk_global_cumsum_scalar(
     s: torch.Tensor,
@@ -447,10 +442,11 @@ def chunk_global_cumsum_scalar(
     grid = (B * H,)
     z = torch.empty_like(s, dtype=dtype)
     chunk_global_cumsum_scalar_kernel[grid](
-        s, z, 
+        s, z,
         T=T
     )
     return z
+
 
 @contiguous
 def chunk_global_cumsum(s, dtype=None):
@@ -459,8 +455,8 @@ def chunk_global_cumsum(s, dtype=None):
     elif len(s.shape) == 4:
         return chunk_global_cumsum_vector(s, dtype)
     else:
-        raise ValueError(f"Unsupported shape {s.shape}. Should be either (batch size, num head, seq len) or (Batch size, num head, seq len, dim)")
-
+        raise ValueError(f"Unsupported shape {s.shape}. "
+                         f"Should be either [batch size, num_heads, seq_len] or [batch_size, num_heads, seq_len, dim]")
 
 
 @contiguous
@@ -470,7 +466,5 @@ def chunk_global_reversed_cumsum(s, dtype=None):
     elif len(s.shape) == 4:
         return chunk_global_reversed_cumsum_vector(s, dtype)
     else:
-        raise ValueError(f"Unsupported shape {s.shape}. Should be either (batch size, num head, seq len) or (Batch size, num head, seq len, dim)")
-
-
-
+        raise ValueError(f"Unsupported shape {s.shape}. "
+                         f"Should be either [batch size, num_heads, seq_len] or [batch_size, num_heads, seq_len, dim]")
