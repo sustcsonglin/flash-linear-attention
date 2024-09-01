@@ -20,7 +20,8 @@ def naive_chunk_rwkv6(
     assert q.shape[-2] % chunk_size == 0
     orig_dtype = q.dtype
     num_chunk = q.shape[-2] // chunk_size
-    u = u.unsqueeze(0)
+    if u.dim() == 2:
+        u = torch.broadcast_to(u.unsqueeze(0), (q.shape[0], *u.shape))
 
     q, k, v, w = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c=chunk_size).float(), (q, k, v, w))
 
@@ -54,7 +55,7 @@ if __name__ == "__main__":
     device = get_available_device()
     B = 4
     H = 32
-    L = 4096
+    L = 1024
     D = 64
     dtype = torch.bfloat16
     require_grad = True
@@ -63,7 +64,7 @@ if __name__ == "__main__":
     k = (torch.randn(B, H, L, D).uniform_(-1, 1).to(device).to(dtype)).requires_grad_(require_grad)
     v = torch.randn(B, H, L, D).uniform_(-1, 1).to(device).to(dtype).requires_grad_(require_grad)
     w = torch.randn(B, H, L, D).uniform_(-8, 1).to(device).to(dtype).requires_grad_(require_grad)
-    u = (torch.randn(H, D).uniform_(-1, 1).to(device).to(dtype)).requires_grad_(require_grad)
+    u = (torch.randn(B, H, D).uniform_(-1, 1).to(device).to(dtype)).requires_grad_(require_grad)
     h = torch.randn(B, H, D, D, device=device, dtype=dtype, requires_grad=True)
     do = torch.rand_like(v).to(device)
 

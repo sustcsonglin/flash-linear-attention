@@ -99,7 +99,6 @@ def post_process_grad(
     BV: tl.constexpr,
 ):
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
-    i_h = i_bh % H
 
     # Note that BK = tl.next_power_of_2(K), BV = tl.next_power_of_2(V)
     p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, 0), (BT, BK), (1, 0))
@@ -109,7 +108,7 @@ def post_process_grad(
     p_du = tl.make_block_ptr(du + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, 0), (BT, BK), (1, 0))
     p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, 0), (BT, BV), (1, 0))
     p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, 0), (BT, BV), (1, 0))
-    p_u = tl.make_block_ptr(u + i_h * K, (K,), (1,), (0,), (BK,), (0,))
+    p_u = tl.make_block_ptr(u + i_bh * K, (K,), (1,), (0,), (BK,), (0,))
 
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -261,7 +260,6 @@ def chunk_rwkv6_fwd_kernel_intra(
     i_i = (i_c_ordered % (NC * NC)) // NC
     i_j = i_c_ordered % NC
 
-    i_h = i_bh % H
     n_bh = tl.num_programs(2)
 
     o_k = i_k * BK + tl.arange(0, BK)
@@ -301,7 +299,7 @@ def chunk_rwkv6_fwd_kernel_intra(
         o_g = i_bh * T * K + (i_t * BT + i_j * BC) * K + o_k
         o_A = (i_bh + i_k * n_bh) * T * BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_j * BC
         m_A = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
-        p_u = tl.make_block_ptr(u + i_h * DK, (DK,), (1,), (i_k * BK), (BK,), (0,))
+        p_u = tl.make_block_ptr(u + i_bh * DK, (DK,), (1,), (i_k * BK), (BK,), (0,))
         b_u = tl.load(p_u, boundary_check=(0,))
         for j in range(BC):
             # [BK,]
@@ -883,7 +881,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
             v.stride(1), v.stride(2), v.stride(3), H=H,
             T=T, BT=BT, K=K, V=V, BK=next_pk_2, BV=next_pv_2,
         )
-        du = du.sum([0, 2])
+        du = du.sum(2)
         return dq.to(dtype), dk.to(dtype), dv.to(dtype), dg.to(dtype), du.to(dtype), None, \
                 dh0.to(q) if initial_state is not None else dh0, None, None, None
 
@@ -911,7 +909,7 @@ def chunk_rwkv6(
         w (torch.Tensor):
             data-dependent decays of shape `(B, H, T, K)` in log space! Alias: g.
         u (torch.Tensor):
-            bonus of shape `(H, K)`
+            bonus of shape `(H, K)` or `(B, H, K)` for each head.
         scale (Optional[int]):
             Scale factor for the RWKV6 attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
@@ -928,6 +926,8 @@ def chunk_rwkv6(
     assert checkpoint_level in [0, 1]
     if scale is None:
         scale = r.shape[-1] ** -0.5
+    if u.dim() == 2:
+        u = torch.broadcast_to(u.unsqueeze(0), (r.shape[0], *u.shape))
     if initial_state is None:
         initial_state = torch.zeros(r.shape[0], r.shape[1], r.shape[-1], v.shape[-1], dtype=r.dtype, device=r.device)
     o, final_state = ChunkRWKV6Function.apply(r, k, v, g, u, scale, initial_state,
