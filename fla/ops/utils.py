@@ -376,8 +376,8 @@ def chunk_local_cumsum(g, BT):
     elif len(g.shape) == 4:
         return chunk_local_cumsum_vector(g, BT)
     else:
-        raise ValueError(f"Unsupported shape {
-                         g.shape}. Should be either (batch size, num_heads, seq_len, dim) or (batch_size, num_heads, seq_len)")
+        raise ValueError(f"Unsupported shape {g.shape}. "
+                         f"Should be either (batch size, num_heads, seq_len, dim) or (batch_size, num_heads, seq_len)")
 
 
 @contiguous
