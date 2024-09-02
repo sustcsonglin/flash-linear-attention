@@ -129,9 +129,8 @@ else:
 
     def autocast_custom_fwd(*args, **kwargs):
         if len(args) == 1 and callable(args[0]):
-            return custom_fwd(device_type=device)(args[0])
+            return custom_fwd()(args[0])
 
-        kwargs.setdefault('device_type', device)
         def decorator(func):
             @functools.wraps(func)
             def wrapper(*func_args, **func_kwargs):
@@ -141,9 +140,8 @@ else:
 
     def autocast_custom_bwd(*args, **kwargs):
         if len(args) == 1 and callable(args[0]):
-            return custom_bwd(device_type=device)(args[0])
+            return custom_bwd()(args[0])
 
-        kwargs.setdefault('device_type', device)
         def decorator(func):
             @functools.wraps(func)
             def wrapper(*func_args, **func_kwargs):
