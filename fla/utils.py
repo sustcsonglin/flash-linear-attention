@@ -125,28 +125,5 @@ if version.parse(torch.__version__) >= version.parse('2.4'):
         return custom_bwd(**kwargs)
 
 else:
-    from torch.cuda.amp import custom_fwd, custom_bwd
-
-    def autocast_custom_fwd(*args, **kwargs):
-        if len(args) == 1 and callable(args[0]):
-            return custom_fwd(device_type=device)(args[0])
-
-        kwargs.setdefault('device_type', device)
-        def decorator(func):
-            @functools.wraps(func)
-            def wrapper(*func_args, **func_kwargs):
-                return custom_fwd(**kwargs)(func)(*func_args, **func_kwargs)
-            return wrapper
-        return decorator
-
-    def autocast_custom_bwd(*args, **kwargs):
-        if len(args) == 1 and callable(args[0]):
-            return custom_bwd(device_type=device)(args[0])
-
-        kwargs.setdefault('device_type', device)
-        def decorator(func):
-            @functools.wraps(func)
-            def wrapper(*func_args, **func_kwargs):
-                return custom_bwd(**kwargs)(func)(*func_args, **func_kwargs)
-            return wrapper
-        return decorator
+    autocast_custom_fwd = torch.cuda.amp.custom_fwd
+    autocast_custom_bwd = torch.cuda.amp.custom_bwd
