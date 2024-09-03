@@ -927,7 +927,7 @@ def chunk_rwkv6(
     if scale is None:
         scale = r.shape[-1] ** -0.5
     if u.dim() == 2:
-        u = torch.broadcast_to(u.unsqueeze(0), (r.shape[0], *u.shape))
+        u = u.unsqueeze(0).repeat(r.shape[0], 1, 1)
     if initial_state is None:
         initial_state = torch.zeros(r.shape[0], r.shape[1], r.shape[-1], v.shape[-1], dtype=r.dtype, device=r.device)
     o, final_state = ChunkRWKV6Function.apply(r, k, v, g, u, scale, initial_state,
