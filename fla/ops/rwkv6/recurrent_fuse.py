@@ -276,8 +276,10 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
         )
 
         o = o.sum(0)
+        if initial_state is not None:
+            initial_state = initial_state.clone()
         if training:
-            ctx.save_for_backward(q, k, v, w, u, initial_state.clone(), o)
+            ctx.save_for_backward(q, k, v, w, u, initial_state, o)
             ctx.scale = scale
             ctx.reverse = reverse
         # we do not need the gradient of the final state from the next chunk
@@ -384,8 +386,6 @@ def fused_recurrent_rwkv6(
         scale = r.shape[-1] ** -0.5
     if u.dim() == 2:
         u = torch.broadcast_to(u.unsqueeze(0), (r.shape[0], *u.shape))
-    if initial_state is None:
-        initial_state = torch.zeros(r.shape[0], r.shape[1], r.shape[-1], v.shape[-1], dtype=r.dtype, device=r.device)
     o, final_state = FusedRecurrentRWKV6Function.apply(
         r, k, v, w, u, scale, initial_state, output_final_state, reverse, training)
     return o, final_state
