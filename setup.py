@@ -8,6 +8,7 @@ import warnings
 from pathlib import Path
 
 import torch
+from datetime import datetime
 from packaging.version import Version, parse
 from setuptools import find_packages, setup
 from torch.utils.cpp_extension import CUDA_HOME
@@ -18,7 +19,7 @@ with open('README.md') as f:
 # ninja build does not work unless include_dirs are abs path
 this_dir = os.path.dirname(os.path.abspath(__file__))
 
-PACKAGE_NAME = 'fla'
+PACKAGE_NAME = 'rwkv-fla'
 
 # FORCE_BUILD: force a fresh build locally, instead of attempting to find prebuilt wheels
 FORCE_BUILD = os.getenv('FLA_FORCE_BUILD', "FALSE") == 'TRUE'
@@ -106,18 +107,32 @@ if not SKIP_CUDA_BUILD:
 def get_package_version():
     with open(Path(this_dir) / 'fla' / '__init__.py') as f:
         version_match = re.search(r"^__version__\s*=\s*(.*)$", f.read(), re.MULTILINE)
-    return ast.literal_eval(version_match.group(1))
+    version = ast.literal_eval(version_match.group(1))
+
+    build_date = datetime.now().strftime("%Y%m%d")
+    dev_suffix = f".dev{build_date}"
+
+    git_dir = Path(this_dir) / '.git'
+    if git_dir.is_dir():
+        try:
+            git_hash = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'],
+                                               cwd=this_dir, universal_newlines=True).strip()
+            dev_suffix += f"+{git_hash}"
+        except subprocess.CalledProcessError:
+            pass
+
+    return f"{version}{dev_suffix}"
 
 
 setup(
     name=PACKAGE_NAME,
     version=get_package_version(),
-    description='Fast Triton-based implementations of causal linear attention',
+    description='Fast Triton-based implementations for RWKV',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    author='Songlin Yang, Yu Zhang',
-    author_email='yangsl66@mit.edu',
-    url='https://github.com/sustcsonglin/flash-linear-attention',
+    author='Zhiyuan Li, Songlin Yang, Yu Zhang',
+    author_email='uniartisan2017@gmail.com',
+    url='https://github.com/TorchRWKV/flash-linear-attention',
     packages=find_packages(),
     license='MIT',
     classifiers=[
@@ -130,6 +145,7 @@ setup(
     install_requires=[
         'triton>=2.2',
         'transformers',
+        'torch>=2.0',
         'einops',
         'ninja'
     ],

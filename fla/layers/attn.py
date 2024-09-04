@@ -20,7 +20,6 @@ try:
     from flash_attn.bert_padding import (index_first_axis, pad_input,
                                          unpad_input)
 except ImportError:
-    warnings.warn("Flash Attention is not installed. Please install it via `pip install flash-attn --no-build-isolation`")
     flash_attn_func = None
 
 logger = logging.get_logger(__name__)

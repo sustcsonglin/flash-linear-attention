@@ -125,6 +125,7 @@ class NativeRecurrentRWKV6Function(torch.autograd.Function):
     def backward(ctx, do, dht):
         q, k, v, w, u, o, initial_state = ctx.saved_tensors
         dq, dk, dv, dw, du, dh = naive_recurrent_rwkv6_bwd(q, k, v, w, u, o, do, initial_state)
+        dh = None if initial_state is None else dh
         return dq, dk, dv, dw, du, None, dh, None, None
 
 
