@@ -742,9 +742,9 @@ class ChunkRWKV6Function(torch.autograd.Function):
 
         if checkpoint_level > 1:
             del h
-            h, initial_state = None, None
+            h_t, initial_state = None, None
         else:
-            h_t, initial_state = h, initial_state.clone()
+            h_t, initial_state = h, (None if initial_state is None else initial_state.clone())
         del g, gs
         if training:
             ctx.save_for_backward(q, k, v, g_org, u, h_t, initial_state, A)
