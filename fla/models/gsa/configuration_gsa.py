@@ -14,14 +14,13 @@ class GSAConfig(PretrainedConfig):
         self,
         vocab_size: int = 32000,
         hidden_size: int = 2048,
-        gate_low_rank_dim: Optional[int] = None,
-        gate_logit_normalizer: Optional[int] = 16,
+        gate_logit_normalizer: Optional[int] = 8,
         clamp_min: Optional[float] = None,
         clamp_max: Optional[float] = None,
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
-        num_heads: int = 8,
+        num_heads: int = 4,
         num_kv_heads: Optional[int] = None,
         num_slots: Optional[int] = 64,
         use_short_conv: bool = False,
@@ -29,7 +28,6 @@ class GSAConfig(PretrainedConfig):
         exapnd_k: float = 1,
         exapnd_v: float = 1,
         feature_map: str = 'swish',
-        use_rope: bool = False,
         use_output_gate: bool = False,
         use_norm: bool = True,
         hidden_act: str = "swish",
@@ -50,7 +48,6 @@ class GSAConfig(PretrainedConfig):
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
-        self.gate_low_rank_dim = gate_low_rank_dim
         self.gate_logit_normalizer = gate_logit_normalizer
         self.clamp_min = clamp_min
         self.clamp_max = clamp_max
@@ -65,7 +62,6 @@ class GSAConfig(PretrainedConfig):
         self.expand_k = exapnd_k
         self.expand_v = exapnd_v
         self.feature_map = feature_map
-        self.use_rope = use_rope
         self.use_output_gate = use_output_gate
         self.use_norm = use_norm
         self.hidden_act = hidden_act

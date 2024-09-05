@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from fla.modules import (FusedRMSNormSwishGateLinear, RMSNorm, RMSNormLinear,
-                         RotaryEmbedding, ShortConvolution)
+                         ShortConvolution)
 from fla.modules.activations import swiglu_linear, swish
 from fla.modules.feature_map import (ReLUFeatureMap, SwishFeatureMap,
                                      T2RFeatureMap)
@@ -39,13 +39,12 @@ class GatedSlotAttention(nn.Module):
         elementwise_affine: Optional[bool] = True,
         norm_first: bool = True,
         norm_eps: float = 1e-5,
-        gate_low_rank_dim: Optional[int] = None,
-        gate_logit_normalizer: int = 16,
+        gate_logit_normalizer: int = 8,
         feature_map: str = 'swish',
-        use_rope: bool = False,
         use_output_gate: bool = False,
         use_norm: bool = True,
         layer_idx: Optional[int] = None,
+        scale: Optional[float] = 1.,
         **kwargs
     ) -> GatedSlotAttention:
         super().__init__()
@@ -68,14 +67,11 @@ class GatedSlotAttention(nn.Module):
         self.conv_size = conv_size
         self.conv_bias = conv_bias
 
-        if gate_low_rank_dim is None:
-            gate_low_rank_dim = self.hidden_size // 16
-        self.gate_low_rank_dim = gate_low_rank_dim
         self.gate_logit_normalizer = gate_logit_normalizer
 
-        self.use_rope = use_rope
         self.use_output_gate = use_output_gate
         self.use_norm = use_norm
+        self.scale = scale
 
         if num_slots is None:
             num_slots = self.head_k_dim
@@ -124,9 +120,6 @@ class GatedSlotAttention(nn.Module):
                 self.g_norm = RMSNormLinear(self.hidden_size, elementwise_affine, eps=norm_eps)
         self.o_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
-        if self.use_rope:
-            self.rotary = RotaryEmbedding(self.head_k_dim)
-
         self.apply(self._initialize_weights)
 
     def _initialize_weights(self, module: nn.Module):
@@ -145,7 +138,6 @@ class GatedSlotAttention(nn.Module):
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
-        lower_bound: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         # launching the triton kernel for just one token will actually be slower
@@ -171,18 +163,8 @@ class GatedSlotAttention(nn.Module):
             v = self.v_proj(hidden_states)
         f = self.f_proj(hidden_states)
 
-        if self.use_rope:
-            q = rearrange(q, '... (h d) -> ... h d', h=self.num_heads)
-            k = rearrange(k, '... (h d) -> ... h d', h=self.num_kv_heads)
-            seqlen_offset = 0
-            if past_key_values is not None:
-                seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
-            q, k = self.rotary(q, k, seqlen_offset)
-            q = rearrange(q, 'b n h d -> b h n d', h=self.num_heads)
-            k = rearrange(k, 'b n h d -> b h n d', h=self.num_kv_heads)
-        else:
-            q = rearrange(q, 'b n (h d) -> b h n d', h=self.num_heads)
-            k = rearrange(k, 'b n (h d) -> b h n d', h=self.num_kv_heads)
+        q = rearrange(q, 'b n (h d) -> b h n d', h=self.num_heads)
+        k = rearrange(k, 'b n (h d) -> b h n d', h=self.num_kv_heads)
         v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_kv_heads)
         f = rearrange(f, 'b n (h m) -> b h n m', h=self.num_kv_heads)
 
@@ -202,12 +184,12 @@ class GatedSlotAttention(nn.Module):
             o, recurrent_state = fused_recurrent_gated_abc(q, k, v, s, f,
                                                            initial_state=recurrent_state,
                                                            output_final_state=use_cache,
-                                                           scale=1.)
+                                                           scale=self.scale)
         elif mode == 'chunk':
             o, recurrent_state = chunk_gated_abc(q, k, v, s, f,
                                                  initial_state=recurrent_state,
                                                  output_final_state=use_cache,
-                                                 scale=1.)
+                                                 scale=self.scale)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
