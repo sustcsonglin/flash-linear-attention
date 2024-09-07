@@ -46,7 +46,7 @@ def chunk_retention_fwd_kernel_h(
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
-    b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
+    b_b = tl.math.log2(1 - tl.math.exp2(-5 - i_h * 1.0))
 
     o_i = tl.arange(0, BT)
     d_b, d_i = tl.math.exp2(BT * b_b), tl.math.exp2((BT - o_i - 1) * b_b)
@@ -112,7 +112,7 @@ def chunk_retention_fwd_kernel_o(
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
-    b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
+    b_b = tl.math.log2(1 - tl.math.exp2(-5 - i_h * 1.0))
 
     o_i = tl.arange(0, BT)
     d_i = tl.math.exp2((o_i + 1) * b_b)
@@ -175,7 +175,7 @@ def chunk_retention_bwd_kernel_dh(
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
-    b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
+    b_b = tl.math.log2(1 - tl.math.exp2(-5 - i_h * 1.0))
 
     o_i = tl.arange(0, BT)
     d_b, d_i = tl.math.exp2(BT * b_b), tl.math.exp2((o_i + 1) * b_b)
@@ -236,7 +236,7 @@ def chunk_retention_bwd_kernel_dqkv(
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
     n_bh = tl.num_programs(2)
-    b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
+    b_b = tl.math.log2(1 - tl.math.exp2(-5 - i_h * 1.0))
 
     o_i = tl.arange(0, BT)
     d_q, d_k = tl.math.exp2((o_i + 1) * b_b), tl.math.exp2((BT - o_i - 1) * b_b)

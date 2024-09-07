@@ -38,7 +38,7 @@ def parallel_retention_fwd_kernel(
     i_v = i_kv % (NV)
     i_h = i_bh % H
     # decay rate given the head index
-    b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
+    b_b = tl.math.log2(1 - tl.math.exp2(-5 - i_h * 1.0))
     # cumulative decay from the end of the chunk
     o_k = tl.arange(0, BTS)
     d_h = tl.math.exp2((BTS - o_k) * b_b)
@@ -122,7 +122,7 @@ def _parallel_retention_bwd_dq(
     p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (0, i_k * BK), (BTS, BK), (1, 0))
     p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (V, T), (s_vo_d, s_vo_t), (i_v * BV, 0), (BV, BTS), (0, 1))
     # decay rate given the head index
-    b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
+    b_b = tl.math.log2(1 - tl.math.exp2(-5 - i_h * 1.0))
     # overall decay rate for an entire block
     d_b = tl.math.exp2(b_b * BTS)
     # cumulative decay from the end of the chunk
@@ -184,7 +184,7 @@ def _parallel_retention_bwd_dkv(
     BV: tl.constexpr,
 ):
     # no overlap. no need for mask.
-    b_b = tl.math.log2(1 - tl.math.pow(2, -5 - i_h * 1.0))
+    b_b = tl.math.log2(1 - tl.math.exp2(-5 - i_h * 1.0))
     # overall decay rate for an entire block
     d_b = tl.math.exp2(b_b * BTS)
     # compute dk dv

@@ -46,7 +46,7 @@ def fused_recurrent_retention_fwd_kernel(
     i_h = i_bh % H
 
     # decay rate given the head index
-    b_b = (1 - tl.math.pow(2, -5 - i_h * 1.0))
+    b_b = (1 - tl.math.exp2(-5 - i_h * 1.0))
 
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
@@ -125,7 +125,7 @@ def fused_recurrent_retention_bwd_kernel(
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_h = i_bh % H
 
-    b_b = 1 - tl.math.pow(2, -5 - i_h * 1.0)
+    b_b = 1 - tl.math.exp2(-5 - i_h * 1.0)
 
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
