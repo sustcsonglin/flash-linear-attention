@@ -76,7 +76,7 @@ class Mamba2Config(PretrainedConfig):
             Minimum clamping value of the `dt_proj.bias` layer initialization.
         time_step_limit (`tuple`, *optional*, defaults to `(0.0, inf)`):
             Accepted range of time step values.
-        rescale_prenorm_residual (`bool`, *optional*, defaults to `False`):
+        rescale_prenorm_residual (`bool`, *optional*, defaults to `True`):
             Whether or not to rescale `out_proj` weights when initializing.
         use_cache (`bool`, *optional*, defaults to `True`):
             Whether or not the cache should be used.
@@ -115,7 +115,7 @@ class Mamba2Config(PretrainedConfig):
         time_step_max: float = 0.1,
         time_step_floor: float = 1e-4,
         time_step_limit=(0.0, float("inf")),
-        rescale_prenorm_residual: bool = False,
+        rescale_prenorm_residual: bool = True,
         use_cache: bool = True,
         rms_norm: bool = True,
         chunk_size: int = 256,
