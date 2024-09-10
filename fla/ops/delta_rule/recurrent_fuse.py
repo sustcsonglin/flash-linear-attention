@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) 2023, Yu Zhang, Songlin Yang
+# Copyright (c) 2024, Songlin Yang, Yu Zhang
 
 from typing import Tuple
 import torch

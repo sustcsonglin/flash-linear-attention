@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
+# Copyright (c) 2024, Songlin Yang, Yu Zhang
 
 # Sect4.2 of Linear Transformers Are Secretly Fast Weight Programmers https://arxiv.org/abs/2102.11174
-
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional, Tuple

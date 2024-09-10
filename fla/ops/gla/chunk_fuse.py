@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
+# Copyright (c) 2024, Songlin Yang, Yu Zhang
 
-# Copyright (c) 2023, Songlin Yang
 # Gated Linear Attention Transformers with Hardware-Efficient Training: https://arxiv.org/abs/2312.06635
-# on-the-fly computation without materializing hidden statets into HBMs
 
 from typing import Tuple
 

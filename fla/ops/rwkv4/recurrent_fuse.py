@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# adopted from https://github.com/codekansas/rwkv
+# Copyright (c) 2024, Songlin Yang, Yu Zhang
 
 from typing import Any, cast
 

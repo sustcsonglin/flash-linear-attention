@@ -1,3 +1,6 @@
+# -*- coding: utf-8 -*-
+# Copyright (c) 2024, Songlin Yang, Yu Zhang
+
 import triton
 import triton.language as tl
 import torch
