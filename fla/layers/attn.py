@@ -95,7 +95,9 @@ class Attention(nn.Module):
                 seqlen_offset = (seqlen_offset + attention_mask.sum(-1) - attention_mask.shape[-1]).clamp(min=0)
                 max_seqlen = q.shape[1] + max(seqlen_offset)
 
-        q, k = self.rotary(q, k, seqlen_offset, max(max_seqlen, self.max_position_embeddings))
+        if self.max_position_embeddings is not None:
+            max_seqlen = max(max_seqlen, self.max_position_embeddings)
+        q, k = self.rotary(q, k, seqlen_offset, max_seqlen)
 
         k = rearrange(k, 'b t h d -> b h t d')
         if past_key_values is not None:
