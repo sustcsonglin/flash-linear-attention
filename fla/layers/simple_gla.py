@@ -12,7 +12,7 @@ from einops import rearrange, repeat
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.modules.activations import ACT2FN
-from fla.ops.simple_gla import chunk_simple_gla
+from fla.ops.simple_gla import chunk_simple_gla, fused_recurrent_simple_gla
 
 if TYPE_CHECKING:
     from fla.models.utils import Cache
@@ -100,7 +100,7 @@ class SimpleGatedLinearAttention(nn.Module):
         self.value_dim_per_group = self.value_dim // self.num_kv_groups
         self.layer_idx = layer_idx
 
-        assert mode in ['chunk'], f"Not suppoerted mode `{mode}`."
+        assert mode in ['chunk', "fused_recurrent"], f"Not suppoerted mode `{mode}`."
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
 
@@ -186,6 +186,8 @@ class SimpleGatedLinearAttention(nn.Module):
         recurrent_state = last_state[-1] if use_cache else None
         if mode == 'chunk':
             o, recurrent_state = chunk_simple_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
+        elif mode == 'fused_recurrent':
+            o, recurrent_state = fused_recurrent_simple_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
