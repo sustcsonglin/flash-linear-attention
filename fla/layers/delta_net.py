@@ -21,27 +21,13 @@ from fla.modules.l2norm import l2_norm_fn
 if TYPE_CHECKING:
     from fla.models.utils import Cache
 
-
-def simple_norm(x):
-    return (F.normalize(x, dim=-1) * x.shape[-1] ** 0.5).to(x)
-
-
 # @torch.jit.script
 def elu_p1(x):
     return (F.elu(x, 1., False) + 1.).to(x)
 
-
 # @torch.jit.script
 def sum_norm(x):
     return (x / x.sum(-1, keepdim=True)).to(x)
-
-
-# @torch.jit.script
-def elu_norm(x):
-    dtype = x.dtype
-    x = F.elu(x, 1., False) + 1.
-    return (x / x.sum(-1, keepdim=True)).to(dtype)
-
 
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
 class DeltaNet(nn.Module):
@@ -208,13 +194,11 @@ class DeltaNet(nn.Module):
             beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
         state = past_key_values[self.layer_idx][-1] if use_cache else None
         if mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_delta_rule(q, k, v, beta, state, output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_delta_rule(q=q, k=k, v=v, beta=beta, initial_state=state, output_final_state=use_cache)
         elif mode == 'fused_chunk':
-            assert self.chunk_size in [16, 32, 64]
-            o, recurrent_state = fused_chunk_delta_rule(q, k, v, beta, self.chunk_size, state, output_final_state=use_cache)
+            o, recurrent_state = fused_chunk_delta_rule(q=q, k=k, v=v, beta=beta, BT=self.chunk_size, initial_state=state, output_final_state=use_cache)
         elif mode == 'chunk':
-            assert self.chunk_size in [16, 32, 64]
-            o, recurrent_state = chunk_delta_rule(q, k, v, beta, self.chunk_size, state, output_final_state=use_cache)
+            o, recurrent_state = chunk_delta_rule(q=q, k=k, v=v, beta=beta, BT=self.chunk_size, initial_state=state, output_final_state=use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 

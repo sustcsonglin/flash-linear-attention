@@ -16,8 +16,7 @@ from fla.utils import autocast_custom_bwd, autocast_custom_fwd
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16)
+        triton.Config({}, num_warps=8)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -42,7 +41,6 @@ def fwd_prepare_dv_kernel(
     BV: tl.constexpr
 ):
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
-
     b_A = tl.zeros([BT, BT], dtype=tl.float32)
 
     for i_k in range(tl.cdiv(K, BK)):
@@ -63,7 +61,7 @@ def fwd_prepare_dv_kernel(
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
 
-def fwd_prepare_dv(q, k, do, BT):
+def fwd_prepare_dv(q, k, do, BT, scale):
     dv = torch.empty_like(do)
     B, H, T, K, V = *k.shape, do.shape[-1]
     NT = triton.cdiv(T, BT)
@@ -73,7 +71,7 @@ def fwd_prepare_dv(q, k, do, BT):
         q, k, do, dv,
         k.stride(1), k.stride(2), k.stride(3),
         do.stride(1), do.stride(2), do.stride(3),
-        T, K, V, K**-0.5, BT, BK, BV
+        T, K, V, scale, BT, BK, BV
     )
     return dv
 
@@ -83,8 +81,7 @@ def fwd_prepare_dv(q, k, do, BT):
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16)
+        triton.Config({}, num_warps=8)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -161,8 +158,7 @@ def chunk_delta_rule_fwd_kernel_h(
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16)
+        triton.Config({}, num_warps=8)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -224,8 +220,7 @@ def chunk_linear_attn_fwd_kernel_o(
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16)
+        triton.Config({}, num_warps=8)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -234,6 +229,8 @@ def chunk_delta_rule_bwd_kernel_dhu(
     q,
     k,
     d,
+    dht,
+    dh0,
     do,
     dh,
     dv,
@@ -255,12 +252,19 @@ def chunk_delta_rule_bwd_kernel_dhu(
     BC: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    NT: tl.constexpr
+    NT: tl.constexpr,
+    USE_DHT: tl.constexpr,
+    USE_DH0: tl.constexpr
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
     # [BK, BV]
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
+
+    if USE_DHT:
+        p_dht = tl.make_block_ptr(dht + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        b_dh += tl.load(p_dht, boundary_check=(0, 1))
+
     for i_t in range(NT - 1, -1, -1):
         p_dh = tl.make_block_ptr(dh + i_bh * s_h_h + i_t * K * V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
@@ -294,7 +298,10 @@ def chunk_delta_rule_bwd_kernel_dhu(
             b_dh_tmp += tl.dot(b_q, b_do.to(b_q.dtype), allow_tf32=False)
             b_dh_tmp -= tl.dot(b_d, b_dv.to(b_q.dtype), allow_tf32=False)
         b_dh += b_dh_tmp
-
+    
+    if USE_DH0:
+        p_dh0 = tl.make_block_ptr(dh0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
 @triton.autotune(
     configs=[
@@ -415,7 +422,7 @@ def chunk_fwd_h_fn(k, w, u, BT, initial_state, final_state):
     return h, v_new
 
 
-def chunk_bwd_dhu_fn(q, k, w, do, dv, BT):
+def chunk_bwd_dhu_fn(q, k, w, dht, dh0, do, dv, BT, scale):
     B, H, T, K, V = *q.shape, do.shape[-1]
 
     BK = triton.next_power_of_2(K)
@@ -429,21 +436,20 @@ def chunk_bwd_dhu_fn(q, k, w, do, dv, BT):
     assert NK == 1, 'NK > 1 is not supported because it involves time-consuming synchronization'
 
     dh = q.new_empty(B, H, NT * K, V)
-    # dv_new = torch.empty_like(do)
     grid = (NK, NV, B * H)
     dv2 = torch.empty_like(dv)
     chunk_delta_rule_bwd_kernel_dhu[grid](
-        q, k, w, do, dh, dv, dv2,
+        q, k, w, dht, dh0, do, dh, dv, dv2,
         q.stride(1), q.stride(2), q.stride(3),
         do.stride(1), do.stride(2), do.stride(3),
         dh.stride(1), dh.stride(2),
-        K**-0.5,
-        H=H, T=T, K=K, V=V, BT=BT, BC=BC, BK=BK, BV=BV, NT=NT,
+        scale,
+        H=H, T=T, K=K, V=V, BT=BT, BC=BC, BK=BK, BV=BV, NT=NT, USE_DHT=dht is not None, USE_DH0=dh0 is not None,
     )
-    return dh, dv2
+    return dh, dh0, dv2
 
 
-def chunk_fwd_o_fn(q, k, v_new, h, BT):
+def chunk_fwd_o_fn(q, k, v_new, h, BT, scale):
     B, H, T, K, V = *q.shape, v_new.shape[-1]
 
     BK = triton.next_power_of_2(K)
@@ -458,15 +464,14 @@ def chunk_fwd_o_fn(q, k, v_new, h, BT):
         q.stride(1), q.stride(2), q.stride(3),
         v_new.stride(1), v_new.stride(2), v_new.stride(3),
         h.stride(1), h.stride(2),
-        scale=K**-0.5,
+        scale=scale,
         H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
     )
     return o
 
 
-def chunk_bwd_dqkw_fn(q, k, v_new, w, h, du, do, dh, BT):
+def chunk_bwd_dqkw_fn(q, k, v_new, w, h, du, do, dh, BT, scale):
     B, H, T, K, V = *q.shape, v_new.shape[-1]
-
     BK = triton.next_power_of_2(K)
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
@@ -481,7 +486,7 @@ def chunk_bwd_dqkw_fn(q, k, v_new, w, h, du, do, dh, BT):
         q.stride(1), q.stride(2), q.stride(3),
         v_new.stride(1), v_new.stride(2), v_new.stride(3),
         dh.stride(1), dh.stride(2),
-        scale=K ** -0.5,
+        scale=scale,
         H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
     )
     return dq.to(q.dtype), dk.to(k.dtype), dw.to(w.dtype)
@@ -492,7 +497,7 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @autocast_custom_fwd
-    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=1):
+    def forward(ctx, q, k, v, beta, BT, scale, initial_state, output_final_state, checkpoint_level=1):
         # obtain WY representation. u is actually the new v.
         w, u, A = fwd_prepare_wy_repr(k, v, beta, BT)
         # ### forward_h
@@ -502,30 +507,36 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
                                       dtype=torch.float32, requires_grad=False)
         h, v_new = chunk_fwd_h_fn(k, w, u, BT, initial_state, final_state)
         # obtain output
-        o = chunk_fwd_o_fn(q, k, v_new, h, BT)
+        o = chunk_fwd_o_fn(q, k, v_new, h, BT, scale)
         # save memory
         if checkpoint_level == 1:
             h, v_new = None, None
         ctx.save_for_backward(q, k, v, beta, A, h, v_new, initial_state)
         ctx.BT = BT
+        ctx.scale = scale
         return o.to(q.dtype), final_state
 
     @staticmethod
     @contiguous
     @autocast_custom_bwd
-    def backward(ctx, do, d_ht=None):
+    def backward(ctx, do, dht):
         q, k, v, beta, A, h, v_new, initial_state = ctx.saved_tensors
         BT = ctx.BT
+        scale = ctx.scale
         w, u = fwd_recompute_w_u(k, v, beta, A, BT)
         # checkpont_level=1, recomputation.
         if h is None:
             h, v_new = chunk_fwd_h_fn(k, w, u, BT, initial_state, None)
-        dv = fwd_prepare_dv(q, k, do, BT)
-        dh, dv = chunk_bwd_dhu_fn(q, k, w, do, dv, BT)
-        dq, dk, dw = chunk_bwd_dqkw_fn(q, k, v_new, w, h, dv, do, dh, BT)
+        if initial_state is not None and initial_state.requires_grad:
+            dh0 = torch.empty_like(initial_state, dtype=torch.float32)
+        else:
+            dh0 = None
+        dv = fwd_prepare_dv(q, k, do, BT, scale)
+        dh, dh0, dv = chunk_bwd_dhu_fn(q, k, w, dht, dh0, do, dv, BT, scale)
+        dq, dk, dw = chunk_bwd_dqkw_fn(q, k, v_new, w, h, dv, do, dh, BT, scale)
         dk2, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, A, dw, dv, BT)
         dk.add_(dk2)
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dbeta.to(beta.dtype), None, None, None, None
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dbeta.to(beta.dtype), None, None, dh0, None, None, None
 
 
 def chunk_delta_rule(
@@ -533,11 +544,37 @@ def chunk_delta_rule(
     k: torch.Tensor,
     v: torch.Tensor,
     beta: torch.Tensor,
-    BT: int,
+    scale: float = None,
+    BT: int = 64,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
 ):
+    r"""
+    Args:
+        q (torch.Tensor):
+            queries of shape `(B, H, T, K)`
+        k (torch.Tensor):
+            keys of shape `(B, H, T, K)`
+        v (torch.Tensor):
+            values of shape `(B, H, T, V)`
+        beta (torch.Tensor):
+             betas of shape `(B, H, T)`
+        scale (Optional[int]):
+            Scale factor for the RetNet attention scores.
+            If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
+        BT (int):
+            chunk size. Default: `64`.
+        initial_state (Optional[torch.Tensor]):
+            Initial state of shape `(B, H, K, V)`. Default: `None`.
+        output_final_state (Optional[bool]):
+            Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
+    """
     assert q.dtype == k.dtype == v.dtype
-    assert q.dtype != torch.float32, "FusedChunkDeltaRuleFunction does not support float32. Please use bfloat16."
-    o, final_state = ChunkDeltaRuleFunction.apply(q, k, v, beta, BT, initial_state, output_final_state)
+    assert q.dtype != torch.float32, "ChunkDeltaRuleFunction does not support float32. Please use bfloat16."
+    assert len(beta.shape) == 3, "beta must be of shape (batch size, num of head, seq len)."
+    if scale is None:
+        scale = k.shape[-1] ** -0.5
+    else:
+        assert scale > 0, "scale must be positive."
+    o, final_state = ChunkDeltaRuleFunction.apply(q, k, v, beta, BT, scale, initial_state, output_final_state)
     return o, final_state

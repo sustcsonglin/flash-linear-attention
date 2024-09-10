@@ -5,18 +5,15 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
-
-from fla.ops.delta_rule.utils import bwd_prepare_wy_repr, fwd_prepare_wy_repr
+from fla.ops.delta_rule.wy_fast import (bwd_prepare_wy_repr, fwd_prepare_wy_repr, fwd_recompute_w)
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
-
 
 # on-the-fly computation without materializing hidden statets into HBMs
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
+        triton.Config({}, num_warps=4)
     ],
     key=["BT", "BK"],
 )
@@ -116,9 +113,7 @@ def fused_chunk_delta_rule_fwd_kernel(
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-        triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=8)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -130,6 +125,8 @@ def fused_chunk_delta_rule_bwd_kernel(
     k,  # key [B, H, L, D_head_V]
     v,  # value [B, H, L, D_head_V]
     d,  # decay [B, H, L, D_head_K]
+    dht, # gradient of final state [B, H, D_head_K, D_head_V]
+    dh0, # gradient of initial state [B, H, D_head_K, D_head_V]
     do,  # gradient of output [B, H, L, D_head_V]
     dq,  # gradient of query [NV, B, H, L, D_head_K]
     dk,  # gradient of key [NV, B, H, L, D_head_K]
@@ -145,13 +142,15 @@ def fused_chunk_delta_rule_bwd_kernel(
     B,  # batch_size
     H,  # n_heads
     T,  # seq_len
-    scale,  # D_head_K ** -0.5
+    scale,  # D_head_K ** -0.5 by default
     BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     DK: tl.constexpr,  # D_head_K
     DV: tl.constexpr,  # D_head_V
-    USE_INITIAL_STATE: tl.constexpr,
+    USE_INITIAL_STATE: tl.constexpr, # whether to use initial state
+    USE_DHT: tl.constexpr, # whether to use final state gradient
+    USE_DHO: tl.constexpr, # whether to use initial state gradient
     CHECK: tl.constexpr
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -160,16 +159,19 @@ def fused_chunk_delta_rule_bwd_kernel(
     # first reverse
     # [BK, BV]
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
+    if USE_DHT:
+        p_dht = tl.make_block_ptr(dht + i_bh * DK * DV, (DK, DV), (DV, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        b_dh += tl.load(p_dht, boundary_check=(0, 1)).to(tl.float32)
     m_s = o_i[:, None] <= o_i[None, :]
-    for i in range(1, tl.cdiv(T, BT) + 1):
-        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
-        p_d = tl.make_block_ptr(d + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
-        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
 
-        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dk = tl.make_block_ptr(dk + (i_bh+i_v*B*H) * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (T - i*BT, i_k*BK), (BT, BK), (1, 0))
-        p_dv = tl.make_block_ptr(dv + (i_bh+i_k*B*H) * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (T - i*BT, i_v*BV), (BT, BV), (1, 0))
+    for i in range(tl.cdiv(T, BT) - 1, -1, -1):
+        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK,  i * BT), (BK, BT), (0, 1))
+        p_d = tl.make_block_ptr(d + i_bh * s_qk_h, (DK, T), (s_qk_d, s_qk_t), (i_k * BK, i * BT), (BK, BT), (0, 1))
+        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dk = tl.make_block_ptr(dk + (i_bh+i_v*B*H) * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i*BT, i_k*BK), (BT, BK), (1, 0))
+        p_dv = tl.make_block_ptr(dv + (i_bh+i_k*B*H) * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i*BT, i_v*BV), (BT, BV), (1, 0))
         # [DK, BT]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_q = (b_q * scale).to(b_q.dtype)
@@ -190,36 +192,39 @@ def fused_chunk_delta_rule_bwd_kernel(
         # [BT, DV]
         b_dv = tl.dot(b_s, b_do, allow_tf32=False)
         b_d = tl.load(p_d, boundary_check=(0, 1))
-        if CHECK and i == 1:
-            b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), allow_tf32=False)
-            b_dv += tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False)
-            b_dh += tl.dot(b_q, b_do, allow_tf32=False)
-            b_dh -= tl.dot(b_d, b_dv.to(b_d.dtype), allow_tf32=False)
-        else:
-            b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), allow_tf32=False)
-            b_dv += tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False)
-            b_dh += tl.dot(b_q, b_do, allow_tf32=False)
-            b_dh -= tl.dot(b_d, b_dv.to(b_d.dtype), allow_tf32=False)
+        b_dk += tl.dot(b_v, tl.trans(b_dh).to(b_v.dtype), allow_tf32=False)
+        b_dv += tl.dot(b_k, b_dh.to(b_k.dtype), allow_tf32=False)
+        b_dh += tl.dot(b_q, b_do, allow_tf32=False)
+        b_dh -= tl.dot(b_d, b_dv.to(b_d.dtype), allow_tf32=False)
 
         tl.store(p_dk, (b_dk).to(p_dk.dtype.element_ty), boundary_check=(0, 1))
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
+
+    if USE_DHO:
+        p_dh0 = tl.make_block_ptr(dh0 + i_bh * DK * DV, (DK, DV), (DV, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
     # sync threads
     b_h = None
     tl.debug_barrier()
     m_s = o_i[:, None] >= o_i[None, :]
-    # [BV, BK]
     b_h = tl.zeros([BV, BK], dtype=tl.float32)
     if USE_INITIAL_STATE:
         p_h = tl.make_block_ptr(initial_state + i_bh * DK * DV, (DV, DK), (1, DV), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
-        b_h = tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
+        b_h += tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
     NT = tl.cdiv(T, BT)
     for i in range(0, NT):
+        p_dv = tl.make_block_ptr(dv + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        b_dv = tl.load(p_dv, boundary_check=(0, 1))
+        b_dd = tl.dot(b_dv.to(k.dtype.element_ty), b_h.to(k.dtype.element_ty), allow_tf32=False)
+        p_dd = tl.make_block_ptr(dd + (i_bh + i_v*B*H) * s_qk_h, (T, DK), (s_qk_t, s_qk_d),
+                                    (i * BT, i_k * BK), (BT, BK), (1, 0))
+        tl.store(p_dd, -b_dd.to(p_dd.dtype.element_ty), boundary_check=(0, 1))
+
         p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
         p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (DV, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
         p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
         p_dq = tl.make_block_ptr(dq + (i_bh + i_v*B*H) * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i*BT, i_k*BK), (BT, BK), (1, 0))
-
         # [BT, DK]
         b_k = tl.load(p_k, boundary_check=(0, 1))
         # [DV, BT]
@@ -242,21 +247,11 @@ def fused_chunk_delta_rule_bwd_kernel(
         b_dq *= scale
         tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
 
-        if i < (NT - 1):
-            p_dv = tl.make_block_ptr(dv + i_bh * s_vo_h, (T, DV), (s_vo_t, s_vo_d), ((i + 1) * BT, i_v * BV), (BT, BV), (1, 0))
-            b_dv = tl.load(p_dv, boundary_check=(0, 1))
-            b_dd = tl.dot(b_dv.to(b_k.dtype), b_h.to(b_k.dtype), allow_tf32=False)
-            p_dd = tl.make_block_ptr(dd + (i_bh + i_v*B*H) * s_qk_h, (T, DK), (s_qk_t, s_qk_d),
-                                     ((i+1) * BT, i_k * BK), (BT, BK), (1, 0))
-            tl.store(p_dd, -b_dd.to(p_dd.dtype.element_ty), boundary_check=(0, 1))
 
-
-def fused_chunk_delta_rule_fwd(q, k, v, d, BT, initial_state, output_final_state):
+def fused_chunk_delta_rule_fwd(q, k, v, d, BT, scale, initial_state, output_final_state):
     batch_size, n_heads, seq_len, d_head_qk = q.shape
     d_head_v = v.shape[-1]
-    scale = d_head_qk ** -0.5
     BT = BT
-    # ctx.BT = BT
     BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
     NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
     assert NK == 1, 'NK should be 1'
@@ -291,10 +286,9 @@ def fused_chunk_delta_rule_fwd(q, k, v, d, BT, initial_state, output_final_state
     return o, v_new, CHECK, final_state
 
 
-def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
+def fused_chunk_delta_rule_bwd(q, k, v, d, dht, dh0, do, BT, CHECK, initial_state, scale):
     batch_size, n_heads, seq_len, d_head_qk = q.shape
     d_head_v = v.shape[-1]
-    scale = d_head_qk ** -0.5
     BK, BV = triton.next_power_of_2(d_head_qk), min(triton.next_power_of_2(d_head_v), 32)
     NK, NV = triton.cdiv(d_head_qk, BK), triton.cdiv(d_head_v, BV)
     assert NK == 1
@@ -304,13 +298,15 @@ def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
     dv = q.new_empty(NK, batch_size, n_heads, seq_len, d_head_v)
     grid = (NV, NK, batch_size * n_heads)
     fused_chunk_delta_rule_bwd_kernel[grid](
-        q, k, v, d, do, dq, dk, dv, dd, initial_state,
+        q, k, v, d, dht, dh0, do, dq, dk, dv, dd, initial_state,
         q.stride(1), q.stride(2), q.stride(3),
         v.stride(1), v.stride(2), v.stride(3),
         batch_size, n_heads, seq_len, scale,
         BT=BT, DK=d_head_qk, DV=d_head_v, BK=BK, BV=BV,
         USE_INITIAL_STATE=initial_state is not None,
-        CHECK=CHECK,
+        USE_DHT=dht is not None,
+        USE_DHO=dh0 is not None,
+        CHECK=CHECK
         # num_warps=num_warps,
         # num_stages=num_stages
     )
@@ -318,7 +314,6 @@ def fused_chunk_delta_rule_bwd(q, k, v, d, do, BT, CHECK, initial_state):
     dk = dk.sum(0)
     dv = dv.sum(0)
     dd = dd.sum(0)
-    dd[:, :, 0:BT] = 0
     return dq, dk, dv, dd
 
 
@@ -327,36 +322,36 @@ class FusedChunkDeltaRuleFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @autocast_custom_fwd
-    def forward(ctx, q, k, v, beta, BT, initial_state, output_final_state, checkpoint_level=0):
-        # lvl=1 will recompute ``fwd_prepare_wy_repr`` for saving memory.
-        assert checkpoint_level in [0, 1]
-        k_origin = k
-        # k = _l2_norm_fwd(k_origin)
-        k = k
-        d, v_new = fwd_prepare_wy_repr(k, v, beta, BT)
-        o, v_new2, CHECK, final_state = fused_chunk_delta_rule_fwd(q, k, v_new, d, BT, initial_state, output_final_state)
-        if checkpoint_level == 1:
-            d, v_new = None, None
-        ctx.save_for_backward(q, k_origin, v, v_new, v_new2, d, beta, initial_state)
+    def forward(ctx, q, k, v, beta, BT, scale, initial_state, output_final_state):
+        # obtain WY representation. u is actually the new v.
+        w, u, A = fwd_prepare_wy_repr(k, v, beta, BT)
+        # ### forward_h
+        final_state = None
+        if output_final_state:
+            final_state = q.new_empty(q.shape[0], q.shape[1], q.shape[-1], v.shape[-1], dtype=torch.float32, requires_grad=False)
+        o, v_new, CHECK, final_state = fused_chunk_delta_rule_fwd(q, k, u, w, BT, scale, initial_state, output_final_state)
+        ctx.save_for_backward(q, k, v, beta, A, v_new, initial_state)
         ctx.CHECK = CHECK
-        ctx.chunk_size = BT
+        ctx.BT = BT
+        ctx.scale = scale
         return o.to(q.dtype), final_state
 
     @staticmethod
     @contiguous
     @autocast_custom_bwd
-    def backward(ctx, do, d_final_state=None):
-        q, k_origin, v, v_new, v_new2, d, beta, initial_state = ctx.saved_tensors
-        chunk_size = ctx.chunk_size
-        k = k_origin
-        # k = _l2_norm_fwd(k_origin)
-        if d is None:
-            d, v_new = fwd_prepare_wy_repr(k, v, beta, chunk_size)
-        dq, dk, dv, dd = fused_chunk_delta_rule_bwd(q, k, v_new2, d, do, chunk_size, ctx.CHECK, initial_state)
-        dk2, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, d, v_new, dd, dv, chunk_size)
+    def backward(ctx, do, dht):
+        q, k, v, beta, A, v_new, initial_state = ctx.saved_tensors
+        BT = ctx.BT
+        scale = ctx.scale
+        w = fwd_recompute_w(k, beta, A, BT)
+        if initial_state is not None and initial_state.requires_grad:
+            dh0 = torch.empty_like(initial_state, dtype=torch.float32)
+        else:
+            dh0 = None
+        dq, dk, dv, dw = fused_chunk_delta_rule_bwd(q, k, v_new, w, dht, dh0, do, BT, ctx.CHECK, initial_state, scale)
+        dk2, dv, dbeta = bwd_prepare_wy_repr(k, v, beta, A, dw, dv, BT)
         dk.add_(dk2)
-        # dk = _l2_norm_bwd(k_origin, dk)
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dbeta.to(d.dtype), None, None, None
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dbeta.to(beta.dtype), None, None, dh0, None, None, None
 
 
 def fused_chunk_delta_rule(
@@ -364,59 +359,38 @@ def fused_chunk_delta_rule(
     k: torch.Tensor,
     v: torch.Tensor,
     beta: torch.Tensor,
-    BT: int,
+    scale: float = None,
+    BT: int = 16,
     initial_state: torch.Tensor = None,
-    output_final_state: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    output_final_state: bool = False
+):
+    r"""
+    Args:
+        q (torch.Tensor):
+            queries of shape `(B, H, T, K)`
+        k (torch.Tensor):
+            keys of shape `(B, H, T, K)`
+        v (torch.Tensor):
+            values of shape `(B, H, T, V)`
+        beta (torch.Tensor):
+             betas of shape `(B, H, T)`
+        scale (Optional[int]):
+            Scale factor for the RetNet attention scores.
+            If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
+        BT (int):
+            chunk size. Default: `16`.
+        initial_state (Optional[torch.Tensor]):
+            Initial state of shape `(B, H, K, V)`. Default: `None`.
+        output_final_state (Optional[bool]):
+            Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
+    """
+    assert BT in [16, 32], "BT must be 16 or 32."
     assert q.dtype == k.dtype == v.dtype
-    assert q.dtype != torch.float32, "FusedChunkDeltaRuleFunction does not support float32. Please use bfloat16."
-
-    if initial_state is not None:
-        initial_state = initial_state.detach()
-    o, final_state = FusedChunkDeltaRuleFunction.apply(q, k, v, beta, BT, initial_state, output_final_state)
+    assert q.dtype != torch.float32, "ChunkDeltaRuleFunction does not support float32. Please use bfloat16."
+    assert len(beta.shape) == 3, "beta must be of shape (batch size, num of head, seq len)."
+    if scale is None:
+        scale = k.shape[-1] ** -0.5
+    else:
+        assert scale > 0, "scale must be positive."
+    o, final_state = FusedChunkDeltaRuleFunction.apply(q, k, v, beta, BT, scale, initial_state, output_final_state)
     return o, final_state
-
-
-def delta_rule_recurrence(q, k, v, beta):
-    b, h, l, d_k = q.shape
-    d_v = v.shape[-1]
-    o = torch.zeros_like(v)
-    S = torch.zeros(b, h, d_k, d_v).to(v)
-    q = q * (d_k ** -0.5)
-    k = torch.nn.functional.normalize(k, p=2, dim=-1)
-    for i in range(l):
-        _k = k[:, :, i]
-        _q = q[:, :, i]
-        _v = v[:, :, i].clone()
-        beta_i = beta[:, :, i]
-        _v = _v - (S.clone() * _k[..., None]).sum(-2)
-        _v = _v * beta_i[..., None]
-        S = S.clone() + _k.unsqueeze(-1) * _v.unsqueeze(-2)
-        o[:, :, i] = torch.einsum('bhd,bhdm->bhm', _q, S)
-    return o
-
-
-if __name__ == "__main__":
-    import torch.nn.functional as F
-    seq_len = 128
-    b = 2
-    h = 4
-    q = F.normalize(torch.randn(b, h, seq_len, 64), 2, -1)
-    k = F.normalize(torch.randn(b, h, seq_len, 64), 2, -1)
-    v = F.normalize(torch.randn(b, h, seq_len, 128), 2, -1)
-    beta = torch.rand(b, h, seq_len).sigmoid()
-    q, k, v, beta = map(lambda x: x.cuda().to(torch.float32).requires_grad_(True), (q, k, v, beta))
-    do = torch.rand_like(v)
-    o2 = delta_rule_recurrence(q, k, v.clone(), beta)
-    o2.backward(do, retain_graph=True)
-    q_grad2, k_grad2, v_grad2, beta_grad2 = q.grad, k.grad, v.grad, beta.grad
-    q.grad = k.grad = v.grad = beta.grad = None
-    o, _ = fused_chunk_delta_rule(q, k, v, beta, 32)
-    o.backward(do, retain_graph=True)
-    q_grad, k_grad, v_grad, beta_grad = q.grad, k.grad, v.grad, beta.grad
-    q.grad = k.grad = v.grad = beta.grad = None
-    print((o - o2).abs().max())
-    print((q_grad - q_grad2).abs().max())
-    print((k_grad - k_grad2).abs().max())
-    print((v_grad - v_grad2).abs().max())
-    print((beta_grad - beta_grad2).abs().max())

@@ -90,8 +90,7 @@ def fwd_prepare_wy_repr_kernel(
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16)
+        triton.Config({}, num_warps=8)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -139,6 +138,47 @@ def fwd_recompute_w_u_kernel(
         b_w = tl.dot(b_A, b_kb, allow_tf32=False)
         p_w = tl.make_block_ptr(w + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         tl.store(p_w, b_w.to(p_w.dtype.element_ty), boundary_check=(0, 1))
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=1),
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8)
+    ],
+    key=["BT", "BK"],
+)
+@triton.jit
+def fwd_recompute_w_kernel(
+    k,
+    beta,
+    w,
+    A,
+    s_qk_h,
+    s_qk_t,
+    s_qk_d,
+    T,
+    K,
+    BT: tl.constexpr,
+    BK: tl.constexpr
+):
+    i_t, i_bh = tl.program_id(0), tl.program_id(1)
+
+    p_beta = tl.make_block_ptr(beta + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
+    b_beta = tl.load(p_beta, boundary_check=(0,))
+
+    p_A = tl.make_block_ptr(A + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
+    b_A = tl.load(p_A, boundary_check=(0, 1)).to(k.dtype.element_ty)
+
+    for i_k in range(tl.cdiv(K, BK)):
+        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        b_k = tl.load(p_k, boundary_check=(0, 1))
+        b_kb = (b_k * b_beta[:, None]).to(b_k.dtype)
+        b_w = tl.dot(b_A, b_kb, allow_tf32=False)
+        p_w = tl.make_block_ptr(w + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        tl.store(p_w, b_w.to(p_w.dtype.element_ty), boundary_check=(0, 1))
+
 
 
 @triton.autotune(
@@ -259,6 +299,18 @@ def fwd_recompute_w_u(k, v, beta, A, BT):
         T, K, V, BT, BK, BV
     )
     return w, u
+
+def fwd_recompute_w(k, beta, A, BT):
+    B, H, T, K = k.shape
+    w = torch.empty_like(k)
+    NT = triton.cdiv(T, BT)
+    BK = min(triton.next_power_of_2(K), 64)
+    fwd_recompute_w_kernel[(NT, B*H)](
+        k, beta, w, A,
+        k.stride(1), k.stride(2), k.stride(3),
+        T, K, BT, BK
+    )
+    return w
 
 
 def bwd_prepare_wy_repr(k, v, beta, A, dw, du, BT):
