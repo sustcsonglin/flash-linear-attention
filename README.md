@@ -2,7 +2,7 @@
 
 # Flash Linear Attention
 
-[![hf_model](https://img.shields.io/badge/🤗-Models-blue.svg)](https://huggingface.co/fla-hub) | [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](https://discord.gg/vDaJTmKNcS)
+[![hf_model](https://img.shields.io/badge/🤗-Models-blue.svg)](https://huggingface.co/fla-hub)  [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](https://discord.gg/vDaJTmKNcS)
 </div>
 
 This repo aims at providing a collection of efficient Triton-based implementations for state-of-the-art linear attention models. **Any pull requests are welcome!**
@@ -256,6 +256,13 @@ If you find this repo useful, please consider citing our works:
   title   = {Parallelizing Linear Transformers with the Delta Rule over Sequence Length}, 
   author  = {Songlin Yang and Bailin Wang and Yu Zhang and Yikang Shen and Yoon Kim},
   journal = {arXiv preprint arXiv:2406.06484},
+  year    = {2024},
+}
+
+@article{zhang2024gsa,
+  title   = {Gated Slot Attention for Efficient Linear-Time Sequence Modeling}, 
+  author  = {Yu Zhang and Songlin Yang and Ruijie Zhu and Yue Zhang and Leyang Cui and Yiqiao Wang and Bolun Wang and Freda Shi and Bailin Wang and Wei Bi and Peng Zhou and Guohong Fu},
+  journal = {arXiv preprint arXiv:2409.07146},
   year    = {2024},
 }
 
