@@ -7,8 +7,7 @@ import triton.language as tl
 
 from fla.ops.delta_rule.wy_fast import (bwd_prepare_wy_repr,
                                         fwd_prepare_wy_repr, fwd_recompute_w_u)
-from fla.ops.utils import contiguous
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 @triton.autotune(
@@ -298,10 +297,11 @@ def chunk_delta_rule_bwd_kernel_dhu(
             b_dh_tmp += tl.dot(b_q, b_do.to(b_q.dtype), allow_tf32=False)
             b_dh_tmp -= tl.dot(b_d, b_dv.to(b_q.dtype), allow_tf32=False)
         b_dh += b_dh_tmp
-    
+
     if USE_DH0:
         p_dh0 = tl.make_block_ptr(dh0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
+
 
 @triton.autotune(
     configs=[

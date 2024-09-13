@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2024, Songlin Yang, Yu Zhang
 
-from typing import Tuple
 import torch
 import triton
 import triton.language as tl
 
+from fla.ops.utils import chunk_global_cumsum, chunk_global_reversed_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
-from fla.ops.utils import chunk_global_reversed_cumsum, chunk_global_cumsum
+
 
 @triton.autotune(
     configs=[
@@ -28,7 +28,7 @@ def fused_recurrent_fwd_kernel(
     gk,  # log gate [B, H, L, K] or None
     gv,  # log gate [B, H, L, V] or None
     o,  # output [NK, B, H, L, V]
-    h0, # initial hidden state [B, H, K, V]
+    h0,  # initial hidden state [B, H, K, V]
     ht,  # final hidden state [B, H, K, V]
     s_qk_h,  # stride size: L * K
     s_vo_h,  # stride size: L * V
@@ -99,7 +99,6 @@ def fused_recurrent_fwd_kernel(
         if USE_G:
             p_g += -1 if REVERSE else 1
 
-
     if STORE_FINAL_STATE:
         p_ht = ht + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[None, :]) * V + (i_v * BV + tl.arange(0, BV)[:, None])
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask_kv)
@@ -129,9 +128,9 @@ def fused_recurrent_bwd_kernel(
     dq,  # gradient wrt query [NV, B, H, L, K]
     dk,  # gradient wrt key [NV, B, H, L, K]
     dv,  # gradient wrt value [NK, B, H, L, V]
-    dht, # gradient wrt final hidden state [B, H, K, V]
-    dh0, # gradient wrt initial hidden state [B, H, K, V]
-    h0, # initial hidden state [B, H, K, V]
+    dht,  # gradient wrt final hidden state [B, H, K, V]
+    dh0,  # gradient wrt initial hidden state [B, H, K, V]
+    h0,  # initial hidden state [B, H, K, V]
     s_qk_h,  # stride size: L * K
     s_vo_h,  # stride size: L * V
     scale,  # K ** -0.5
@@ -258,9 +257,8 @@ def fused_recurrent_bwd_kernel(
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), mask=mask_kv)
 
 
-
 class FusedRecurrentFunction(torch.autograd.Function):
-    
+
     @staticmethod
     @contiguous
     @autocast_custom_fwd
@@ -321,7 +319,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
         grid = (NV, NK, batch_size * n_heads)
 
         fused_recurrent_bwd_kernel[grid](
-            q, k, v, g, gk, gv, do, dq, dk, dv, dht, dh0, h0, 
+            q, k, v, g, gk, gv, do, dq, dk, dv, dht, dh0, h0,
             q.stride(1),
             v.stride(1), scale,
             B=batch_size, H=n_heads, T=seq_len, K=K, V=V, BK=BK, BV=BV,
@@ -343,5 +341,16 @@ class FusedRecurrentFunction(torch.autograd.Function):
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg, dgk, dgv, None, dh0, None, None
 
 
-def fused_recurrent(q, k, v, g=None, gk=None, gv=None, scale=None, initial_state=None, output_final_state=False, reverse=False):
+def fused_recurrent(
+    q,
+    k,
+    v,
+    g=None,
+    gk=None,
+    gv=None,
+    scale=None,
+    initial_state=None,
+    output_final_state=False,
+    reverse=False
+):
     return FusedRecurrentFunction.apply(q, k, v, g, gk, gv, scale, initial_state, output_final_state, reverse)

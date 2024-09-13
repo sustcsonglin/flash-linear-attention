@@ -180,7 +180,6 @@ def fwd_recompute_w_kernel(
         tl.store(p_w, b_w.to(p_w.dtype.element_ty), boundary_check=(0, 1))
 
 
-
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=1),
@@ -245,7 +244,7 @@ def bwd_prepare_wy_repr_kernel(
         # store
         p_dk = tl.make_block_ptr(dk + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
-    
+
     b_dA = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], b_dA, 0)
     b_dA = tl.dot(b_dA.to(b_A.dtype), tl.trans(b_A), allow_tf32=False)
     b_dA = tl.dot(tl.trans(b_A), b_dA.to(b_A.dtype), allow_tf32=False)
@@ -299,6 +298,7 @@ def fwd_recompute_w_u(k, v, beta, A, BT):
         T, K, V, BT, BK, BV
     )
     return w, u
+
 
 def fwd_recompute_w(k, beta, A, BT):
     B, H, T, K = k.shape

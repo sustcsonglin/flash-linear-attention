@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2024, Songlin Yang, Yu Zhang
 
-from typing import Tuple, Optional
+from typing import Optional, Tuple
+
 import torch
-from fla.ops.common.fused_recurrent import fused_recurrent 
+
+from fla.ops.common.fused_recurrent import fused_recurrent
+
 
 def fused_recurrent_simple_gla(
     q: torch.Tensor,

@@ -6,9 +6,11 @@ from typing import Optional, Tuple
 import torch
 import triton
 import triton.language as tl
+
+from fla.ops.common.chunk_h import chunk_bwd_dh_fn, chunk_fwd_h_fn
+from fla.ops.utils import chunk_global_reversed_cumsum, chunk_local_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
-from fla.ops.utils import chunk_local_cumsum, chunk_global_reversed_cumsum
-from fla.ops.common.chunk_h import chunk_fwd_h_fn, chunk_bwd_dh_fn
+
 
 @triton.autotune(
     configs=[
@@ -166,18 +168,18 @@ def chunk_simple_gla_bwd_kernel_dqkvg(
     p_dk = tl.make_block_ptr(dk + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
-    
+
     tl.debug_barrier()
-    b_ds = None 
+    b_ds = None
     b_s = None
     b_q = None
     p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    b_q = tl.load(p_q, boundary_check=(0, 1)).to(tl.float32) 
+    b_q = tl.load(p_q, boundary_check=(0, 1)).to(tl.float32)
     b_dg = tl.sum(b_dq * b_q - b_dk * b_k.to(tl.float32), axis=1)
     p_dg = tl.make_block_ptr(dg + (i_k*n_bh + i_bh) * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0,))
 
-    
+
 def chunk_fwd_o_fn(h, q, k, v, g, BT, scale):
     B, H, T, K, V = *k.shape, v.shape[-1]
     o = torch.empty_like(v)
@@ -210,7 +212,7 @@ def chunk_bwd_dqkvg_fn(do, q, k, v, g, h, dh, scale):
     dg = torch.empty(NK, B, H, T, dtype=torch.float32, device=g.device)
     chunk_simple_gla_bwd_kernel_dqkvg[grid](
         q, k, v, h, g, do, dh, dq, dk, dv, dg,
-        q.stride(1), q.stride(2), q.stride(3), 
+        q.stride(1), q.stride(2), q.stride(3),
         v.stride(1), v.stride(2), v.stride(3),
         dh.stride(1), dh.stride(2),
         scale,
@@ -222,25 +224,29 @@ def chunk_bwd_dqkvg_fn(do, q, k, v, g, h, dh, scale):
     return dq, dk, dv, dg
 
 
-
-
 class SimpleGLAFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     @autocast_custom_fwd
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state, checkpoint_level=1):
-        B, H, T, K, V = *q.shape, v.shape[-1]
         BT = 64
         g = chunk_local_cumsum(g, BT)
-        h, final_state = chunk_fwd_h_fn(k=k, v=v, g=g, gk=None, gv=None, BT=BT, h0=initial_state, output_final_state=output_final_state)
-        o = chunk_fwd_o_fn(h, q, k, v, g, BT, scale)        
+        h, final_state = chunk_fwd_h_fn(k=k,
+                                        v=v,
+                                        g=g,
+                                        gk=None,
+                                        gv=None,
+                                        BT=BT,
+                                        h0=initial_state,
+                                        output_final_state=output_final_state)
+        o = chunk_fwd_o_fn(h, q, k, v, g, BT, scale)
         if checkpoint_level == 1:
             h = None
         ctx.save_for_backward(q, k, v, h, g, initial_state)
         ctx.scale = scale
         ctx.BT = BT
         return o.to(q.dtype), final_state
-    
+
     @staticmethod
     @contiguous
     @autocast_custom_bwd
@@ -252,7 +258,6 @@ class SimpleGLAFunction(torch.autograd.Function):
         dh, dh0 = chunk_bwd_dh_fn(q=q, k=k, v=v, g=g, gk=None, gv=None, do=do, h0=initial_state, dht=dht, BT=BT, scale=scale)
         dq, dk, dv, dg = chunk_bwd_dqkvg_fn(do, q, k, v, g, h, dh, scale)
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, dh0, None, None
-
 
 
 def chunk_simple_gla(

@@ -7,8 +7,8 @@ import torch
 import triton
 import triton.language as tl
 
+from fla.ops.common.chunk_h import chunk_bwd_dh_fn, chunk_fwd_h_fn
 from fla.ops.utils import chunk_global_reversed_cumsum, chunk_local_cumsum
-from fla.ops.common.chunk_h import chunk_fwd_h_fn, chunk_bwd_dh_fn
 from fla.utils import contiguous
 
 
@@ -339,6 +339,7 @@ def chunk_gla_bwd_kernel_inter(
     if i_k == 0:
         tl.store(p_dA, b_dA.to(p_dA.dtype.element_ty), boundary_check=(0, 1))
 
+
 class ChunkGLAFunction(torch.autograd.Function):
 
     @staticmethod
@@ -411,7 +412,7 @@ class ChunkGLAFunction(torch.autograd.Function):
 
         if ctx.checkpoint_level >= 1:
             g_cumsum = chunk_local_cumsum(g, BT=BT)
-            g_org, g = g, g_cumsum
+            _, g = g, g_cumsum
 
         if h is None:
             h, _ = chunk_fwd_h_fn(

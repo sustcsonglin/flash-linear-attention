@@ -2,10 +2,13 @@
 # Copyright (c) 2024, Songlin Yang, Yu Zhang
 
 from typing import Tuple
+
 import torch
 import triton
 import triton.language as tl
+
 from fla.utils import contiguous
+
 
 # on-the-fly computation without materializing hidden statets into HBMs
 @triton.jit
@@ -137,10 +140,10 @@ def fused_recurrent_bwd_kernel(
     else:
         p_dbeta = dbeta + (i_bh + i_v * B * H) * T + T - 1
     d_h = tl.zeros([BK, BV], dtype=tl.float32)
-    
+
     if USE_DHT:
         p_ht = dht + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[:, None]) * V + (i_v * BV + tl.arange(0, BV)[None, :])
-        d_h += tl.load(p_ht, mask = mask_bk[:, None] & mask_bv[None, :], other=0).to(tl.float32)
+        d_h += tl.load(p_ht, mask=mask_bk[:, None] & mask_bv[None, :], other=0).to(tl.float32)
 
     for _ in range(T):
         b_q = tl.load(p_q, mask=mask_bk, other=0).to(tl.float32) * scale
@@ -175,7 +178,7 @@ def fused_recurrent_bwd_kernel(
         p_dv -= V
         p_dbeta -= V if IS_HEADWISE_BETA else 1
         p_beta -= V if IS_HEADWISE_BETA else 1
-    
+
     if USE_DH0:
         p_dh0 = dh0 + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[:, None]) * V + (i_v * BV + tl.arange(0, BV)[None, :])
         tl.store(p_dh0, d_h.to(p_dh0.dtype.element_ty), mask=mask_bk[:, None] & mask_bv[None, :])
@@ -195,12 +198,12 @@ def fused_recurrent_bwd_kernel(
     p_dq = dq + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV)
     p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK)
-    
+
     if USE_INITIAL_STATE:
         mask_kv = mask_bk[:, None] & mask_bv[None, :]
         p_h0 = h0 + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[:, None]) * V + (i_v * BV + tl.arange(0, BV)[None, :])
         h += tl.load(p_h0, mask=mask_kv, other=0).to(tl.float32)
-        
+
     for i in range(0, T):
         d_k = tl.load(p_dk, mask=mask_bk, other=0).to(tl.float32)
         d_v = tl.load(p_dv, mask=mask_bv, other=0).to(tl.float32)
@@ -304,8 +307,8 @@ class FusedRecurrentFunction(torch.autograd.Function):
             B=B, H=H, T=T, K=K, V=V,
             BK=BK, BV=BV,
             USE_INITIAL_STATE=initial_state is not None,
-            USE_DH0 = dh0 is not None,
-            USE_DHT = dht is not None,
+            USE_DH0=dh0 is not None,
+            USE_DHT=dht is not None,
             IS_HEADWISE_BETA=beta_vector,
             num_warps=num_warps,
             num_stages=num_stages
@@ -344,7 +347,7 @@ def fused_recurrent_delta_rule(
         output_final_state (Optional[bool]):
             Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
     """
-    if scale == None:
+    if scale is None:
         scale = q.shape[-1] ** -0.5
     else:
         assert scale > 0, "scale must be positive"

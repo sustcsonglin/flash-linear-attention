@@ -8,10 +8,9 @@ import triton
 import triton.language as tl
 from einops import reduce
 
-from fla.ops.utils import (chunk_global_reversed_cumsum, chunk_local_cumsum, softmax_bwd_kernel,
-                           softmax_fwd_kernel)
+from fla.ops.utils import (chunk_global_reversed_cumsum, chunk_local_cumsum,
+                           softmax_bwd_kernel, softmax_fwd_kernel)
 from fla.utils import contiguous
-
 
 
 @triton.jit
@@ -1171,7 +1170,7 @@ class ChunkGatedABCFunction(torch.autograd.Function):
             hvt = q.new_empty(B, H, M, V, dtype=torch.float)
 
         g_cumsum = chunk_local_cumsum(g, BT)
-        g_org, g = g, g_cumsum 
+        g_org, g = g, g_cumsum
         ok, hk, _ = fwd_k(
             q=q, k=k, v=s, g=g,
             B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, BC=BC,

@@ -4,10 +4,9 @@
 from typing import Tuple
 
 import torch
-import triton
-import triton.language as tl
-from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
-from fla.ops.common.fused_recurrent import fused_recurrent 
+
+from fla.ops.common.fused_recurrent import fused_recurrent
+
 
 def fused_recurrent_gla(
     q: torch.Tensor,

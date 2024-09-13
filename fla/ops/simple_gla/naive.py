@@ -48,34 +48,3 @@ def torch_simple_gla_recurrent(q, k, v, g, initial_state=None, scale=None):
         o_i = (q_i.unsqueeze(-1) * S).sum(-2)
         o[:, :, i] = o_i
     return o, S
-
-if __name__ == '__main__':
-    torch.set_default_dtype(torch.bfloat16)
-    B = 4
-    H = 4
-    L = 100
-    DK = 32
-    DV = 32
-    q = torch.randn(B, H, L, DK)
-    k = torch.randn(B, H, L, DK)
-    v = torch.randn(B, H, L, DV)
-    g = torch.nn.functional.logsigmoid(torch.randn(B, H, L))
-    q, k, v, g = map(lambda x: x.cuda().requires_grad_(True), [q, k, v, g])
-    from fla.ops.simple_gla import chunk_simple_gla, fused_recurrent_simple_gla
-
-    o, _ = fused_recurrent_simple_gla(q, k, v, g)
-    do = torch.randn_like(o)
-    o.backward(do)
-    q_grad, k_grad, v_grad, g_grad = q.grad, k.grad, v.grad, g.grad
-    q.grad, k.grad, v.grad, g.grad = None, None, None, None
-    o2, _ = chunk_simple_gla(q, k, v, g)
-    o2.backward(do)
-    q_grad2, k_grad2, v_grad2, g_grad2 = q.grad, k.grad, v.grad, g.grad
-
-    print((o-o2).abs().max())
-    print((q_grad-q_grad2).abs().max())
-    print((k_grad-k_grad2).abs().max())
-    print((v_grad-v_grad2).abs().max())
-    print((g_grad-g_grad2).abs().max())
-
-

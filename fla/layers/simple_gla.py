@@ -187,7 +187,9 @@ class SimpleGatedLinearAttention(nn.Module):
         if mode == 'chunk':
             o, recurrent_state = chunk_simple_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
         elif mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_simple_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_simple_gla(q, k, v, gk,
+                                                            initial_state=recurrent_state,
+                                                            output_final_state=use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 

@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2024, Songlin Yang, Yu Zhang
 
+import torch
 import triton
 import triton.language as tl
-import torch
+
 
 @triton.autotune(
     configs=[
@@ -53,7 +54,7 @@ def chunk_fwd_kernel_h(
     if USE_INITIAL_STATE:
         p_h0 = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_h = tl.load(p_h0, boundary_check=(0, 1)).to(tl.float32)
-    
+
     for i_t in range(NT):
         p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
@@ -75,11 +76,11 @@ def chunk_fwd_kernel_h(
             b_v = (b_v * tl.exp(b_g_last - b_g)[:, None]).to(b_v.dtype)
 
         # vector decay, h = Diag(gk) @ h
-        if USE_GK: 
+        if USE_GK:
             p_gk_last = tl.make_block_ptr(gk + i_bh * s_qk_h, (T * K,), (s_qk_d,), (last_idx * K + i_k * BK,), (BK,), (0,))
             b_gk_last = tl.load(p_gk_last, boundary_check=(0,))
             b_h *= tl.exp(b_gk_last)[:, None]
-            
+
             p_gk = tl.make_block_ptr(gk + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
             b_gk = tl.load(p_gk, boundary_check=(0, 1))
             b_k = (b_k * tl.exp(b_gk_last[:, None] - b_gk)).to(b_k.dtype)
@@ -87,13 +88,13 @@ def chunk_fwd_kernel_h(
         # vector decay, h = h @ Diag(gv)
         if USE_GV:
             p_gv_last = tl.make_block_ptr(gv + i_bh * s_vo_h, (T * V,), (s_vo_d,), (last_idx * V + i_v * BV,), (BV,), (0,))
-            b_gv_last = tl.load(p_gv, boundary_check=(0,))
+            b_gv_last = tl.load(p_gv_last, boundary_check=(0,))
             b_h *= tl.exp(b_gv_last)[None, :]
-    
+
             p_gv = tl.make_block_ptr(gv + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
             b_gv = tl.load(p_gv, boundary_check=(0, 1))
-            b_v = (b_v * tl.exp(b_gv_last[None, :] - b_gv)).to(b_v.dtype)            
-            
+            b_v = (b_v * tl.exp(b_gv_last[None, :] - b_gv)).to(b_v.dtype)
+
         b_h += tl.dot(b_k, b_v, allow_tf32=False)
 
     if STORE_FINAL_STATE:
@@ -114,7 +115,7 @@ def chunk_fwd_kernel_h(
 def chunk_bwd_kernel_dh(
     q,
     g,
-    gk, 
+    gk,
     gv,
     do,
     dh,
@@ -148,7 +149,7 @@ def chunk_bwd_kernel_dh(
     if LOAD_FINAL_STATE_GRADIENT:
         p_dht = tl.make_block_ptr(dht + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_dh += tl.load(p_dht, boundary_check=(0, 1)).to(tl.float32)
-    
+
     for i_t in range(NT - 1, -1, -1):
         p_dh = tl.make_block_ptr(dh + i_bh * s_h_h + i_t * K * V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
@@ -157,7 +158,7 @@ def chunk_bwd_kernel_dh(
         p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_q = (b_q * scale).to(b_q.dtype)
-        # [BT, BV]        
+        # [BT, BV]
         p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         b_do = tl.load(p_do, boundary_check=(0, 1))
 
@@ -167,7 +168,7 @@ def chunk_bwd_kernel_dh(
             b_q = (b_q * tl.exp(b_g)[None, :]).to(b_q.dtype)
             b_g_last = tl.load(g + i_bh * T + last_idx)
             b_dh *= tl.exp(b_g_last)
-        
+
         if USE_GK:
             p_gk = tl.make_block_ptr(gk + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
             b_gk = tl.load(p_gk, boundary_check=(0, 1))
@@ -181,17 +182,14 @@ def chunk_bwd_kernel_dh(
             b_gv = tl.load(p_gv, boundary_check=(0, 1))
             b_do = (b_do * tl.exp(b_gv)).to(b_do.dtype)
             p_gv_last = tl.make_block_ptr(gv + i_bh * s_vo_h, (T * V,), (s_vo_d,), (last_idx * V + i_v * BV,), (BV,), (0,))
-            b_gv_last = tl.load(p_gv, boundary_check=(0,))
+            b_gv_last = tl.load(p_gv_last, boundary_check=(0,))
             b_dh *= tl.exp(b_gv_last)[None, :]
-        
-        b_dh += tl.dot(b_q, b_do, allow_tf32=False) 
-    
-    
+
+        b_dh += tl.dot(b_q, b_do, allow_tf32=False)
+
     if STORE_INITIAL_STATE_GRADIENT:
         p_dh0 = tl.make_block_ptr(dh0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
-
-    
 
 
 def chunk_fwd_h_fn(k, v, g, gk, gv, BT, h0, output_final_state):
@@ -220,7 +218,6 @@ def chunk_fwd_h_fn(k, v, g, gk, gv, BT, h0, output_final_state):
     return h, ht
 
 
-
 def chunk_bwd_dh_fn(q, k, v, g, gk, gv, do, h0, dht, BT, scale):
     B, H, T, K, V = *k.shape, v.shape[-1]
     BT = 64
@@ -247,6 +244,3 @@ def chunk_bwd_dh_fn(q, k, v, g, gk, gv, do, h0, dht, BT, scale):
         LOAD_FINAL_STATE_GRADIENT=dht is not None
     )
     return dh, dh0
-
-
-

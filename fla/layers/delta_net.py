@@ -12,23 +12,28 @@ from einops import rearrange
 from torch.nn import functional as F
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
+from fla.modules.l2norm import l2_norm_fn
 from fla.ops.delta_rule import (chunk_delta_rule, fused_chunk_delta_rule,
                                 fused_recurrent_delta_rule)
-from fla.modules.l2norm import l2_norm_fn
-
 
 if TYPE_CHECKING:
     from fla.models.utils import Cache
 
 # @torch.jit.script
+
+
 def elu_p1(x):
     return (F.elu(x, 1., False) + 1.).to(x)
 
 # @torch.jit.script
+
+
 def sum_norm(x):
     return (x / x.sum(-1, keepdim=True)).to(x)
 
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
+
+
 class DeltaNet(nn.Module):
     def __init__(
         self,
@@ -193,11 +198,14 @@ class DeltaNet(nn.Module):
             beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
         state = past_key_values[self.layer_idx][-1] if use_cache else None
         if mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_delta_rule(q=q, k=k, v=v, beta=beta, initial_state=state, output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_delta_rule(
+                q=q, k=k, v=v, beta=beta, initial_state=state, output_final_state=use_cache)
         elif mode == 'fused_chunk':
-            o, recurrent_state = fused_chunk_delta_rule(q=q, k=k, v=v, beta=beta, BT=self.chunk_size, initial_state=state, output_final_state=use_cache)
+            o, recurrent_state = fused_chunk_delta_rule(
+                q=q, k=k, v=v, beta=beta, BT=self.chunk_size, initial_state=state, output_final_state=use_cache)
         elif mode == 'chunk':
-            o, recurrent_state = chunk_delta_rule(q=q, k=k, v=v, beta=beta, BT=self.chunk_size, initial_state=state, output_final_state=use_cache)
+            o, recurrent_state = chunk_delta_rule(q=q, k=k, v=v, beta=beta, BT=self.chunk_size,
+                                                  initial_state=state, output_final_state=use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 

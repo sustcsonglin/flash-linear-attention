@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2024, Songlin Yang, Yu Zhang
 
-from typing import Tuple
-
 import torch
 import triton
 import triton.language as tl
-from fla.ops.delta_rule.wy_fast import (bwd_prepare_wy_repr, fwd_prepare_wy_repr, fwd_recompute_w)
+
+from fla.ops.delta_rule.wy_fast import (bwd_prepare_wy_repr,
+                                        fwd_prepare_wy_repr, fwd_recompute_w)
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
+
 
 # on-the-fly computation without materializing hidden statets into HBMs
 @triton.autotune(
@@ -126,8 +127,8 @@ def fused_chunk_delta_rule_bwd_kernel(
     k,  # key [B, H, L, D_head_V]
     v,  # value [B, H, L, D_head_V]
     d,  # decay [B, H, L, D_head_K]
-    dht, # gradient of final state [B, H, D_head_K, D_head_V]
-    dh0, # gradient of initial state [B, H, D_head_K, D_head_V]
+    dht,  # gradient of final state [B, H, D_head_K, D_head_V]
+    dh0,  # gradient of initial state [B, H, D_head_K, D_head_V]
     do,  # gradient of output [B, H, L, D_head_V]
     dq,  # gradient of query [NV, B, H, L, D_head_K]
     dk,  # gradient of key [NV, B, H, L, D_head_K]
@@ -149,9 +150,9 @@ def fused_chunk_delta_rule_bwd_kernel(
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
     DK: tl.constexpr,  # D_head_K
     DV: tl.constexpr,  # D_head_V
-    USE_INITIAL_STATE: tl.constexpr, # whether to use initial state
-    USE_DHT: tl.constexpr, # whether to use final state gradient
-    USE_DHO: tl.constexpr, # whether to use initial state gradient
+    USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
+    USE_DHT: tl.constexpr,  # whether to use final state gradient
+    USE_DHO: tl.constexpr,  # whether to use initial state gradient
     CHECK: tl.constexpr
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -219,7 +220,7 @@ def fused_chunk_delta_rule_bwd_kernel(
         b_dv = tl.load(p_dv, boundary_check=(0, 1))
         b_dd = tl.dot(b_dv.to(k.dtype.element_ty), b_h.to(k.dtype.element_ty), allow_tf32=False)
         p_dd = tl.make_block_ptr(dd + (i_bh + i_v*B*H) * s_qk_h, (T, DK), (s_qk_t, s_qk_d),
-                                    (i * BT, i_k * BK), (BT, BK), (1, 0))
+                                 (i * BT, i_k * BK), (BT, BK), (1, 0))
         tl.store(p_dd, -b_dd.to(p_dd.dtype.element_ty), boundary_check=(0, 1))
 
         p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, DK), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
@@ -329,7 +330,8 @@ class FusedChunkDeltaRuleFunction(torch.autograd.Function):
         # ### forward_h
         final_state = None
         if output_final_state:
-            final_state = q.new_empty(q.shape[0], q.shape[1], q.shape[-1], v.shape[-1], dtype=torch.float32, requires_grad=False)
+            final_state = q.new_empty(q.shape[0], q.shape[1], q.shape[-1], v.shape[-1],
+                                      dtype=torch.float32, requires_grad=False)
         o, v_new, CHECK, final_state = fused_chunk_delta_rule_fwd(q, k, u, w, BT, scale, initial_state, output_final_state)
         ctx.save_for_backward(q, k, v, beta, A, v_new, initial_state)
         ctx.CHECK = CHECK
