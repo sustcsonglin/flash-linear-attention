@@ -204,30 +204,34 @@ def fused_linear_cross_entropy_forward(
 ):
     device = x.device
 
-    # inputs have shape: [BT, H]
-    # materialized activations will have shape: [BT, V]
-    # the increase in memory = [BT, V]
-    # reduction can be achieved by partitioning the number of tokens BT into smaller chunks.
-    # for example: if we were to achieve the same memory consumption as [BT, H], then the chunk size should be:
-    # inc_factor = (V+H-1)//H, C = (BT + inc_factor - 1)//inc_factor
-    # for ex: BT = 4096*4, V = 32000, H = 4096 ==> inc_factor = 8, C = 2048
-    BT, H, V = *x.shape, weight.shape[0]
-    BV = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+    # inputs have shape: [N, H]
+    # materialized activations will have shape: [N, V]
+    # the increase in memory = [N, V]
+    # reduction can be achieved by partitioning the number of tokens N into smaller chunks.
 
-    inc_factor = triton.cdiv(V, H)  # (V + H - 1) // H
-    C = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
-    NC = triton.cdiv(BT, C)  # (BT + C - 1) // C
+    # ideally, we would like to achieve the same memory consumption as [N, H],
+    # so the expected chunk size should be:
+    # NC = ceil(V / H)
+    # C = ceil(N / NC)
+    # for ex: N = 4096*4, V = 32000, H = 4096 ==> NC = 8, C = ceil(N / NC) = 2048
+    N, H, V = *x.shape, weight.shape[0]
+    BV = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+    # TODO: in real cases, we may need to limit the number of chunks NC to
+    # ensure the precisions of accumulated gradients
+    NC = min(8, triton.cdiv(V, H))
+    C = triton.next_power_of_2(triton.cdiv(N, NC))
+    NC = triton.cdiv(N, C)
 
     dx = torch.zeros_like(x, device=device)
     dw = torch.zeros_like(weight, device=device) if weight is not None else None
     db = torch.zeros_like(bias, device=device) if bias is not None else None
     # we use fp32 for loss accumulator
-    loss = torch.zeros(BT, dtype=torch.float32, device=device)
+    loss = torch.zeros(N, dtype=torch.float32, device=device)
 
     total = target.ne(ignore_index).sum().item()
 
     for ic in range(NC):
-        start, end = ic * C, min((ic + 1) * C, BT)
+        start, end = ic * C, min((ic + 1) * C, N)
         # [C, N]
         c_x = x[start:end]
         # when doing matmul, use the original precision
