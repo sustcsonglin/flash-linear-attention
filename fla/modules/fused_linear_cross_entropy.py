@@ -15,7 +15,7 @@ import triton.language as tl
 # https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
-MAX_FUSED_SIZE = 65536 // 2  # the best size we found by manually tuning
+MAX_FUSED_SIZE = 65536 // 2
 
 
 @triton.jit
@@ -29,36 +29,39 @@ def cross_entropy_kernel(
     total,
     ignore_index,
     label_smoothing: tl.constexpr,
+    reduction: tl.constexpr,
     V: tl.constexpr,
-    BV: tl.constexpr,
+    BV: tl.constexpr
 ):
     """
     This kernel computes both cross entropy loss and the gradient of the input.
     We only consider hard label + mean reduction for now.
     Please refer to https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html for the math.
 
-    Parameters:
-    x:
-        Pointer to input tensor.
-    target: Pointer to target tensor.
-    loss:
-        Pointer to tensor to store the loss.
-    s_x (int):
-        The stride of the input tensor.
-    s_target (int):
-        The stride of the target tensor.
-    s_loss (int):
-        The stride of the loss tensor.
-    V (int):
-        The number of columns in the input tensor.
-    total (int):
-        The number of non-ignored classes.
-    ignore_index (int):
-        The index to ignore in the target.
-    label_smoothing (float):
-        The amount of smoothing when computing the loss, where 0.0 means no smoothing.
-    BV (int):
-        The block size for vocab.
+    Args:
+        x:
+            Pointer to input tensor.
+        target: Pointer to target tensor.
+        loss:
+            Pointer to tensor to store the loss.
+        s_x (int):
+            The stride of the input tensor.
+        s_target (int):
+            The stride of the target tensor.
+        s_loss (int):
+            The stride of the loss tensor.
+        V (int):
+            The number of columns in the input tensor.
+        total (int):
+            The number of non-ignored classes.
+        ignore_index (int):
+            The index to ignore in the target.
+        label_smoothing (float):
+            The amount of smoothing when computing the loss, where 0.0 means no smoothing.
+        reduction (str):
+            The string for the reduction to apply
+        BV (int):
+            The block size for vocab.
     """
 
     # https://github.com/triton-lang/triton/issues/1058
@@ -104,10 +107,10 @@ def cross_entropy_kernel(
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(b_x - m_new))
         m = m_new
 
-    # 4. [Online softmax] second pass: calculate the gradients
+    # 4. [Online Softmax] Second pass: compute gradients
+    # For 'mean' reduction, gradients are normalized by number of non-ignored elements
     # dx_y = (softmax(x_y) - 1) / N
     # dx_i = softmax(x_i) / N, i != y
-    # N is the number of non ignored elements in the batch
     # For label smoothing:
     # dx_i = (softmax(x_y) - label_smoothing / V) / N, i != y
     # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing)) / N
@@ -115,7 +118,9 @@ def cross_entropy_kernel(
     for iv in range(0, NV):
         o_x = iv * BV + tl.arange(0, BV)
         b_x = tl.load(x + o_x, mask=o_x < V, other=float('-inf'))
-        b_x = (tl.exp(b_x - m) / d - eps) / total
+        b_x = (tl.exp(b_x - m) / d - eps)
+        if reduction == "mean":
+            b_x = b_x / total
         tl.store(x + o_x, b_x, mask=o_x < V)
 
     # We need tl.debug_barrier() to ensure the new result of x is written as mentioned in
@@ -144,7 +149,13 @@ def cross_entropy_kernel(
 
     # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
     b_x_t = tl.load(x + y)
-    b_x_t += -(1 - label_smoothing) / total
+
+    # Normalize the loss by the number of non-ignored elements if reduction is "mean"
+    if reduction == 'mean':
+        b_loss = b_loss / total
+        b_x_t += (label_smoothing - 1) / total
+    else:
+        b_x_t += label_smoothing - 1
 
     tl.store(loss + i_n * s_loss, b_loss)
     tl.store(x + y, b_x_t)
@@ -189,6 +200,7 @@ def fused_linear_cross_entropy_forward(
     bias: torch.Tensor = None,
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
+    reduction: str = "mean"
 ):
     device = x.device
 
@@ -237,9 +249,10 @@ def fused_linear_cross_entropy_forward(
             total=total,
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
+            reduction=reduction,
             V=V,
             BV=BV,
-            num_warps=32,
+            num_warps=32
         )
 
         # gradient of c_logits is computed in-place by the above triton kernel and is of shape: C x V
@@ -257,7 +270,7 @@ def fused_linear_cross_entropy_forward(
         if bias is not None:
             torch.add(input=db, other=c_logits.sum(0), out=db)
 
-    loss = loss.sum() / total
+    loss = loss.sum()
     return loss, dx, dw, db
 
 
@@ -315,7 +328,8 @@ class FusedLinearCrossEntropyFunction(torch.autograd.Function):
         weight: torch.Tensor,
         bias: torch.Tensor = None,
         ignore_index: int = -100,
-        label_smoothing: float = 0.0
+        label_smoothing: float = 0.0,
+        reduction: str = "mean"
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -337,6 +351,11 @@ class FusedLinearCrossEntropyFunction(torch.autograd.Function):
             the index to ignore in the target.
         label_smoothing:
             the amount of smoothing when computing the loss, where 0.0 means no smoothing.
+        reduction:
+            Specifies the reduction to apply to the output: 'mean' | 'sum'.
+            'mean': the weighted mean of the output is taken,
+            'sum': the output will be summed.
+            Default: 'mean'.
         """
         loss, dx, dw, db = fused_linear_cross_entropy_forward(
             x,
@@ -344,7 +363,8 @@ class FusedLinearCrossEntropyFunction(torch.autograd.Function):
             weight,
             bias,
             ignore_index,
-            label_smoothing
+            label_smoothing,
+            reduction
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -358,7 +378,7 @@ class FusedLinearCrossEntropyFunction(torch.autograd.Function):
     def backward(ctx, do):
         dx, dw, db = ctx.saved_tensors
         dx, dw, db = fused_linear_cross_entropy_backward(do, dx, dw, db)
-        return dx, None, dw, db, None, None
+        return dx, None, dw, db, None, None, None
 
 
 def fused_linear_cross_entropy_loss(
@@ -367,10 +387,11 @@ def fused_linear_cross_entropy_loss(
     weight: torch.Tensor,
     bias: torch.Tensor = None,
     ignore_index: int = -100,
-    label_smoothing: float = 0.0
+    label_smoothing: float = 0.0,
+    reduction: str = "mean"
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Arguments:
+    Args:
         x (torch.Tensor): [batch_size * seq_len, hidden_size]
         target (torch.LongTensor): [batch_size * seq_len]
             where each value is in [0, vocab_size).
@@ -381,6 +402,11 @@ def fused_linear_cross_entropy_loss(
         ignore_index: int.
             If target == ignore_index, the loss is set to 0.0.
         label_smoothing: float
+        reduction:
+            Specifies the reduction to apply to the output: 'mean' | 'sum'.
+            'mean': the weighted mean of the output is taken,
+            'sum': the output will be summed.
+            Default: 'mean'.
     Returns:
         losses: [batch,], float
     """
@@ -391,6 +417,7 @@ def fused_linear_cross_entropy_loss(
         bias,
         ignore_index,
         label_smoothing,
+        reduction
     )
 
 
@@ -400,16 +427,26 @@ class FusedLinearCrossEntropyLoss(nn.Module):
         self,
         ignore_index: int = -100,
         label_smoothing: float = 0.0,
+        reduction: str = "mean"
     ):
         """
-        Arguments:
+        Args:
             ignore_index: int.
                 If target == ignore_index, the loss is set to 0.0.
             label_smoothing: float
+            reduction:
+                Specifies the reduction to apply to the output: 'mean' | 'sum'.
+                'mean': the weighted mean of the output is taken,
+                'sum': the output will be summed.
+                Default: 'mean'.
         """
         super().__init__()
+
+        assert reduction in ["none", "mean", "sum"], f"reduction: {reduction} is not supported"
+
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
+        self.reduction = reduction
 
     def forward(
         self,
@@ -419,7 +456,7 @@ class FusedLinearCrossEntropyLoss(nn.Module):
         bias: Optional[torch.Tensor] = None
     ):
         """
-        Arguments:
+        Args:
             x (torch.Tensor): [batch_size * seq_len, hidden_size]
             target (torch.LongTensor): [batch_size * seq_len]
                 where each value is in [0, V).
@@ -437,5 +474,6 @@ class FusedLinearCrossEntropyLoss(nn.Module):
             bias=bias,
             ignore_index=self.ignore_index,
             label_smoothing=self.label_smoothing,
+            reduction=self.reduction
         )
         return loss
