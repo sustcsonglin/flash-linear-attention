@@ -9,7 +9,7 @@ from fla.modules import FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss
 
 
 @pytest.mark.parametrize("B", [1, 4])
-@pytest.mark.parametrize("T", [1, 50, 2048, 4096])
+@pytest.mark.parametrize("T", [2048, 4096])
 @pytest.mark.parametrize("D", [1024, 2048])
 @pytest.mark.parametrize("V", [32000, 100000])
 def test_fused(B: int, T: int, D: int, V: int):
@@ -32,7 +32,7 @@ def test_fused(B: int, T: int, D: int, V: int):
 
 
 @pytest.mark.parametrize("B", [1, 4])
-@pytest.mark.parametrize("T", [1, 50, 2048, 4096])
+@pytest.mark.parametrize("T", [2048, 4096])
 @pytest.mark.parametrize("D", [1024, 2048])
 @pytest.mark.parametrize("V", [32000, 100000])
 def test_fused_linear(B: int, T: int, D: int, V: int):

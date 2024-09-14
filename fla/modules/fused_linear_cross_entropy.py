@@ -26,7 +26,7 @@ def cross_entropy_kernel(
     s_x,
     s_target,
     s_loss,
-    n_non_ignore,
+    total,
     ignore_index,
     label_smoothing: tl.constexpr,
     V: tl.constexpr,
@@ -51,8 +51,8 @@ def cross_entropy_kernel(
         The stride of the loss tensor.
     V (int):
         The number of columns in the input tensor.
-    n_non_ignore (int):
-        The number of non-ignored elements in the batch.
+    total (int):
+        The number of non-ignored classes.
     ignore_index (int):
         The index to ignore in the target.
     label_smoothing (float):
@@ -92,8 +92,9 @@ def cross_entropy_kernel(
     b_z = 0.0
     eps = label_smoothing / V
 
-    for i in range(0, V, BV):
-        o_x = i + tl.arange(0, BV)
+    NV = tl.cdiv(V, BV)
+    for iv in range(0, NV):
+        o_x = iv * BV + tl.arange(0, BV)
         b_x = tl.load(x + o_x, mask=o_x < V, other=float('-inf'))
         b_m = tl.max(b_x)
         if label_smoothing > 0:
@@ -111,10 +112,10 @@ def cross_entropy_kernel(
     # dx_i = (softmax(x_y) - label_smoothing / V) / N, i != y
     # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing)) / N
     #      = dx_i - (1 - label_smoothing) / N
-    for i in range(0, V, BV):
-        o_x = i + tl.arange(0, BV)
+    for iv in range(0, NV):
+        o_x = iv * BV + tl.arange(0, BV)
         b_x = tl.load(x + o_x, mask=o_x < V, other=float('-inf'))
-        b_x = (tl.exp(b_x - m) / d - eps) / (n_non_ignore)
+        b_x = (tl.exp(b_x - m) / d - eps) / total
         tl.store(x + o_x, b_x, mask=o_x < V)
 
     # We need tl.debug_barrier() to ensure the new result of x is written as mentioned in
@@ -122,7 +123,6 @@ def cross_entropy_kernel(
     tl.debug_barrier()
 
     # 5. Calculate the loss
-
     # loss = log (softmax(b_x_t)) = log ((e ^ (b_x_t - max(X)) / sum(e ^ (X - max(X))))
     #      = (b_x_t - max(X)) - log(sum(e ^ (X - max(X))))
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
@@ -144,17 +144,16 @@ def cross_entropy_kernel(
 
     # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
     b_x_t = tl.load(x + y)
-    b_x_t += -(1 - label_smoothing) / n_non_ignore
+    b_x_t += -(1 - label_smoothing) / total
 
     tl.store(loss + i_n * s_loss, b_loss)
     tl.store(x + y, b_x_t)
 
 
 @triton.jit
-def element_mul_kernel(
+def elementwise_mul_kernel(
     x,
     g,
-    s_x,
     N: tl.constexpr,
     B: tl.constexpr
 ):
@@ -167,8 +166,6 @@ def element_mul_kernel(
         Pointer to the input tensor.
     g:
         Pointer to the gradient output value.
-    s_x (int):
-        The stride of the input tensor.
     N (int):
         The number of columns in the input tensor.
     B (int):
@@ -177,18 +174,12 @@ def element_mul_kernel(
 
     # Get the program ID and convert it to int64 to avoid overflow
     i_x = tl.program_id(0).to(tl.int64)
-
-    # Locate the start index
-    x += i_x * s_x
+    o_x = i_x * B + tl.arange(0, B)
 
     # Load the gradient output value
     b_g = tl.load(g)
-
-    # Perform the element-wise multiplication
-    for i in range(0, N, B):
-        o_x = i + tl.arange(0, B)
-        b_x = tl.load(x + o_x, mask=o_x < N)
-        tl.store(x + o_x, b_x * b_g, mask=o_x < N)
+    b_x = tl.load(x + o_x, mask=o_x < N)
+    tl.store(x + o_x, b_x * b_g, mask=o_x < N)
 
 
 def fused_linear_cross_entropy_forward(
@@ -221,8 +212,7 @@ def fused_linear_cross_entropy_forward(
     # we use fp32 for loss accumulator
     loss = torch.zeros(BT, dtype=torch.float32, device=device)
 
-    mask_ignore = target.ne(ignore_index)
-    total = mask_ignore.sum()
+    total = target.ne(ignore_index).sum().item()
 
     for ic in range(NC):
         start, end = ic * C, min((ic + 1) * C, BT)
@@ -230,16 +220,11 @@ def fused_linear_cross_entropy_forward(
         c_x = x[start:end]
         # when doing matmul, use the original precision
         # [C, V]
-        c_logits = F.linear(c_x, weight, bias).contiguous()
+        c_logits = F.linear(c_x, weight, bias)
         c_target = target[start:end]
 
         # unreduced loss
         c_loss = loss[start:end]
-        n_non_ignore = (c_target != ignore_index).sum().item()
-
-        # ensure x and target are contiguous
-        c_logits = c_logits.contiguous()
-        c_target = c_target.contiguous()
 
         # Here we calculate the gradient of c_logits in place so we can save memory.
         cross_entropy_kernel[(c_logits.shape[0],)](
@@ -249,7 +234,7 @@ def fused_linear_cross_entropy_forward(
             s_x=c_logits.stride(-2),
             s_target=c_target.stride(-1),
             s_loss=c_loss.stride(-1),
-            n_non_ignore=n_non_ignore,
+            total=total,
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
             V=V,
@@ -264,26 +249,15 @@ def fused_linear_cross_entropy_forward(
         # Thus, we need an additional scaling factor of (n_non_ignore/total) to scale the gradients.
         # [C, H]
 
-        dx[start:end] = c_logits @ weight * n_non_ignore / total
+        dx[start:end] = torch.mm(c_logits, weight)
 
         if weight is not None:
-            torch.addmm(
-                input=dw,
-                mat1=c_logits.t(),
-                mat2=c_x,
-                out=dw,
-                alpha=n_non_ignore / total,
-            )
+            torch.addmm(input=dw, mat1=c_logits.t(), mat2=c_x, out=dw)
 
         if bias is not None:
-            torch.add(
-                input=db,
-                other=c_logits.sum(0),
-                out=db,
-                alpha=n_non_ignore / total,
-            )
+            torch.add(input=db, other=c_logits.sum(0), out=db)
 
-    loss = torch.sum(loss) / total
+    loss = loss.sum() / total
     return loss, dx, dw, db
 
 
@@ -297,43 +271,35 @@ def fused_linear_cross_entropy_backward(
     if torch.ne(do, torch.tensor(1.0, device=do.device)):
         # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
         # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
-        BT, H = dx.shape
-        n_rows = BT
-        BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+        N, H = dx.shape
+        B = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
 
-        element_mul_kernel[(n_rows,)](
+        elementwise_mul_kernel[(triton.cdiv(N * H, B),)](
             x=dx,
             g=do,
-            s_x=dx.stride(-2),
-            N=H,
-            B=BLOCK_SIZE,
+            N=N*H,
+            B=B,
             num_warps=32,
         )
 
         # handle dw
         if dw is not None:
             V, H = dw.shape
-            n_rows = V
-
-            element_mul_kernel[(n_rows,)](
+            elementwise_mul_kernel[(triton.cdiv(V * H, B),)](
                 x=dw,
                 g=do,
-                s_x=dw.stride(-2),
-                N=H,
-                B=BLOCK_SIZE,
+                N=V*H,
+                B=B,
                 num_warps=32,
             )
 
         if db is not None:
             V = db.shape[0]
-            n_rows = V
-
-            element_mul_kernel[(n_rows,)](
+            elementwise_mul_kernel[(triton.cdiv(V, B),)](
                 x=db,
                 g=do,
-                s_x=db.stride(-1),
-                N=1,
-                B=BLOCK_SIZE,
+                N=V,
+                B=B,
                 num_warps=32,
             )
     return dx, dw, db
@@ -417,7 +383,6 @@ def fused_linear_cross_entropy_loss(
         label_smoothing: float
     Returns:
         losses: [batch,], float
-        z_losses: [batch,], float
     """
     return FusedLinearCrossEntropyFunction.apply(
         x,
