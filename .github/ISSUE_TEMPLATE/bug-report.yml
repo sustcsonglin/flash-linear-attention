@@ -1,6 +1,7 @@
 name: 🐛 Bug report
 description: Create a report to help reproduce and fix the bug
 title: "[Bug]: "
+labels: ["bug"]
 body:
   - type: textarea
     id: description
