@@ -25,8 +25,8 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import ModelOutput, logging
 
 from fla.models.mamba2.configuration_mamba2 import Mamba2Config
-from fla.modules import (FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss,
-                         FusedRMSNormSwishGate, RMSNorm)
+from fla.modules import FusedCrossEntropyLoss
+from fla.modules.layernorm_gated import RMSNorm
 
 logger = logging.get_logger(__name__)
 
@@ -235,8 +235,8 @@ class Mamba2Mixer(nn.Module):
         A = torch.arange(1, self.num_heads + 1)
         self.A_log = nn.Parameter(torch.log(A))
         self.A_log._no_weight_decay = True
-        self.norm = FusedRMSNormSwishGate(
-            self.intermediate_size, eps=self.layer_norm_epsilon
+        self.norm = RMSNorm(
+            self.intermediate_size, eps=self.layer_norm_epsilon, norm_before_gate=False
         )
 
         self.D = nn.Parameter(torch.ones(self.num_heads))
@@ -315,7 +315,7 @@ class Mamba2Mixer(nn.Module):
             hidden_states = hidden_states.view(
                 batch_size, self.num_heads * self.head_dim
             )
-            hidden_states = self.norm(hidden_states, o=gate)
+            hidden_states = self.norm(hidden_states, gate)
 
             out = self.out_proj(hidden_states)[:, None, ...]
         # if no cache is found, calling the kernel
@@ -364,7 +364,6 @@ class Mamba2Mixer(nn.Module):
                     dim=-1,
                 )
 
-                time_step = nn.functional.softplus(time_step + self.dt_bias)
                 # 1D Convolution
                 if causal_conv1d_fn is None or self.activation not in ["silu", "swish"]:
                     hidden_states_B_C = self.act(
@@ -412,6 +411,8 @@ class Mamba2Mixer(nn.Module):
                     z=None,
                     seq_idx=None,
                     return_final_states=True,
+                    dt_bias=self.dt_bias,
+                    dt_softplus=True,                       
                     **dt_limit_kwargs,
                 )
                 if ssm_state is not None and cache_params is not None:
@@ -420,7 +421,7 @@ class Mamba2Mixer(nn.Module):
                     batch_size, seq_len, -1
                 )
                 # Multiply "gate" branch and apply extra normalization layer
-                scan_output = self.norm(scan_output, o=gate)
+                scan_output = self.norm(scan_output, gate)
                 out = self.out_proj(scan_output)
         return out
 
@@ -1052,28 +1053,18 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel):
         )
         hidden_states = mamba2_outputs[0]
 
-        fuse_linear_and_cross_entropy = self.config.fuse_cross_entropy and self.training
-        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states)
+        logits = self.lm_head(hidden_states)
 
         loss = None
         if labels is not None:
             if self.config.fuse_cross_entropy:
-                if fuse_linear_and_cross_entropy:
-                    loss_fct = FusedLinearCrossEntropyLoss()
-                else:
-                    loss_fct = FusedCrossEntropyLoss(inplace_backward=True)
+                loss_fct = FusedCrossEntropyLoss(inplace_backward=True)
             else:
                 loss_fct = nn.CrossEntropyLoss()
             # Enable model parallelism
-            labels = labels.to(hidden_states.device)
+            labels = labels.to(logits.device)
             labels = torch.cat((labels[..., 1:], torch.full_like(labels[:, :1], loss_fct.ignore_index)), 1)
-            if fuse_linear_and_cross_entropy:
-                loss = loss_fct(hidden_states.view(-1, self.config.hidden_size),
-                                labels.view(-1),
-                                self.lm_head.weight,
-                                self.lm_head.bias)
-            else:
-                loss = loss_fct(logits.view(-1, self.config.vocab_size), labels.view(-1))
+            loss = loss_fct(logits.view(-1, self.config.vocab_size), labels.view(-1))
 
         if not return_dict:
             output = (logits,) + mamba2_outputs[1:]
