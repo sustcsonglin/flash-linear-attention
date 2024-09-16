@@ -12,6 +12,7 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 </div>
 
 # Models
+Roughly sorted according to the timeline supported in FLA
 
 |  Date   |             Model              |                                           Title                                           |                                               Paper                                                |                                                                                         Code                                                                                         |                                                  FLA impl                                                   |
 | :-----: | :----------------------------: | :---------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------: |
@@ -20,18 +21,13 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 | 2023-12 | Based (@Stanford@Hazyresearch) |                        An Educational and Effective Sequence Mixer                        |             [[blog]](https://hazyresearch.stanford.edu/blog/2023-12-11-zoology2-based)             |                                                                [[official]](https://github.com/HazyResearch/zoology)                                                                 |        [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/based.py)         |
 | 2024-01 |            Rebased             |     Linear Transformers with Learnable Kernel Functions are Better In-Context Models      |                            [[arxiv]](https://arxiv.org/abs/2402.10644)                             |                                                                 [[official]](https://github.com/corl-team/rebased/)                                                                  |       [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/rebased.py)        |
 | 2021-02 |           Delta Net            |                 Linear Transformers Are Secretly Fast Weight Programmers                  |                            [[arxiv]](https://arxiv.org/abs/2102.11174)                             |                                                                 [[official]](https://github.com/IDSIA/recurrent-fwp)                                                                 |      [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/delta_net.py)       |
-| 2023-09 |    Hedgehog (@HazyResearch)    |      The Hedgehog & the Porcupine: Expressive Linear Attentions with Softmax Mimicry      |                      [openreview](https://openreview.net/forum?id=4g02l2N2Nx)                      |                                                                                                                                                                                      |   [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/linear_attn.py#L51)    |
-| 2023-10 | PolySketchFormer (@CMU@Google) |                    Fast Transformers via Sketching Polynomial Kernels                     |                             [arxiv](https://arxiv.org/abs/2310.01655)                              |                                                                                                                                                                                      |                                                    TODO                                                     |
-| 2023-07 |         TransnormerLLM         |   A Faster and Better Large Language Model with Improved TransNormer (@Shanghai AI Lab)   | [openreview](https://openreview.net/forum?id=OROKjdAfjs) [arxiv](https://arxiv.org/abs/2307.14995) |                           [[official]](https://github.com/OpenNLPLab/TransnormerLLM)    [[Lightning2]](https://github.com/OpenNLPLab/lightning-attention)                            |                                                    TODO                                                     |
-| 2023-05 |       RWKV-v4 (@BlinkDL)       |                         Reinventing RNNs for the Transformer Era                          |                             [arxiv](https://arxiv.org/abs/2305.13048)                              |                                                                   [[official]](https://github.com/BlinkDL/RWKV-LM)                                                                   |                                                    TODO                                                     |
-| 2023-10 |            GateLoop            |               Fully Data-Controlled Linear Recurrence for Sequence Modeling               | [openreview](https://openreview.net/forum?id=02Ug9N8DCI) [arxiv](https://arxiv.org/abs/2311.01927) | [[official]](https://github.com/tobiaskatsch/GateLoop)                                                                   [[jax]](https://github.com/lucidrains/gateloop-transformer) |                                                    TODO                                                     |
 | 2021-10 |           ABC (@UW)            |                           Attention with Bounded-memory Control                           |                             [arxiv](https://arxiv.org/abs/2110.02488)                              |                                                                                                                                                                                      |         [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/abc.py)          |
-| 2023-09 |         VQ-transformer         |                     Linear-Time Transformers via Vector Quantization                      |                             [arxiv](https://arxiv.org/abs/2309.16354)                              |                                                            [[official]](https://github.com/transformer-vq/transformer_vq)                                                            |                                                    TODO                                                     |
 | 2023-09 |              HGRN              |            Hierarchically Gated Recurrent Neural Network for Sequence Modeling            |                      [openreview](https://openreview.net/forum?id=P1TCHxJwLB)                      |                                                                   [[official]](https://github.com/OpenNLPLab/HGRN)                                                                   |         [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/hgrn.py)         |
 | 2024-04 |             HGRN2              |                       HGRN2: Gated Linear RNNs with State Expansion                       |                             [arxiv](https://arxiv.org/abs/2404.07904)                              |                                                                  [[official]](https://github.com/OpenNLPLab/HGRN2)                                                                   |        [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/hgrn2.py)         |
 | 2024-04 |             RWKV6              |          Eagle and Finch: RWKV with Matrix-Valued States and Dynamic Recurrence           |                             [arxiv](https://arxiv.org/abs/2404.05892)                              |                                                                    [[official]](https://github.com/RWKV/RWKV-LM)                                                                     |        [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/rwkv6.py)         |
 | 2024-06 |             Samba              | Samba: Simple Hybrid State Space Models for Efficient Unlimited Context Language Modeling |                             [arxiv](https://arxiv.org/abs/2406.07522)                              |                                                                   [[official]](https://github.com/microsoft/Samba)                                                                   |          [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/models/samba)          |
 | 2024-05 |             Mamba2              | Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality  |                             [arxiv](https://arxiv.org/abs/2405.21060)                          |                                                                   [[official]](https://github.com/state-spaces/mamba)                                                                   |          [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/models/mamba2)          |
+| 2024-09 |             GSA              | Gated Slot Attention for Efficient Linear-Time Sequence Modeling |                             [arxiv](https://arxiv.org/abs/2409.07146)                          |  [[official]](https://github.com/sustcsonglin/flash-linear-attention/tree/main/fla/models/gsa)                                                                   |          [code](https://github.com/sustcsonglin/flash-linear-attention/tree/main/fla/models/gsa)          |
 
 
 # Installation
@@ -239,32 +235,9 @@ Performance:
 ![Performance](https://github.com/sustcsonglin/flash-linear-attention/assets/30831390/36961182-da39-48ba-96a6-84c572ce51d7)
 
 
-# Different forms of linear attention
-
-Please refer to Sectiton 2.3 of [GLA paper](https://arxiv.org/pdf/2312.06635.pdf) for hardware considerations of different forms of linear attention.
-
-* `Parallel`: Self-attention-styled computation in $O(L^2)$ time with sequence parallelism.
-* `FusedRecurrent`: Recurrent computation in $O(L)$ time. Hidden states are computed on-the-fly in shared memory without any materialization to global memory (see Algorithm1 of [this paper](https://arxiv.org/pdf/2006.16236.pdf) for more details!). This saves a lot of I/O cost and should be a strong baseline for speed comparison.
-* `FusedChunk`: Chunkwise computation in $O(LC)$ time where $C$ is the chunk size. Hidden states are computed on-the-fly without any materialization to global memory likewise **FusedRecurrent**. This version is usually better than FusedReuccurent because tensor cores can be used for sequence level "reduction", whilst FusedRecurrent cannot use tensor cores at all.  Note that there is no sequence level parallelism in this implementation, so this impl is not suitable for the very small batch size setting. Should be more memory efficient than ParallelChunk. 
-* `ParallelChunk`: Chunkwise computation with sequence parallelism. Need to materialize hidden states to global memory for each chunk. $C$ is needed to set properly to achieve good performance because when $C$ is small there are too many hidden states to load/store to global memory; and when $C$ is too large the FLOPs are high. Recommened $C$ is [64, 128, 256]
-
-
 # Citation
 If you find this repo useful, please consider citing our works:
 ```bib
-@article{yang2024delta,
-  title   = {Parallelizing Linear Transformers with the Delta Rule over Sequence Length}, 
-  author  = {Songlin Yang and Bailin Wang and Yu Zhang and Yikang Shen and Yoon Kim},
-  journal = {arXiv preprint arXiv:2406.06484},
-  year    = {2024},
-}
-
-@article{zhang2024gsa,
-  title   = {Gated Slot Attention for Efficient Linear-Time Sequence Modeling}, 
-  author  = {Yu Zhang and Songlin Yang and Ruijie Zhu and Yue Zhang and Leyang Cui and Yiqiao Wang and Bolun Wang and Freda Shi and Bailin Wang and Wei Bi and Peng Zhou and Guohong Fu},
-  journal = {arXiv preprint arXiv:2409.07146},
-  year    = {2024},
-}
 
 @article{yang2023gated,
   title   = {Gated Linear Attention Transformers with Hardware-Efficient Training},
@@ -280,4 +253,19 @@ If you find this repo useful, please consider citing our works:
   month  = jan,
   year   = {2024}
 }
+
+@article{yang2024delta,
+  title   = {Parallelizing Linear Transformers with the Delta Rule over Sequence Length}, 
+  author  = {Songlin Yang and Bailin Wang and Yu Zhang and Yikang Shen and Yoon Kim},
+  journal = {arXiv preprint arXiv:2406.06484},
+  year    = {2024},
+}
+
+@article{zhang2024gsa,
+  title   = {Gated Slot Attention for Efficient Linear-Time Sequence Modeling}, 
+  author  = {Yu Zhang and Songlin Yang and Ruijie Zhu and Yue Zhang and Leyang Cui and Yiqiao Wang and Bolun Wang and Freda Shi and Bailin Wang and Wei Bi and Peng Zhou and Guohong Fu},
+  journal = {arXiv preprint arXiv:2409.07146},
+  year    = {2024},
+}
+
 ```
