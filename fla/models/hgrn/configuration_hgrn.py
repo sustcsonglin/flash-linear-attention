@@ -16,7 +16,6 @@ class HGRNConfig(PretrainedConfig):
         vocab_size: int = 32000,
         hidden_size: int = 2048,
         num_hidden_layers: int = 24,
-        num_heads: Optional[int] = 1,
         expand_ratio: Optional[int] = 1,
         use_short_conv: bool = False,
         conv_size: int = 4,
@@ -41,7 +40,6 @@ class HGRNConfig(PretrainedConfig):
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
-        self.num_heads = num_heads
         self.expand_ratio = expand_ratio
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size

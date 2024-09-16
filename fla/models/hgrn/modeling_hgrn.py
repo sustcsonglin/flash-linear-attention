@@ -66,7 +66,6 @@ class HGRNBlock(nn.Module):
         self.attn = HGRNAttention(
             mode=config.attn_mode,
             hidden_size=config.hidden_size,
-            num_heads=config.num_heads,
             expand_ratio=config.expand_ratio,
             use_short_conv=config.use_short_conv,
             conv_size=config.conv_size,

@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
 
 from fla.modules import FusedRMSNormSwishGate, ShortConvolution
 from fla.modules.activations import swiglu
@@ -26,7 +25,6 @@ class HGRNAttention(nn.Module):
         self,
         mode: str = 'chunk',
         hidden_size: int = 1024,
-        num_heads: Optional[int] = None,
         expand_ratio: Optional[int] = 1,
         use_short_conv: bool = False,
         conv_size: int = 4,
@@ -39,10 +37,8 @@ class HGRNAttention(nn.Module):
 
         self.mode = mode
         self.hidden_size = hidden_size
-        self.num_heads = num_heads
         self.expand_ratio = expand_ratio
         self.input_dim = int(hidden_size * expand_ratio)
-        self.head_dim = self.input_dim // self.num_heads
 
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
@@ -51,7 +47,6 @@ class HGRNAttention(nn.Module):
         self.layer_idx = layer_idx
 
         assert mode in ['chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
-        assert self.hidden_size % num_heads == 0, f"hidden size must be divisible by num_heads of {num_heads}"
 
         self.i_proj = nn.Linear(hidden_size, self.input_dim, bias=False)
         self.f_proj = nn.Linear(hidden_size, self.input_dim, bias=False)
@@ -110,7 +105,6 @@ class HGRNAttention(nn.Module):
         # dealing with left-padding
         if attention_mask is not None:
             i = i.mul_(attention_mask.unsqueeze(-1))
-        i, f = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (i, f))
 
         recurrent_state = last_state[-1] if use_cache else None
         if mode == 'chunk':
@@ -127,7 +121,7 @@ class HGRNAttention(nn.Module):
                 last_state = (recurrent_state,)
             past_key_values.update(last_state, self.layer_idx, i.shape[2])
 
-        o = self.g_norm(rearrange(o, 'b h l d -> b l (h d)'), self.g_proj(hidden_states))
+        o = self.g_norm(o, self.g_proj(hidden_states))
         o = self.o_proj(o)
 
         return o, None, past_key_values
@@ -139,7 +133,7 @@ class HGRNAttention(nn.Module):
             state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),
                       param.new_zeros(batch_size, self.hidden_size, self.conv_size),
                       param.new_zeros(batch_size, self.hidden_size, self.conv_size))
-        state += (param.new_zeros(batch_size, self.num_heads, self.head_dim),)
+        state += (param.new_zeros(batch_size, self.hidden_size),)
         return state
 
     def state_size(self, **kwargs) -> int:

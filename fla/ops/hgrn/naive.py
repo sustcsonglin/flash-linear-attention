@@ -13,9 +13,9 @@ def naive_recurrent_hgrn(
 ) -> torch.Tensor:
     dtype = x.dtype
     x, g = map(lambda i: i.float(), (x, g))
-    B, H, T, D = x.shape
+    B, T, D = x.shape
 
-    h = torch.zeros(B, H, D, dtype=torch.float, device=x.device)
+    h = torch.zeros(B, D, dtype=torch.float, device=x.device)
     o = torch.zeros_like(x)
 
     final_state = None
@@ -23,8 +23,8 @@ def naive_recurrent_hgrn(
         h += initial_state
 
     for i in range(T):
-        h = g[:, :, i].exp() * h + x[:, :, i]
-        o[:, :, i] = h
+        h = g[:, i].exp() * h + x[:, i]
+        o[:, i] = h
 
     if output_final_state:
         final_state = h
@@ -40,10 +40,10 @@ def naive_chunk_hgrn(
 ) -> torch.Tensor:
     dtype = x.dtype
     x, g = map(lambda i: i.float(), (x, g))
-    B, H, T, D = x.shape
+    B, T, D = x.shape
 
-    gc = g.view(B, H, -1, chunk_size, D).cumsum(-2).view_as(g)
-    h = torch.zeros(B, H, D, dtype=torch.float, device=x.device)
+    gc = g.view(B, chunk_size, D).cumsum(-2).view_as(g)
+    h = torch.zeros(B, D, dtype=torch.float, device=x.device)
     o = torch.zeros_like(x)
 
     final_state = None
@@ -52,11 +52,11 @@ def naive_chunk_hgrn(
 
     for i in range(0, T, chunk_size):
         hp = h
-        h = torch.zeros(B, H, D, dtype=torch.float, device=x.device)
+        h = torch.zeros(B, D, dtype=torch.float, device=x.device)
         for j in range(i, i + chunk_size):
-            h = g[:, :, j].exp() * h + x[:, :, j]
-            o[:, :, j] = hp * gc[:, :, j].exp() + h
-        h = o[:, :, j].clone()
+            h = g[:, j].exp() * h + x[:, j]
+            o[:, j] = hp * gc[:, j].exp() + h
+        h = o[:, j].clone()
 
     if output_final_state:
         final_state = h

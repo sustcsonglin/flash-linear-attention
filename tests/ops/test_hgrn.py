@@ -9,13 +9,11 @@ from fla.ops.hgrn.naive import naive_recurrent_hgrn
 
 
 @pytest.mark.parametrize("B", [4])
-@pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("T", [300, 512])
-@pytest.mark.parametrize("D", [32, 64, 128])
+@pytest.mark.parametrize("D", [500, 1024])
 @pytest.mark.parametrize("dtype", [torch.float])
 def test_fused_recurrent(
     B: int,
-    H: int,
     T: int,
     D: int,
     dtype: torch.dtype
@@ -23,13 +21,13 @@ def test_fused_recurrent(
     torch.manual_seed(42)
     atol = 1e-4
 
-    x = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
-    g = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
+    x = torch.randn((B, T, D), dtype=dtype, device='cuda')
+    g = torch.randn((B, T, D), dtype=dtype, device='cuda')
     x, g = (1 - g.sigmoid()) * x, F.logsigmoid(g)
     x, g = (i.detach().clone().to(dtype).requires_grad_() for i in (x, g))
 
     do = torch.randn_like(x)
-    h0 = torch.randn_like(x[:, :, 0])
+    h0 = torch.randn_like(x[:, 0])
     ref, _ = naive_recurrent_hgrn(x, g, h0, output_final_state=True)
     ref.backward(do)
     ref_dx, x.grad = x.grad.clone(), None
@@ -46,13 +44,11 @@ def test_fused_recurrent(
 
 
 @pytest.mark.parametrize("B", [4])
-@pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("T", [300, 512])
-@pytest.mark.parametrize("D", [32, 64, 128])
+@pytest.mark.parametrize("D", [500, 1024])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float])
 def test_chunk(
     B: int,
-    H: int,
     T: int,
     D: int,
     dtype: torch.dtype
@@ -60,13 +56,13 @@ def test_chunk(
     torch.manual_seed(42)
     atol = 1e-2
 
-    x = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
-    g = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
+    x = torch.randn((B, T, D), dtype=dtype, device='cuda')
+    g = torch.randn((B, T, D), dtype=dtype, device='cuda')
     x, g = (1 - g.sigmoid()) * x, F.logsigmoid(g)
     x, g = (i.detach().clone().to(dtype).requires_grad_() for i in (x, g))
 
     do = torch.randn_like(x)
-    h0 = torch.randn_like(x[:, :, 0])
+    h0 = torch.randn_like(x[:, 0])
     ref, _ = fused_recurrent_hgrn(x, g, h0, output_final_state=True)
     ref.backward(do)
     ref_dx, x.grad = x.grad.clone(), None
