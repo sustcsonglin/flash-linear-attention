@@ -845,7 +845,7 @@ def chunk_rwkv6(
 if __name__ == "__main__":
     import torch.nn.functional as F
 
-    from fla.ops.rwkv6.recurrent_fuse import fused_recurrent_rwkv6
+    from fla.ops.rwkv6.fused_recurrent import fused_recurrent_rwkv6
     B = 8
     H = 4
     L = 1024

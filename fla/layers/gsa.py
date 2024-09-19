@@ -17,7 +17,7 @@ from fla.modules.activations import swiglu_linear, swish
 from fla.modules.feature_map import (ReLUFeatureMap, SwishFeatureMap,
                                      T2RFeatureMap)
 from fla.ops.abc.chunk_gate import chunk_gated_abc
-from fla.ops.abc.recurrent_fuse import fused_recurrent_gated_abc
+from fla.ops.abc.fused_recurrent import fused_recurrent_gated_abc
 
 if TYPE_CHECKING:
     from fla.models.utils import Cache
