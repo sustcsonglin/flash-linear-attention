@@ -95,7 +95,7 @@ def chunk_fwd_kernel_h(
             b_gv = tl.load(p_gv, boundary_check=(0, 1))
             b_v = (b_v * tl.exp(b_gv_last[None, :] - b_gv)).to(b_v.dtype)
 
-        b_h += tl.dot(b_k, b_v, allow_tf32=False)
+        b_h += tl.dot(b_k, b_v)
 
     if STORE_FINAL_STATE:
         p_ht = tl.make_block_ptr(ht + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
@@ -192,7 +192,7 @@ def chunk_bwd_kernel_dh(
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
 
-def chunk_fwd_h_fn(k, v, g, gk, gv, BT, h0, output_final_state):
+def chunk_fwd_h_fn(k, v, g, gk, gv, BT, h0, output_final_state, states_in_fp32=False):
     B, H, T, K, V = *k.shape, v.shape[-1]
     ht = None
     if output_final_state:
@@ -200,7 +200,7 @@ def chunk_fwd_h_fn(k, v, g, gk, gv, BT, h0, output_final_state):
 
     BK, BV = min(64, triton.next_power_of_2(K)), min(64, triton.next_power_of_2(V))
     NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
-    h = k.new_empty(B, H, NT * K, V)
+    h = k.new_empty(B, H, NT * K, V, dtype=k.dtype if not states_in_fp32 else torch.float32)
     grid = (NK, NV, B * H)
 
     USE_G, USE_GK, USE_GV = g is not None, gk is not None, gv is not None
@@ -218,20 +218,21 @@ def chunk_fwd_h_fn(k, v, g, gk, gv, BT, h0, output_final_state):
     return h, ht
 
 
-def chunk_bwd_dh_fn(q, k, v, g, gk, gv, do, h0, dht, BT, scale):
+
+def chunk_bwd_dh_fn(q, k, v, g, gk, gv, do, h0, dht, BT, scale, states_in_fp32=False):
     B, H, T, K, V = *k.shape, v.shape[-1]
     BT = 64
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
     NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
-    dh = k.new_empty(B, H, NT * K, V)
+    dh = k.new_empty(B, H, NT * K, V, dtype=k.dtype if not states_in_fp32 else torch.float32)
     grid = (NK, NV, B * H)
     if h0 is not None:
         dh0 = torch.empty_like(h0, dtype=torch.float32)
     else:
         dh0 = None
     USE_GATE = (g is not None) or (gk is not None) or (gv is not None)
-    assert not (USE_GATE and dht is not None), "Cannot load final state gradient and use gates at the same time"
+    # assert not (USE_GATE and dht is not None), "Cannot load final state gradient and use gates at the same time"
     chunk_bwd_kernel_dh[grid](
         q, g, gk, gv, do, dh, dht, dh0,
         q.stride(1), q.stride(2), q.stride(3),
