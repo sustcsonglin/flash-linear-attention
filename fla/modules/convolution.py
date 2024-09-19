@@ -113,7 +113,8 @@ class ShortConvolution(nn.Conv1d):
             else:
                 warnings.warn(
                     "The naive Pytorch verison is very slow in practice, "
-                    "please run `pip install causal-conv1d>=1.4.0` to install fast causal short convolution CUDA kernel"
+                    "please run `pip install causal-conv1d>=1.4.0` to install fast causal short convolution CUDA kernel",
+                    category=ImportWarning
                 )
         self.use_fast_conv1d = use_fast_conv1d
 
