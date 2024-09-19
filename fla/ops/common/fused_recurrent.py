@@ -14,24 +14,27 @@ from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
     ],
     key=["BK", "BV", "USE_GK", "USE_GV", "USE_G"],
 )
+@triton.heuristics({
+    'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
+    'STORE_FINAL_STATE': lambda args: args['ht'] is not None
+})
 @triton.jit
 def fused_recurrent_fwd_kernel(
-    # B: batch_size, H: n_heads, T: seq_len, D: d_head
-    q,  # query [B, H, L, K]
-    k,  # key [B, H, L, K]
-    v,  # value [B, H, L, V]
-    g,  # log gate [B, H, L] or None
-    gk,  # log gate [B, H, L, K] or None
-    gv,  # log gate [B, H, L, V] or None
-    o,  # output [NK, B, H, L, V]
+    # B: B, H: H, T: T, D: d_head
+    q,  # query [B, H, T, K]
+    k,  # key [B, H, T, K]
+    v,  # value [B, H, T, V]
+    g,  # log gate [B, H, T] or None
+    gk,  # log gate [B, H, T, K] or None
+    gv,  # log gate [B, H, T, V] or None
+    o,  # output [NK, B, H, T, V]
     h0,  # initial hidden state [B, H, K, V]
     ht,  # final hidden state [B, H, K, V]
-    s_qk_h,  # stride size: L * K
-    s_vo_h,  # stride size: L * V
+    s_qk_h,  # stride size: T * K
+    s_vo_h,  # stride size: T * V
     scale,  # K ** -0.5
     B: tl.constexpr,
     H: tl.constexpr,
@@ -40,15 +43,15 @@ def fused_recurrent_fwd_kernel(
     V: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
-    STORE_FINAL_STATE: tl.constexpr,  # whether to store final state
     REVERSE: tl.constexpr,  # whether to reverse the recurrence
     USE_GK: tl.constexpr,  # whether to use gk
     USE_GV: tl.constexpr,  # whether to use gv
     USE_G: tl.constexpr,  # whether to use g
+    USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
+    STORE_FINAL_STATE: tl.constexpr  # whether to store final state
 ):
     # indices
-    i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_v, i_k, i_bh = tl.program_id(0).to(tl.int64), tl.program_id(1).to(tl.int64), tl.program_id(2).to(tl.int64)
 
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + ((T-1) * K if REVERSE else 0)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + ((T-1) * K if REVERSE else 0)
@@ -109,30 +112,34 @@ def fused_recurrent_fwd_kernel(
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
     ],
     key=["BK", "BV", "USE_GK", "USE_GV", "USE_G"],
 )
+@triton.heuristics({
+    'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
+    'STORE_INITIAL_STATE_GRADIENT': lambda args: args['dh0'] is not None,
+    'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None
+})
 # Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
 @triton.jit
 def fused_recurrent_bwd_kernel(
-    # B: batch_size, H: n_heads, T: seq_len, D: d_head
+    # B: B, H: H, T: T, D: d_head
     # NV: number of split in the V dimension. NK: number of split in the K dimension
-    q,  # query [B, H, L, K]
-    k,  # key [B, H, L, V]
-    v,  # value [B, H, L, V]
-    g,  # log gate [B, H, L]
-    gk,  # log gate [B, H, L, K] \alpha
-    gv,  # log gate [B, H, L, V] \bete
-    do,  # gradient wrt output [B, H, L, V]
-    dq,  # gradient wrt query [NV, B, H, L, K]
-    dk,  # gradient wrt key [NV, B, H, L, K]
-    dv,  # gradient wrt value [NK, B, H, L, V]
+    q,  # query [B, H, T, K]
+    k,  # key [B, H, T, V]
+    v,  # value [B, H, T, V]
+    g,  # log gate [B, H, T]
+    gk,  # log gate [B, H, T, K] \alpha
+    gv,  # log gate [B, H, T, V] \bete
+    do,  # gradient wrt output [B, H, T, V]
+    dq,  # gradient wrt query [NV, B, H, T, K]
+    dk,  # gradient wrt key [NV, B, H, T, K]
+    dv,  # gradient wrt value [NK, B, H, T, V]
     dht,  # gradient wrt final hidden state [B, H, K, V]
     dh0,  # gradient wrt initial hidden state [B, H, K, V]
     h0,  # initial hidden state [B, H, K, V]
-    s_qk_h,  # stride size: L * K
-    s_vo_h,  # stride size: L * V
+    s_qk_h,  # stride size: T * K
+    s_vo_h,  # stride size: T * V
     scale,  # K ** -0.5
     B,
     H,
@@ -141,15 +148,15 @@ def fused_recurrent_bwd_kernel(
     V: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
     REVERSE: tl.constexpr,  # whether to do autoregressive modeling in the reverse direction
     USE_GK: tl.constexpr,  # whether to use gk
     USE_GV: tl.constexpr,  # whether to use gv
     USE_G: tl.constexpr,  # whether to use g
-    USE_FINAL_STATE_GRADIENT: tl.constexpr,  # whether to compute gradient wrt final state
+    USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
     STORE_INITIAL_STATE_GRADIENT: tl.constexpr,  # whether to store gradient wrt initial state
+    USE_FINAL_STATE_GRADIENT: tl.constexpr,  # whether to compute gradient wrt final state
 ):
-    i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_v, i_k, i_bh = tl.program_id(0).to(tl.int64), tl.program_id(1).to(tl.int64), tl.program_id(2).to(tl.int64)
 
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + ((T-1) * K if REVERSE else 0)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + ((T-1) * K if REVERSE else 0)
@@ -165,10 +172,12 @@ def fused_recurrent_bwd_kernel(
     mask_bk = i_k * BK + tl.arange(0, BK) < K
     mask_bv = i_v * BV + tl.arange(0, BV) < V
     mask_kv = mask_bk[:, None] & mask_bv[None, :]
+
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
     if USE_INITIAL_STATE:
         p_h0 = h0 + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[:, None]) * V + (i_v * BV + tl.arange(0, BV)[None, :])
         b_h += tl.load(p_h0, mask=mask_kv, other=0).to(tl.float32)
+
     for i in range(0, T):
         b_k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         b_v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
@@ -284,14 +293,11 @@ class FusedRecurrentFunction(torch.autograd.Function):
             q, k, v, g, gk, gv, o, h0, ht,
             q.stride(1), v.stride(1),
             scale,
-            B=B, H=H, T=T, K=K, V=V,
-            BK=BK, BV=BV,
-            USE_INITIAL_STATE=h0 is not None,
-            STORE_FINAL_STATE=ht is not None,
+            B=B, H=H, T=T, K=K, V=V, BK=BK, BV=BV,
+            USE_G=g is not None,
             USE_GK=gk is not None,
             USE_GV=gv is not None,
-            USE_G=g is not None,
-            REVERSE=reverse,
+            REVERSE=reverse
         )
 
         o = o.sum(0)
@@ -308,38 +314,35 @@ class FusedRecurrentFunction(torch.autograd.Function):
 
         # not supported yet.
         if dht is not None:
-            if g:
-                assert g.requires_grad == False, "Cannot load final state gradient and use gates at the same time"
-            if gk:
-                assert gk.requires_grad == False, "Cannot load final state gradient and use gates at the same time"
-            if gv:
-                assert gv.requires_grad == False, "Cannot load final state gradient and use gates at the same time"
+            if g is not None:
+                assert g.requires_grad is False, "Cannot load final state gradient and use gates at the same time"
+            if gk is not None:
+                assert gk.requires_grad is False, "Cannot load final state gradient and use gates at the same time"
+            if gv is not None:
+                assert gv.requires_grad is False, "Cannot load final state gradient and use gates at the same time"
 
-        batch_size, n_heads, seq_len, K = q.shape
+        B, H, T, K = q.shape
         V = v.shape[-1]
         scale = ctx.scale
 
         BK, BV = min(K, 64), min(V, 64)
         NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
 
-        dq = q.new_empty(NV, batch_size, n_heads, seq_len, K, dtype=torch.float32)
-        dk = q.new_empty(NV, batch_size, n_heads, seq_len, K, dtype=torch.float32)
-        dv = q.new_empty(NK, batch_size, n_heads, seq_len, V, dtype=torch.float32)
+        dq = q.new_empty(NV, B, H, T, K, dtype=torch.float32)
+        dk = q.new_empty(NV, B, H, T, K, dtype=torch.float32)
+        dv = q.new_empty(NK, B, H, T, V, dtype=torch.float32)
         dh0 = torch.empty_like(h0) if (h0 is not None) else None
-        grid = (NV, NK, batch_size * n_heads)
+        grid = (NV, NK, B * H)
 
         fused_recurrent_bwd_kernel[grid](
             q, k, v, g, gk, gv, do, dq, dk, dv, dht, dh0, h0,
-            q.stride(1),
-            v.stride(1), scale,
-            B=batch_size, H=n_heads, T=seq_len, K=K, V=V, BK=BK, BV=BV,
-            USE_INITIAL_STATE=h0 is not None,
-            REVERSE=ctx.reverse,
+            q.stride(1), v.stride(1),
+            scale,
+            B=B, H=H, T=T, K=K, V=V, BK=BK, BV=BV,
+            USE_G=g is not None,
             USE_GK=gk is not None,
             USE_GV=gv is not None,
-            USE_G=g is not None,
-            USE_FINAL_STATE_GRADIENT=dht is not None,
-            STORE_INITIAL_STATE_GRADIENT=dh0 is not None
+            REVERSE=ctx.reverse
         )
         dq = dq.sum(0)
         dk = dk.sum(0)

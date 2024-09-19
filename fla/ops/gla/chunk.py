@@ -8,8 +8,9 @@ import triton
 import triton.language as tl
 
 from fla.ops.common.chunk_h import chunk_bwd_dh_fn, chunk_fwd_h_fn
-from fla.ops.utils import chunk_global_reversed_cumsum, chunk_local_cumsum
+from fla.ops.utils import chunk_local_cumsum
 from fla.utils import contiguous
+
 
 @triton.autotune(
     configs=[
@@ -104,13 +105,12 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra(
     for j in range(0, BC):
         b_A = tl.zeros([BC], dtype=tl.float32)
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
-        p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
+        p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T*K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
         b_k = tl.load(p_k, boundary_check=(0,)).to(tl.float32)
         b_gk = tl.load(p_gk, boundary_check=(0,)).to(tl.float32)
         b_A += tl.sum(b_q * b_k[None, :] * tl.exp(b_g - b_gk[None, :]), 1)
         b_A = tl.where(o_i >= j, b_A * scale, 0.)
         tl.store(A + o_A + j, b_A, mask=m_A)
-
 
 
 @triton.autotune(
@@ -153,7 +153,8 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_split(
     for j in range(0, BC):
         b_A = tl.zeros([BC], dtype=tl.float32)
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
-        p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
+        p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T * K,), (s_k_d,),
+                                 ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
         b_k = tl.load(p_k, boundary_check=(0,)).to(tl.float32)
         b_gk = tl.load(p_gk, boundary_check=(0,)).to(tl.float32)
         b_A += tl.sum(b_q * b_k[None, :] * tl.exp(b_g - b_gk[None, :]), 1)
@@ -183,12 +184,12 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_merge(
     n_bh = tl.num_programs(2)
     b_A = tl.zeros([BC, BC], dtype=tl.float32)
     for i_k in range(0, NK):
-        p_A = tl.make_block_ptr(A + (i_bh + i_k*n_bh) * T * BC , (T, BC), (BC, 1), (i_t * BT + i_c * BC, 0), (BC, BC), (1, 0))
+        p_A = tl.make_block_ptr(A + (i_bh + i_k*n_bh) * T * BC, (T, BC), (BC, 1), (i_t * BT + i_c * BC, 0), (BC, BC), (1, 0))
         b_A += tl.load(p_A, boundary_check=(0, 1))
     p_A2 = tl.make_block_ptr(A2 + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_c * BC, i_c * BC), (BC, BC), (1, 0))
     tl.store(p_A2, b_A.to(A2.dtype.element_ty), boundary_check=(0, 1))
 
-    
+
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=1),
@@ -237,7 +238,7 @@ def chunk_gla_fwd_kernel_inter(
         b_g = tl.load(p_g, boundary_check=(0, 1))
         # [BT, BK]
         b_qg = (b_q * tl.exp(b_g)).to(b_q.dtype)
-        # [BK, BV] 
+        # [BK, BV]
         b_h = tl.load(p_h, boundary_check=(0, 1))
         # works but dkw, owing to divine benevolence
         # [BT, BV]
@@ -447,7 +448,7 @@ def chunk_gla_bwd_kernel_dv(
     b_do = tl.load(p_do, boundary_check=(0, 1))
     # (SY 09/17) important to disallow tf32 here to maintain a good precision.
     b_dv = tl.dot(b_A, b_do.to(b_A.dtype), allow_tf32=False)
-    
+
     last_idx = min(i_t * BT + BT, T) - 1
 
     for i_k in range(tl.cdiv(K, BK)):
@@ -522,7 +523,8 @@ def chunk_gla_bwd_kernel_inter(
         p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         p_h = tl.make_block_ptr(h + i_bh * s_h_h + i_t * V * K, (V, K), (s_h_d, s_h_t), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
         p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dh = tl.make_block_ptr(dh + i_bh * s_h_h + i_t * V * K, (V, K), (s_h_d, s_h_t), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
+        p_dh = tl.make_block_ptr(dh + i_bh * s_h_h + i_t * V * K, (V, K),
+                                 (s_h_d, s_h_t), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
         # [BT, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_do = tl.load(p_do, boundary_check=(0, 1))
@@ -563,6 +565,7 @@ def chunk_gla_bwd_kernel_inter(
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0, 1))
 
+
 def chunk_fwd_intra_A_gated_fn(q, k, g, scale, BT):
     BC = 16
     B, H, T, K = q.shape
@@ -581,10 +584,10 @@ def chunk_fwd_intra_A_gated_fn(q, k, g, scale, BT):
     # load the entire [BC, K] blocks into SRAM at once
     if K <= 256:
         chunk_gla_fwd_A_kernel_intra_sub_intra[grid](
-        q, k, g, A,
-        k.stride(1), k.stride(2), k.stride(3),
-        scale,
-        T=T, K=K, BT=BT, BC=BC, BK=triton.next_power_of_2(K), NC=NC
+            q, k, g, A,
+            k.stride(1), k.stride(2), k.stride(3),
+            scale,
+            T=T, K=K, BT=BT, BC=BC, BK=triton.next_power_of_2(K), NC=NC
         )
     # split then merge
     else:
@@ -623,7 +626,6 @@ def chunk_fwd_o_gated_gk_fn(q, v, g_cumsum, A, h, BT, scale):
         T=T, K=K, V=V, BT=BT, BK=BK, BV=BV
     )
     return o
-
 
 
 def chunk_gla_bwd_dA_fn(v, do, BT, scale):
@@ -675,7 +677,6 @@ def chunk_gla_bwd_dqk_intra_fn(q, k, g_cumsum, dA, BT):
     return dq, dk
 
 
-
 def chunk_gla_bwd_dqkg_fn(q, k, v, h, g_cumsum, do, dh, dq, dk, BT, scale):
     B, H, T, K, V = *q.shape, v.shape[-1]
     dg = torch.empty_like(g_cumsum)
@@ -686,8 +687,9 @@ def chunk_gla_bwd_dqkg_fn(q, k, v, h, g_cumsum, do, dh, dq, dk, BT, scale):
     grid = (NK, NT, B * H)
     # work around triton compiler bugs.
     dq2 = torch.empty_like(dq)
-    dk2 = torch.empty_like(dk) 
-    chunk_gla_bwd_kernel_inter[grid](q, k, v, h, g_cumsum, do, dh, dq, dk, dq2, dk2, dg,
+    dk2 = torch.empty_like(dk)
+    chunk_gla_bwd_kernel_inter[grid](
+        q, k, v, h, g_cumsum, do, dh, dq, dk, dq2, dk2, dg,
         k.stride(1), k.stride(2), k.stride(3),
         v.stride(1), v.stride(2), v.stride(3),
         h.stride(1), h.stride(2), h.stride(3),
@@ -696,20 +698,29 @@ def chunk_gla_bwd_dqkg_fn(q, k, v, h, g_cumsum, do, dh, dq, dk, BT, scale):
     return dq2, dk2, dg
 
 
-
 class ChunkGLAFunction(torch.autograd.Function):
     @staticmethod
     @contiguous
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state):
         BT = 64
         g_cumsum = chunk_local_cumsum(g, BT=BT)
-        h, ht = chunk_fwd_h_fn(k=k, v=v, g=None, gk=g_cumsum, gv=None, BT=BT, h0=initial_state, output_final_state=output_final_state, states_in_fp32=False)
+        h, ht = chunk_fwd_h_fn(
+            k=k,
+            v=v,
+            g=None,
+            gk=g_cumsum,
+            gv=None,
+            BT=BT,
+            h0=initial_state,
+            output_final_state=output_final_state,
+            states_in_fp32=False
+        )
         A = chunk_fwd_intra_A_gated_fn(q, k, g_cumsum, scale, BT)
         o = chunk_fwd_o_gated_gk_fn(q, v, g_cumsum, A, h, BT, scale)
         if g.dtype != torch.float32:
             g_cumsum = None  # recompute g_cumsum in bwd pass
         else:
-            g = None 
+            g = None
         ctx.save_for_backward(q, k, v, g, g_cumsum, initial_state, A)
         ctx.BT = BT
         ctx.scale = scale
@@ -721,15 +732,49 @@ class ChunkGLAFunction(torch.autograd.Function):
         q, k, v, g, g_cumsum, initial_state, A = ctx.saved_tensors
         if g_cumsum is None:
             g_cumsum = chunk_local_cumsum(g, BT=ctx.BT)
-        B, H, T, K, V = *q.shape, v.shape[-1]
         BT, scale = ctx.BT, ctx.scale
-        h, _ = chunk_fwd_h_fn(k=k, v=v, g=None, gk=g_cumsum, gv=None, BT=BT, h0=initial_state, output_final_state=False, states_in_fp32=True)
-        dh, dh0 = chunk_bwd_dh_fn(q=q, k=k, v=v, g=None, gk=g_cumsum, gv=None, do=do, h0=initial_state, dht=dht, BT=BT, scale=scale, states_in_fp32=True)
+        h, _ = chunk_fwd_h_fn(
+            k=k,
+            v=v,
+            g=None,
+            gk=g_cumsum,
+            gv=None,
+            BT=BT,
+            h0=initial_state,
+            output_final_state=False,
+            states_in_fp32=True
+        )
+        dh, dh0 = chunk_bwd_dh_fn(
+            q=q,
+            k=k,
+            v=v,
+            g=None,
+            gk=g_cumsum,
+            gv=None,
+            do=do,
+            h0=initial_state,
+            dht=dht,
+            BT=BT,
+            scale=scale,
+            states_in_fp32=True
+        )
         dv = chunk_gla_bwd_dv_fn(k=k, g_cumsum=g_cumsum, A=A, do=do, dh=dh, BT=BT, scale=scale)
         # dq dk in fp32
         dA = chunk_gla_bwd_dA_fn(v=v, do=do, BT=BT, scale=scale)
         dq, dk = chunk_gla_bwd_dqk_intra_fn(q=q, k=k, g_cumsum=g_cumsum, dA=dA, BT=BT)
-        dq, dk, dg = chunk_gla_bwd_dqkg_fn(q=q, k=k, v=v, h=h, g_cumsum=g_cumsum, do=do, dh=dh, dq=dq, dk=dk, BT=BT, scale=scale)
+        dq, dk, dg = chunk_gla_bwd_dqkg_fn(
+            q=q,
+            k=k,
+            v=v,
+            h=h,
+            g_cumsum=g_cumsum,
+            do=do,
+            dh=dh,
+            dq=dq,
+            dk=dk,
+            BT=BT,
+            scale=scale
+        )
         return dq.to(q), dk.to(k), dv.to(v), dg, None, dh0, None
 
 
