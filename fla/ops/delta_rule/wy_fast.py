@@ -9,8 +9,6 @@ from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 # Inspired by "THE WY REPRESENTATION FOR PRODUCTS OF HOUSEHOLDER MATRICES" https://epubs.siam.org/doi/pdf/10.1137/0908009
-# o: cumprod
-# o2: cumprodsum
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=1),
@@ -72,7 +70,7 @@ def fwd_prepare_wy_repr_kernel(
         p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_vb = (b_v * b_beta[:, None]).to(b_v.dtype)
-        b_u = tl.dot(b_A, b_vb, allow_tf32=False)
+        b_u = tl.dot(b_A, b_vb)
         p_u = tl.make_block_ptr(u + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         tl.store(p_u, (b_u).to(p_u.dtype.element_ty), boundary_check=(0, 1))
 
@@ -80,7 +78,7 @@ def fwd_prepare_wy_repr_kernel(
         p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_kb = (b_k * b_beta[:, None]).to(b_k.dtype)
-        b_w = tl.dot(b_A, b_kb, allow_tf32=False)
+        b_w = tl.dot(b_A, b_kb)
         p_w = tl.make_block_ptr(w + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         tl.store(p_w, b_w.to(p_w.dtype.element_ty), boundary_check=(0, 1))
 
@@ -121,13 +119,13 @@ def fwd_recompute_w_u_kernel(
     b_beta = tl.load(p_beta, boundary_check=(0,))
 
     p_A = tl.make_block_ptr(A + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
-    b_A = tl.load(p_A, boundary_check=(0, 1)).to(k.dtype.element_ty)
+    b_A = tl.load(p_A, boundary_check=(0, 1))
 
     for i_v in range(tl.cdiv(V, BV)):
         p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_vb = (b_v * b_beta[:, None]).to(b_v.dtype)
-        b_u = tl.dot(b_A, b_vb, allow_tf32=False)
+        b_u = tl.dot(b_A.to(b_vb.dtype), b_vb, allow_tf32=False)
         p_u = tl.make_block_ptr(u + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         tl.store(p_u, (b_u).to(p_u.dtype.element_ty), boundary_check=(0, 1))
 
@@ -135,7 +133,7 @@ def fwd_recompute_w_u_kernel(
         p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_kb = (b_k * b_beta[:, None]).to(b_k.dtype)
-        b_w = tl.dot(b_A, b_kb, allow_tf32=False)
+        b_w = tl.dot(b_A.to(b_kb.dtype), b_kb, allow_tf32=False)
         p_w = tl.make_block_ptr(w + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         tl.store(p_w, b_w.to(p_w.dtype.element_ty), boundary_check=(0, 1))
 
@@ -209,8 +207,8 @@ def bwd_prepare_wy_repr_kernel(
     BV: tl.constexpr
 ):
     i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    p_A = tl.make_block_ptr(A + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
-    b_A = tl.load(p_A, boundary_check=(0, 1)).to(k.dtype.element_ty)
+    p_A = tl.make_block_ptr(A + i_bh * T * BT, (BT, T), (1, BT), (0, i_t * BT), (BT, BT), (0, 1))
+    b_A = tl.load(p_A, boundary_check=(0, 1))
 
     b_dbeta = tl.zeros([BT], dtype=tl.float32)
     b_dA = tl.zeros([BT, BT], dtype=tl.float32)
@@ -224,7 +222,7 @@ def bwd_prepare_wy_repr_kernel(
         b_v_beta = (b_v * b_beta[:, None]).to(b_v.dtype)
         b_du = tl.load(p_du, boundary_check=(0, 1))
         b_dA += tl.dot(b_du, tl.trans(b_v_beta), allow_tf32=False)
-        b_dv_beta = tl.dot(tl.trans(b_A), b_du, allow_tf32=False)
+        b_dv_beta = tl.dot(b_A, b_du, allow_tf32=False)
         b_dv = b_dv_beta * b_beta[:, None]
         b_dbeta += tl.sum(b_dv_beta * b_v, 1)
         # store
@@ -238,7 +236,7 @@ def bwd_prepare_wy_repr_kernel(
         b_k_beta = (b_k * b_beta[:, None]).to(b_k.dtype)
         b_dw = tl.load(p_dw, boundary_check=(0, 1))
         b_dA += tl.dot(b_dw, tl.trans(b_k_beta), allow_tf32=False)
-        b_dk_beta = tl.dot(tl.trans(b_A), b_dw, allow_tf32=False)
+        b_dk_beta = tl.dot(b_A, b_dw, allow_tf32=False)
         b_dk = b_dk_beta * b_beta[:, None]
         b_dbeta += tl.sum(b_dk_beta * b_k, 1)
         # store
@@ -246,8 +244,8 @@ def bwd_prepare_wy_repr_kernel(
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
 
     b_dA = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], b_dA, 0)
-    b_dA = tl.dot(b_dA.to(b_A.dtype), tl.trans(b_A), allow_tf32=False)
-    b_dA = tl.dot(tl.trans(b_A), b_dA.to(b_A.dtype), allow_tf32=False)
+    b_dA = tl.dot(b_dA.to(b_A.dtype), b_A, allow_tf32=False)
+    b_dA = tl.dot(b_A, b_dA.to(b_A.dtype), allow_tf32=False)
     b_dA = tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], -b_dA, 0).to(k.dtype.element_ty)
 
     for i_k in range(tl.cdiv(K, BK)):
@@ -321,8 +319,8 @@ def bwd_prepare_wy_repr(k, v, beta, A, dw, du, BT):
     BV = min(triton.next_power_of_2(V), 64)
     NT = triton.cdiv(T, BT)
     dk = torch.empty_like(k)
-    dv = torch.empty_like(v).contiguous()
-    dbeta = torch.zeros_like(beta)
+    dv = torch.empty_like(v)
+    dbeta = torch.empty_like(beta)
 
     bwd_prepare_wy_repr_kernel[(NT, B*H)](
         k, v, beta, A,
@@ -409,7 +407,6 @@ if __name__ == "__main__":
     if require_grad:
         o1.backward(do, retain_graph=True)
         o2.backward(do2, retain_graph=True)
-
         k_grad2, v_grad2, beta_grad2 = k.grad, v.grad, beta.grad
         k.grad = v.grad = beta.grad = None
     o3, o4 = prepare_wy_repr(k.clone(), v.clone(), beta.clone(), 64)
