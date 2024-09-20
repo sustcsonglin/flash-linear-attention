@@ -15,6 +15,10 @@ import triton.language as tl
     ],
     key=["BT", "BK", "BV", "USE_G", 'USE_GK', 'USE_GV'],
 )
+@triton.heuristics({
+    'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
+    'STORE_FINAL_STATE': lambda args: args['ht'] is not None
+})
 @triton.jit
 def chunk_fwd_kernel_h(
     k,
@@ -111,6 +115,10 @@ def chunk_fwd_kernel_h(
     ],
     key=["BT", "BK", "BV",  "USE_G", 'USE_GK', 'USE_GV'],
 )
+@triton.heuristics({
+    'STORE_INITIAL_STATE_GRADIENT': lambda args: args['dh0'] is not None,
+    'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None
+})
 @triton.jit
 def chunk_bwd_kernel_dh(
     q,
@@ -141,12 +149,12 @@ def chunk_bwd_kernel_dh(
     USE_GK: tl.constexpr,
     USE_GV: tl.constexpr,
     STORE_INITIAL_STATE_GRADIENT: tl.constexpr,
-    LOAD_FINAL_STATE_GRADIENT: tl.constexpr
+    USE_FINAL_STATE_GRADIENT: tl.constexpr
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     # [BK, BV]
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
-    if LOAD_FINAL_STATE_GRADIENT:
+    if USE_FINAL_STATE_GRADIENT:
         p_dht = tl.make_block_ptr(dht + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_dh += tl.load(p_dht, boundary_check=(0, 1)).to(tl.float32)
 
@@ -203,20 +211,17 @@ def chunk_fwd_h_fn(k, v, g, gk, gv, BT, h0, output_final_state, states_in_fp32=F
     h = k.new_empty(B, H, NT * K, V, dtype=k.dtype if not states_in_fp32 else torch.float32)
     grid = (NK, NV, B * H)
 
-    USE_G, USE_GK, USE_GV = g is not None, gk is not None, gv is not None
-
     chunk_fwd_kernel_h[grid](
         k, v, h, g, gk, gv, h0, ht,
         k.stride(1), k.stride(2), k.stride(3),
         v.stride(1), v.stride(2), v.stride(3),
         h.stride(1), h.stride(2),
         T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-        USE_INITIAL_STATE=h0 is not None,
-        STORE_FINAL_STATE=output_final_state,
-        USE_G=USE_G, USE_GK=USE_GK, USE_GV=USE_GV
+        USE_G=g is not None,
+        USE_GK=gk is not None,
+        USE_GV=gv is not None
     )
     return h, ht
-
 
 
 def chunk_bwd_dh_fn(q, k, v, g, gk, gv, do, h0, dht, BT, scale, states_in_fp32=False):
@@ -231,7 +236,6 @@ def chunk_bwd_dh_fn(q, k, v, g, gk, gv, do, h0, dht, BT, scale, states_in_fp32=F
         dh0 = torch.empty_like(h0, dtype=torch.float32)
     else:
         dh0 = None
-    USE_GATE = (g is not None) or (gk is not None) or (gv is not None)
     # assert not (USE_GATE and dht is not None), "Cannot load final state gradient and use gates at the same time"
     chunk_bwd_kernel_dh[grid](
         q, g, gk, gv, do, dh, dht, dh0,
@@ -240,8 +244,8 @@ def chunk_bwd_dh_fn(q, k, v, g, gk, gv, do, h0, dht, BT, scale, states_in_fp32=F
         dh.stride(1), dh.stride(2),
         scale,
         T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-        USE_G=g is not None, USE_GK=gk is not None, USE_GV=gv is not None,
-        STORE_INITIAL_STATE_GRADIENT=dh0 is not None,
-        LOAD_FINAL_STATE_GRADIENT=dht is not None
+        USE_G=g is not None,
+        USE_GK=gk is not None,
+        USE_GV=gv is not None
     )
     return dh, dh0
