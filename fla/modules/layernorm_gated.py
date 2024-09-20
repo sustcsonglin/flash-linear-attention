@@ -8,16 +8,13 @@ import math
 
 import torch
 import torch.nn.functional as F
-
 import triton
 import triton.language as tl
-
 from einops import rearrange
 
 
 def rms_norm_ref(x, weight, bias, z=None, eps=1e-6, group_size=None, norm_before_gate=True, upcast=True):
     dtype = x.dtype
-    N = x.shape[-1]
     weight = weight.float()
     bias = bias.float() if bias is not None else None
     if upcast:
@@ -145,7 +142,6 @@ def _layer_norm_fwd(x, weight, bias, eps, z=None, out=None, group_size=None, nor
                                            IS_RMS_NORM=is_rms_norm,
                                            num_warps=num_warps)
     return out, mean, rstd
-
 
 
 @triton.heuristics({"HAS_BIAS": lambda args: args["B"] is not None})
@@ -356,7 +352,8 @@ class LayerNormFn(torch.autograd.Function):
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        y, mean, rstd = _layer_norm_fwd(x, weight, bias, eps, z=z, group_size=group_size, norm_before_gate=norm_before_gate, is_rms_norm=is_rms_norm)
+        y, mean, rstd = _layer_norm_fwd(x, weight, bias, eps, z=z, group_size=group_size,
+                                        norm_before_gate=norm_before_gate, is_rms_norm=is_rms_norm)
         ctx.save_for_backward(x, weight, bias, mean, rstd, z)
         ctx.x_shape_og = x_shape_og
         ctx.eps = eps
@@ -372,9 +369,22 @@ class LayerNormFn(torch.autograd.Function):
         if dy.stride(-1) != 1:
             dy = dy.contiguous()
         assert dy.shape == x.shape
-        dx, dw, db, dz = _layer_norm_bwd(dy, x, weight, bias, ctx.eps, mean, rstd, z, ctx.group_size,
-                                         ctx.norm_before_gate, ctx.is_rms_norm)
-        return dx.reshape(ctx.x_shape_og), dw, db, dz.reshape(ctx.x_shape_og) if dz is not None else None, None, None, None, None
+        dx, dw, db, dz = _layer_norm_bwd(
+            dy,
+            x,
+            weight,
+            bias,
+            ctx.eps,
+            mean,
+            rstd,
+            z,
+            ctx.group_size,
+            ctx.norm_before_gate,
+            ctx.is_rms_norm
+        )
+        dx = dx.reshape(ctx.x_shape_og)
+        dx = dz.reshape(ctx.x_shape_og) if dz is not None else None
+        return dx, dw, db, dz, None, None, None, None
 
 
 def layernorm_fn(x, weight, bias, z=None, eps=1e-6, group_size=None, norm_before_gate=True, is_rms_norm=False):

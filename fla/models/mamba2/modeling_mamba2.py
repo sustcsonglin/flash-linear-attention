@@ -412,7 +412,7 @@ class Mamba2Mixer(nn.Module):
                     seq_idx=None,
                     return_final_states=True,
                     dt_bias=self.dt_bias,
-                    dt_softplus=True,                       
+                    dt_softplus=True,
                     **dt_limit_kwargs,
                 )
                 if ssm_state is not None and cache_params is not None:
