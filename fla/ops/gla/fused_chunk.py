@@ -12,9 +12,101 @@ import triton.language as tl
 from einops import rearrange
 from packaging import version
 
-from fla.ops.gla.chunk_util import (bwd_decay_global_cumsum, fwd_decay_cumsum,
-                                    prepare_qg_kg)
+from fla.ops.utils import chunk_local_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
+
+
+@triton.jit
+def prepare_qg_kg(
+    q,
+    k,
+    g,
+    qg,
+    kg,
+    s_qk_h,
+    scale,
+    K: tl.constexpr,
+    BT: tl.constexpr,
+    BK: tl.constexpr
+):
+
+    i_k, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    p_q = q + i_bh * s_qk_h + i_c * BT * K + i_k * BK + tl.arange(0, BK)
+    p_g = g + i_bh * s_qk_h + i_c * BT * K + i_k * BK + tl.arange(0, BK)
+    p_k = k + i_bh * s_qk_h + i_c * BT * K + i_k * BK + tl.arange(0, BK)
+    p_qg = qg + i_bh * s_qk_h + i_c * BT * K + i_k * BK + tl.arange(0, BK)
+    p_kg = kg + i_bh * s_qk_h + i_c * BT * K + i_k * BK + tl.arange(0, BK)
+
+    mask = (i_k * BK + tl.arange(0, BK)) < K
+
+    last_decay = tl.load(g + i_bh * s_qk_h + (i_c * BT + BT - 1) * K + i_k * BK + tl.arange(0, BK))
+
+    for i in range(BT):
+        b_q = tl.load(p_q, mask=mask, other=0)
+        b_k = tl.load(p_k, mask=mask, other=0)
+        _g = tl.load(p_g, mask=mask, other=0).to(tl.float32)
+        b_q *= tl.exp(_g) * scale
+        b_k *= tl.exp(last_decay - _g)
+        tl.store(p_kg, b_k.to(p_kg.dtype.element_ty), mask=mask)
+        tl.store(p_qg, b_q.to(p_qg.dtype.element_ty), mask=mask)
+        p_q += K
+        p_g += K
+        p_k += K
+        p_kg += K
+        p_qg += K
+
+
+@triton.jit
+def bwd_decay_global_cumsum(
+    dq_inner,
+    dq_inter,
+    dk_inner,
+    dk_inter,
+    q, k, g, dg,
+    s_qk_h,
+    BT: tl.constexpr,
+    BK: tl.constexpr,
+    K: tl.constexpr
+):
+    i_k, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (i_c * BT + BT - 1) * K
+    p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (i_c * BT + BT - 1) * K
+    p_g = g + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (i_c * BT + BT - 1) * K
+    p_dg = dg + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (i_c * BT + BT - 1) * K
+    p_dq_inner = dq_inner + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (i_c * BT + BT - 1) * K
+    p_dk_inner = dk_inner + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (i_c * BT + BT - 1) * K
+    p_dq_inter = dq_inter + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (i_c * BT + BT - 1) * K
+    p_dk_inter = dk_inter + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (i_c * BT + BT - 1) * K
+    cum_grad_dg = tl.zeros([BK], dtype=tl.float32)
+    mask = (i_k * BK + tl.arange(0, BK)) < K
+    last_g = tl.zeros([BK], dtype=tl.float32)
+    for j in range(BT-1, -1, -1):
+        _g = tl.load(p_g, mask=mask, other=0).to(tl.float32)
+        if j == (BT-1):
+            last_g = _g
+        b_dq1 = tl.load(p_dq_inner, mask=mask, other=0)
+        b_dq2 = tl.load(p_dq_inter, mask=mask, other=0)
+        b_dq2 *= tl.exp(_g)
+        b_dq = b_dq1 + b_dq2
+        tl.store(p_dq_inter, b_dq, mask=mask)
+        b_dk1 = tl.load(p_dk_inner, mask=mask, other=0)
+        b_dk2 = tl.load(p_dk_inter, mask=mask, other=0)
+        b_dk2 *= tl.exp(last_g - _g)
+        b_dk = b_dk1 + b_dk2
+        tl.store(p_dk_inter, b_dk, mask=mask)
+        b_q = tl.load(p_q, mask=mask, other=0)
+        b_k = tl.load(p_k, mask=mask, other=0)
+        b_dg = b_dq * b_q - b_dk * b_k
+        cum_grad_dg += b_dg
+        tl.store(p_dg, cum_grad_dg.to(p_dg.dtype.element_ty), mask=mask)
+        p_g -= K
+        p_k -= K
+        p_q -= K
+        p_dq_inner -= K
+        p_dk_inner -= K
+        p_dq_inter -= K
+        p_dk_inter -= K
+        p_dg -= K
 
 
 @triton.jit
@@ -305,30 +397,22 @@ class FusedChunkGLAFunction(torch.autograd.Function):
     @autocast_custom_fwd
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state):
         ctx.g_dtype = g.dtype
-        g_original = g
-        # cumulative decay should be in float32, otherwise the err will be accumulated and amplified.
-        g = torch.empty_like(g, dtype=torch.float32)
-        B, H, T, K, V = *k.shape, v.shape[-1]
         ctx.scale = scale
-
-        # inter-chunk
+        B, H, T, K, V = *k.shape, v.shape[-1]
         BT = 16  # chunk_size
         BK, BV = min(K, 64), min(V, 64)
+        NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
         num_stages = 1
         num_warps = 2
 
-        NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
+        g_org = g
+        # cumulative decay should be in float32, otherwise the err will be accumulated and amplified.
+        g = chunk_local_cumsum(g_org, BT=BT)
         o = q.new_empty(NK, B, H, T, V)
         q_g = torch.empty_like(q)
         k_g = torch.empty_like(k)
+
         grid = (NK, triton.cdiv(T, BT), B * H)
-        fwd_decay_cumsum[grid](
-            g_original,
-            g,
-            q.stride(1),
-            K=K,
-            BT=BT, BK=BK, num_warps=1
-        )
         prepare_qg_kg[grid](
             q, k, g, q_g, k_g,
             q.stride(1),
@@ -388,7 +472,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         o2 = rearrange(o2, 'b h n c d -> b h (n c) d')
         # combine inner and inter
         o.add_(o2)
-        ctx.save_for_backward(q, k, v, g_original, A, initial_state)
+        ctx.save_for_backward(q, k, v, g_org, A, initial_state)
         ctx.CHECK = CHECK
         return o.to(v), final_state
 
@@ -396,26 +480,19 @@ class FusedChunkGLAFunction(torch.autograd.Function):
     @contiguous
     @autocast_custom_bwd
     def backward(ctx, do, dht=None):
-        q, k, v, g_origin, A, initial_state = ctx.saved_tensors
+        q, k, v, g_org, A, initial_state = ctx.saved_tensors
         B, H, T, K, V = *k.shape, v.shape[-1]
         scale = ctx.scale
 
         # recomputation
         # inter-chunk
         BT = 16  # chunk_size
-        g = torch.empty_like(g_origin, dtype=torch.float32)
+        g = chunk_local_cumsum(g_org, BT=BT)
         BK, BV = min(K, 64), min(V, 64)
         NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
         q_g = torch.empty_like(q)
         k_g = torch.empty_like(k)
         grid = (NK, triton.cdiv(T, BT), B * H)
-        fwd_decay_cumsum[grid](
-            g_origin,
-            g,
-            q.stride(1),
-            K=K,
-            BT=BT, BK=BK, num_warps=1
-        )
         prepare_qg_kg[grid](
             q, k, g, q_g, k_g,
             q.stride(1),
@@ -480,8 +557,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         grid = (NK, triton.cdiv(T, BT), B * H)
         bwd_decay_global_cumsum[grid](
             dq2, dq, dk2, dk, q, k, g, dg,
-            q.stride(1), q.stride(2), q.stride(3),
-            B, H, T, scale,
+            q.stride(1),
             BT=BT, K=K, BK=BK,
             num_warps=1,
             num_stages=1
