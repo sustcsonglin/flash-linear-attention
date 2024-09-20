@@ -77,8 +77,7 @@ def chunk_simple_gla_fwd_kernel_o(
 
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
+        triton.Config({}, num_warps=4)
     ],
     key=["BT", "BK", "BV"],
 )
