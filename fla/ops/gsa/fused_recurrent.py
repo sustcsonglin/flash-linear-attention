@@ -11,7 +11,7 @@ from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 @triton.jit
-def fused_recurrent_gated_abc_inference_kernel(
+def fused_recurrent_gsa_inference_kernel(
     q,
     k,
     v,
@@ -82,7 +82,7 @@ def fused_recurrent_gated_abc_inference_kernel(
 
 
 @triton.jit
-def fused_recurrent_gated_abc_fwd_kernel(
+def fused_recurrent_gsa_fwd_kernel(
     q,
     k,
     v,
@@ -159,7 +159,7 @@ def fused_recurrent_gated_abc_fwd_kernel(
 
 
 @triton.jit
-def fused_recurrent_gated_abc_bwd_kernel(
+def fused_recurrent_gsa_bwd_kernel(
     q,
     k,
     v,
@@ -319,7 +319,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
 
             o = v.new_empty(B, HQ, T, V)
             grid = (B * HQ,)
-            fused_recurrent_gated_abc_inference_kernel[grid](
+            fused_recurrent_gsa_inference_kernel[grid](
                 q, k, v, s, g, o, hk0, hv0, hkt, hvt,
                 scale=scale,
                 K=K, V=V, M=M, BK=BK, BV=BV, NG=NG,
@@ -331,7 +331,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         ok = q.new_empty(NK, B, H, T, M, dtype=torch.float)
         gk, gv = None, g
         grid = (NM, NK, B * H)
-        fused_recurrent_gated_abc_fwd_kernel[grid](
+        fused_recurrent_gsa_fwd_kernel[grid](
             q, k, s, gk, gv, ok, hk0, hkt,
             k.stride(1),
             s.stride(1),
@@ -351,7 +351,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         ov = q.new_empty(NM, B, H, T, V, dtype=torch.float)
         gk, gv = g, None
         grid = (NV, NM, B * H)
-        fused_recurrent_gated_abc_fwd_kernel[grid](
+        fused_recurrent_gsa_fwd_kernel[grid](
             qv, s, v, gk, gv, ov, hv0, hvt,
             s.stride(1),
             v.stride(1),
@@ -393,7 +393,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
 
         gk, gv = g, None
         grid = (NV, NM, B * H)
-        fused_recurrent_gated_abc_bwd_kernel[grid](
+        fused_recurrent_gsa_bwd_kernel[grid](
             qv, s, v, gk, gv, do, dqv, dsv, dv, dhv0, hv0,
             s.stride(1),
             v.stride(1),
@@ -419,7 +419,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         dsk = q.new_empty(NK, B, H, T, M, dtype=torch.float)
         gk, gv = None, g
         grid = (NM, NK, B * H)
-        fused_recurrent_gated_abc_bwd_kernel[grid](
+        fused_recurrent_gsa_bwd_kernel[grid](
             q, k, s, gk, gv, dok, dq, dk, dsk, dhk0, hk0,
             q.stride(1),
             s.stride(1),
@@ -446,7 +446,7 @@ class FusedRecurrentGatedABCFunction(torch.autograd.Function):
         return dq.to(q), dk.to(k), dv.to(v), ds.to(s), dg.to(g), None, dhk0, dhv0, None, None, None
 
 
-def fused_recurrent_gated_abc(
+def fused_recurrent_gsa(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,

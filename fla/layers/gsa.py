@@ -11,13 +11,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from fla.modules import (FusedRMSNormSwishGateLinear, RMSNorm, RMSNormLinear,
-                         ShortConvolution)
-from fla.modules.activations import swiglu_linear, swish
+from fla.modules import RMSNorm, RMSNormLinear, ShortConvolution
+from fla.modules.activations import swish
 from fla.modules.feature_map import (ReLUFeatureMap, SwishFeatureMap,
                                      T2RFeatureMap)
-from fla.ops.abc.chunk_gate import chunk_gated_abc
-from fla.ops.abc.fused_recurrent import fused_recurrent_gated_abc
+from fla.ops.gsa import chunk_gsa, fused_recurrent_gsa
 
 if TYPE_CHECKING:
     from fla.models.utils import Cache
@@ -105,20 +103,13 @@ class GatedSlotAttention(nn.Module):
         self.v_proj = nn.Linear(self.hidden_size, self.value_dim_per_group, bias=False)
         self.f_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.num_slots, bias=False)
 
-        if use_output_gate:
-            self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
-
         if use_short_conv:
             self.conv_size = conv_size
             self.q_conv1d = ShortConvolution(self.key_dim, conv_size, activation='silu')
             self.k_conv1d = ShortConvolution(self.key_dim_per_group, conv_size, activation='silu')
             self.v_conv1d = ShortConvolution(self.value_dim_per_group, conv_size, activation='silu')
 
-        if self.use_norm:
-            if self.use_output_gate:
-                self.g_norm = FusedRMSNormSwishGateLinear(self.hidden_size, elementwise_affine, eps=norm_eps)
-            else:
-                self.g_norm = RMSNormLinear(self.hidden_size, elementwise_affine, eps=norm_eps)
+        self.g_norm = RMSNormLinear(self.hidden_size, elementwise_affine, eps=norm_eps)
         self.o_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
         self.apply(self._initialize_weights)
@@ -182,15 +173,15 @@ class GatedSlotAttention(nn.Module):
 
         recurrent_state = last_state[-2:] if use_cache else None
         if mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_gated_abc(q, k, v, s, f,
-                                                           initial_state=recurrent_state,
-                                                           output_final_state=use_cache,
-                                                           scale=self.scale)
+            o, recurrent_state = fused_recurrent_gsa(q, k, v, s, f,
+                                                     initial_state=recurrent_state,
+                                                     output_final_state=use_cache,
+                                                     scale=self.scale)
         elif mode == 'chunk':
-            o, recurrent_state = chunk_gated_abc(q, k, v, s, f,
-                                                 initial_state=recurrent_state,
-                                                 output_final_state=use_cache,
-                                                 scale=self.scale)
+            o, recurrent_state = chunk_gsa(q, k, v, s, f,
+                                           initial_state=recurrent_state,
+                                           output_final_state=use_cache,
+                                           scale=self.scale)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
@@ -202,15 +193,7 @@ class GatedSlotAttention(nn.Module):
             past_key_values.update(last_state, self.layer_idx, q.shape[2])
 
         o = rearrange(o, 'b h t d -> b t (h d)')
-        if self.use_norm and not self.use_output_gate:
-            o = swish(o)
-            o = self.g_norm(o, self.o_proj.weight, self.o_proj.bias)
-        elif self.use_output_gate and not self.use_norm:
-            o = swiglu_linear(self.g_proj(hidden_states), o, self.o_proj.weight, self.o_proj.bias)
-        elif self.use_output_gate and self.use_norm:
-            o = self.g_norm(o, self.g_proj(hidden_states), self.o_proj.weight, self.o_proj.bias)
-        else:
-            o = self.o_proj(o)
+        o = self.g_norm(swish(o), self.o_proj.weight, self.o_proj.bias)
         return o, None, past_key_values
 
     def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
@@ -224,5 +207,5 @@ class GatedSlotAttention(nn.Module):
                   param.new_zeros(batch_size, self.num_kv_heads, self.num_slots, self.head_v_dim))
         return state
 
-    def state_size(self, sequence_length: int = 2048):
-        return self.num_heads * self.key_dim * self.head_v_dim
+    def state_size(self, *args, **kwargs) -> int:
+        return 2 * self.num_slots * self.hidden_size
