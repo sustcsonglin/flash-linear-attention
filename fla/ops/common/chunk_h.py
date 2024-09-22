@@ -15,10 +15,6 @@ import triton.language as tl
     ],
     key=["BT", "BK", "BV", "USE_G", 'USE_GK', 'USE_GV'],
 )
-@triton.heuristics({
-    'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
-    'STORE_FINAL_STATE': lambda args: args['ht'] is not None
-})
 @triton.jit
 def chunk_fwd_kernel_h(
     k,
@@ -115,10 +111,6 @@ def chunk_fwd_kernel_h(
     ],
     key=["BT", "BK", "BV",  "USE_G", 'USE_GK', 'USE_GV'],
 )
-@triton.heuristics({
-    'STORE_INITIAL_STATE_GRADIENT': lambda args: args['dh0'] is not None,
-    'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None
-})
 @triton.jit
 def chunk_bwd_kernel_dh(
     q,
@@ -209,9 +201,8 @@ def chunk_fwd_h_fn(k, v, g, gk, gv, BT, h0, output_final_state, states_in_fp32=F
     BK, BV = min(64, triton.next_power_of_2(K)), min(64, triton.next_power_of_2(V))
     NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
     h = k.new_empty(B, H, NT * K, V, dtype=k.dtype if not states_in_fp32 else torch.float32)
-    grid = (NK, NV, B * H)
 
-    chunk_fwd_kernel_h[grid](
+    chunk_fwd_kernel_h[(NK, NV, B * H)](
         k, v, h, g, gk, gv, h0, ht,
         k.stride(1), k.stride(2), k.stride(3),
         v.stride(1), v.stride(2), v.stride(3),
@@ -219,7 +210,9 @@ def chunk_fwd_h_fn(k, v, g, gk, gv, BT, h0, output_final_state, states_in_fp32=F
         T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
         USE_G=g is not None,
         USE_GK=gk is not None,
-        USE_GV=gv is not None
+        USE_GV=gv is not None,
+        USE_INITIAL_STATE=h0 is not None,
+        STORE_FINAL_STATE=output_final_state,
     )
     return h, ht
 
@@ -236,7 +229,6 @@ def chunk_bwd_dh_fn(q, k, v, g, gk, gv, do, h0, dht, BT, scale, states_in_fp32=F
         dh0 = torch.empty_like(h0, dtype=torch.float32)
     else:
         dh0 = None
-    # assert not (USE_GATE and dht is not None), "Cannot load final state gradient and use gates at the same time"
     chunk_bwd_kernel_dh[grid](
         q, g, gk, gv, do, dh, dht, dh0,
         q.stride(1), q.stride(2), q.stride(3),
@@ -246,6 +238,8 @@ def chunk_bwd_dh_fn(q, k, v, g, gk, gv, do, h0, dht, BT, scale, states_in_fp32=F
         T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
         USE_G=g is not None,
         USE_GK=gk is not None,
-        USE_GV=gv is not None
+        USE_GV=gv is not None,
+        STORE_INITIAL_STATE_GRADIENT=dh0 is not None,
+        USE_FINAL_STATE_GRADIENT=dht is not None
     )
     return dh, dh0
