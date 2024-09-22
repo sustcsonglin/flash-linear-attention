@@ -27,14 +27,16 @@ def torch_simple_gla(q, k, v, g, chunk_size=64, scale=None):
     return rearrange(o, 'b h n c d -> b h (n c) d')
 
 
-def torch_simple_gla_recurrent(q, k, v, g, initial_state=None, scale=None):
+def torch_simple_gla_recurrent(q, k, v, g, scale=None, initial_state=None, output_final_state=True):
     B, H, T, DK = q.shape
+    original_dtype = q.dtype
+    q, k, v, g = q.float(), k.float(), v.float(), g.float()
     if scale is None:
         scale = DK ** -0.5
     q = q * scale
     _, _, _, DV = v.shape
     if initial_state is None:
-        S = torch.zeros(B, H, DK, DV).to(q)
+        S = torch.zeros(B, H, DK, DV)
     else:
         S = initial_state
     o = torch.zeros(B, H, T, DV).to(q)
@@ -47,4 +49,6 @@ def torch_simple_gla_recurrent(q, k, v, g, initial_state=None, scale=None):
         q_i = q[:, :, i, :]
         o_i = (q_i.unsqueeze(-1) * S).sum(-2)
         o[:, :, i] = o_i
-    return o, S
+    if not output_final_state:
+        S = None
+    return o.to(original_dtype), S
