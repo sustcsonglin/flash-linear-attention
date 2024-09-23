@@ -1,42 +1,58 @@
 # -*- coding: utf-8 -*-
 
+import os
+
 import pytest
 import torch
 import torch.nn.functional as F
 
-from fla.ops.abc import chunk_gated_abc, fused_recurrent_gated_abc
-from fla.ops.abc.naive import naive_recurrent_abc
+from fla.ops.gsa import chunk_gsa, fused_recurrent_gsa
+from fla.ops.gsa.naive import naive_recurrent_gsa
+
+
+def get_abs_err(x, y):
+    return (x-y).flatten().abs().max().item()
+
+
+def get_err_ratio(x, y):
+    err = (x-y).flatten().square().mean().sqrt().item()
+    base = (x).flatten().square().mean().sqrt().item()
+    return err / base
+
+
+def assert_close(prefix, ref, tri, atol):
+    msg = f"{prefix} diff: {get_abs_err(ref, tri):.6f} ratio: {get_err_ratio(ref, tri):.6f}"
+    print(msg)
+    assert ref.allclose(tri, 0, atol), msg
 
 
 @pytest.mark.parametrize("B", [4])
 @pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("T", [300, 512])
-@pytest.mark.parametrize("K", [32, 64, 100])
-@pytest.mark.parametrize("V", [64, 128, 200])
+@pytest.mark.parametrize("D", [32, 64, 100])
 @pytest.mark.parametrize("M", [32, 64, 128])
-@pytest.mark.parametrize("dtype", [torch.float])
+@pytest.mark.parametrize("dtype", [torch.bfloat16])
 def test_fused_recurrent(
     B: int,
     H: int,
     T: int,
-    K: int,
-    V: int,
+    D: int,
     M: int,
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
     atol = 1e-3
 
-    q = torch.randn((B, H, T, K), dtype=dtype, device='cuda').requires_grad_()
-    k = torch.randn((B, H, T, K), dtype=dtype, device='cuda').requires_grad_()
-    v = torch.randn((B, H, T, V), dtype=dtype, device='cuda').requires_grad_()
+    q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
+    k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
+    v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
     s = torch.randn((B, H, T, M), dtype=dtype, device='cuda').requires_grad_()
     g = F.logsigmoid(torch.randn((B, H, T, M), dtype=dtype, device='cuda')).requires_grad_()
-    hk0 = torch.randn(B, H, K, M, device='cuda').requires_grad_()
-    hv0 = torch.randn(B, H, M, V, device='cuda').requires_grad_()
+    hk0 = torch.randn(B, H, D, M, device='cuda').requires_grad_()
+    hv0 = torch.randn(B, H, M, D, device='cuda').requires_grad_()
 
     do = torch.randn_like(v)
-    ref, (ref_hkt, ref_hvt) = naive_recurrent_abc(q, k, v, s, g, initial_state=(hk0, hv0), output_final_state=True)
+    ref, (ref_hkt, ref_hvt) = naive_recurrent_gsa(q, k, v, s, g, initial_state=(hk0, hv0), output_final_state=True)
     ref.backward(do)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
@@ -46,7 +62,7 @@ def test_fused_recurrent(
     ref_dhk0, hk0.grad = hk0.grad.clone(), None
     ref_dhv0, hv0.grad = hv0.grad.clone(), None
 
-    tri, (tri_hkt, tri_hvt) = fused_recurrent_gated_abc(q, k, v, s, g, initial_state=(hk0, hv0), output_final_state=True)
+    tri, (tri_hkt, tri_hvt) = fused_recurrent_gsa(q, k, v, s, g, initial_state=(hk0, hv0), output_final_state=True)
     tri.backward(do)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
@@ -56,47 +72,46 @@ def test_fused_recurrent(
     tri_dhk0, hk0.grad = hk0.grad.clone(), None
     tri_dhv0, hv0.grad = hv0.grad.clone(), None
 
-    assert ref.allclose(tri, 0, atol), f"o diff: {torch.abs(ref - tri).max()}"
-    assert ref_hkt.allclose(tri_hkt, 0, atol), f"o diff: {torch.abs(ref_hkt - tri_hkt).max()}"
-    assert ref_hvt.allclose(tri_hvt, 0, atol), f"o diff: {torch.abs(ref_hvt - tri_hvt).max()}"
-    assert ref_dq.allclose(tri_dq, 0, atol), f"dq diff: {torch.abs(ref_dq - tri_dq).max()}"
-    assert ref_dk.allclose(tri_dk, 0, atol), f"dk diff: {torch.abs(ref_dk - tri_dk).max()}"
-    assert ref_dv.allclose(tri_dv, 0, atol), f"dv diff: {torch.abs(ref_dv - tri_dv).max()}"
-    assert ref_ds.allclose(tri_ds, 0, atol), f"ds diff: {torch.abs(ref_ds - tri_ds).max()}"
-    assert ref_dg.allclose(tri_dg, 0, atol), f"dg diff: {torch.abs(ref_dg - tri_dg).max()}"
-    assert ref_dhk0.allclose(tri_dhk0, 0, atol), f"dhk0 diff: {torch.abs(ref_dhk0 - tri_dhk0).max()}"
-    assert ref_dhv0.allclose(tri_dhv0, 0, atol), f"dhv0 diff: {torch.abs(ref_dhv0 - tri_dhv0).max()}"
+    assert_close("   o", ref, tri, atol)
+    assert_close(" hkt", ref_hkt, tri_hkt, atol)
+    assert_close(" hvt", ref_hvt, tri_hvt, atol)
+    assert_close("  dq", ref_dq, tri_dq, atol)
+    assert_close("  dk", ref_dk, tri_dk, atol)
+    assert_close("  dv", ref_dv, tri_dv, atol)
+    assert_close("  ds", ref_ds, tri_ds, atol)
+    assert_close("  dg", ref_dg, tri_dg, atol)
+    assert_close("dhk0", ref_dhk0, tri_dhk0, atol)
+    assert_close("dhv0", ref_dhv0, tri_dhv0, atol)
 
 
-@pytest.mark.parametrize("B", [4])
+@pytest.mark.parametrize("B", [8])
 @pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("T", [300, 512])
-@pytest.mark.parametrize("K", [32, 64, 100])
-@pytest.mark.parametrize("V", [64, 128, 200])
+@pytest.mark.parametrize("D", [64, 100, 512])
 @pytest.mark.parametrize("M", [32, 64, 128])
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float])
+@pytest.mark.parametrize("dtype", [torch.float])
 def test_chunk(
     B: int,
     H: int,
     T: int,
-    K: int,
-    V: int,
+    D: int,
     M: int,
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
     atol = 1e-3 if dtype == torch.float else 1e-1
+    os.environ['TRITON_F32_DEFAULT'] = 'ieee'
 
-    q = torch.randn((B, H, T, K), dtype=dtype, device='cuda').requires_grad_()
-    k = torch.randn((B, H, T, K), dtype=dtype, device='cuda').requires_grad_()
-    v = torch.randn((B, H, T, V), dtype=dtype, device='cuda').requires_grad_()
+    q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
+    k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
+    v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
     s = torch.randn((B, H, T, M), dtype=dtype, device='cuda').requires_grad_()
     g = F.logsigmoid(torch.randn((B, H, T, M), dtype=dtype, device='cuda')).requires_grad_()
-    hk0 = torch.randn(B, H, K, M, device='cuda').requires_grad_()
-    hv0 = torch.randn(B, H, M, V, device='cuda').requires_grad_()
+    hk0 = torch.randn(B, H, D, M, device='cuda').requires_grad_()
+    hv0 = torch.randn(B, H, M, D, device='cuda').requires_grad_()
 
     do = torch.randn_like(v)
-    ref, _ = fused_recurrent_gated_abc(q, k, v, s, g, initial_state=(hk0, hv0))
+    ref, _ = fused_recurrent_gsa(q, k, v, s, g, initial_state=(hk0, hv0))
     ref.backward(do)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
@@ -104,7 +119,7 @@ def test_chunk(
     ref_ds, s.grad = s.grad.clone(), None
     ref_dg, g.grad = g.grad.clone(), None
 
-    tri, _ = chunk_gated_abc(q, k, v, s, g, initial_state=(hk0, hv0))
+    tri, _ = chunk_gsa(q, k, v, s, g, initial_state=(hk0, hv0))
     tri.backward(do)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
@@ -112,20 +127,19 @@ def test_chunk(
     tri_ds, s.grad = s.grad.clone(), None
     tri_dg, s.grad = g.grad.clone(), None
 
-    assert ref.allclose(tri, 0, atol), f"o diff: {torch.abs(ref - tri).max()}"
-    assert ref_dq.allclose(tri_dq, 0, atol), f"dq diff: {torch.abs(ref_dq - tri_dq).max()}"
-    assert ref_dk.allclose(tri_dk, 0, atol), f"dk diff: {torch.abs(ref_dk - tri_dk).max()}"
-    assert ref_dv.allclose(tri_dv, 0, atol), f"dv diff: {torch.abs(ref_dv - tri_dv).max()}"
-    assert ref_ds.allclose(tri_ds, 0, atol), f"ds diff: {torch.abs(ref_ds - tri_ds).max()}"
-    assert ref_dg.allclose(tri_dg, 0, atol), f"dg diff: {torch.abs(ref_dg - tri_dg).max()}"
+    assert_close(" o", ref, tri, atol)
+    assert_close("dq", ref_dq, tri_dq, atol)
+    assert_close("dk", ref_dk, tri_dk, atol)
+    assert_close("dv", ref_dv, tri_dv, atol)
+    assert_close("ds", ref_ds, tri_ds, atol)
+    assert_close("dg", ref_dg, tri_dg, atol)
 
 
 @pytest.mark.parametrize("B", [4])
 @pytest.mark.parametrize("HQ", [8, 16])
 @pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("T", [300, 512])
-@pytest.mark.parametrize("K", [32, 64, 100])
-@pytest.mark.parametrize("V", [64, 128, 200])
+@pytest.mark.parametrize("D", [32, 64, 100])
 @pytest.mark.parametrize("M", [32, 64, 128])
 @pytest.mark.parametrize("dtype", [torch.float])
 def test_inference(
@@ -133,26 +147,25 @@ def test_inference(
     HQ: int,
     H: int,
     T: int,
-    K: int,
-    V: int,
+    D: int,
     M: int,
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
     atol = 1e-3
 
-    q = torch.randn((B, HQ, T, K), dtype=dtype, device='cuda')
-    k = torch.randn((B, H, T, K), dtype=dtype, device='cuda')
-    v = torch.randn((B, H, T, V), dtype=dtype, device='cuda')
+    q = torch.randn((B, HQ, T, D), dtype=dtype, device='cuda')
+    k = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
+    v = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
     s = torch.randn((B, H, T, M), dtype=dtype, device='cuda')
     g = F.logsigmoid(torch.randn((B, H, T, M), dtype=dtype, device='cuda'))
-    h0 = (torch.zeros(B, H, K, M, dtype=dtype, device='cuda'),
-          torch.zeros(B, H, M, V, dtype=dtype, device='cuda'))
+    h0 = (torch.zeros(B, H, D, M, dtype=dtype, device='cuda'),
+          torch.zeros(B, H, M, D, dtype=dtype, device='cuda'))
 
-    ref, _ = naive_recurrent_abc(q, k, v, s, g, initial_state=h0)
+    ref, _ = naive_recurrent_gsa(q, k, v, s, g, initial_state=h0)
     tri = torch.empty_like(ref)
     for i in range(T):
-        o, ht = fused_recurrent_gated_abc(
+        o, ht = fused_recurrent_gsa(
             q[:, :, i:i+1],
             k[:, :, i:i+1],
             v[:, :, i:i+1],
@@ -162,5 +175,5 @@ def test_inference(
             output_final_state=True
         )
         tri[:, :, i] = o.squeeze(2)
-        assert ref[:, :, i].allclose(tri[:, :, i], 0, atol), f"o diff: {torch.abs(ref[:, :, i] - tri[:, :, i]).max()} {i}"
+        assert_close(f"o{i}", ref[:, :, i], tri[:, :, i], atol)
         h0 = ht

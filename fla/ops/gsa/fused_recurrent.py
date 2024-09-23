@@ -278,7 +278,7 @@ def fused_recurrent_gsa_bwd_kernel(
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), mask=mask_h)
 
 
-class FusedRecurrentGatedABCFunction(torch.autograd.Function):
+class FusedRecurrentGSAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
@@ -485,7 +485,7 @@ def fused_recurrent_gsa(
     if initial_state is None:
         initial_state = (None, None)
     inference_mode = q.shape[2] == 1 and not q.requires_grad
-    ov, final_state = FusedRecurrentGatedABCFunction.apply(
+    ov, final_state = FusedRecurrentGSAFunction.apply(
         q, k, v, s, g, scale, *initial_state, output_final_state, False, inference_mode
     )
     return ov, final_state
