@@ -343,7 +343,7 @@ class SimpleGLAFunction(torch.autograd.Function):
     def backward(ctx, do, dht):
         BT, scale = ctx.BT, ctx.scale
         q, k, v, g, initial_state = ctx.saved_tensors
-        # (SY 09/22) states_in_fp32 seems not affecting the error of dg
+        # (SY 09/22) states_in_fp32 seems not affecting the error of dg but for safety, set to True
         h, _ = chunk_fwd_h_fn(
             k=k,
             v=v,
@@ -353,7 +353,7 @@ class SimpleGLAFunction(torch.autograd.Function):
             BT=BT,
             h0=initial_state,
             output_final_state=False,
-            states_in_fp32=False
+            states_in_fp32=True
         )
         dh, dh0 = chunk_bwd_dh_fn(
             q=q,
@@ -367,11 +367,12 @@ class SimpleGLAFunction(torch.autograd.Function):
             dht=dht,
             BT=BT,
             scale=scale,
-            states_in_fp32=False
+            states_in_fp32=True
         )
         dq, dk, dg = chunk_bwd_dqkg_fn(do, q, k, v, g, h, dh, scale)
         dv = chunk_bwd_dv_fn(q, k, g, do, dh, BT, scale)
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, dh0, None
+
 
 
 def chunk_simple_gla(

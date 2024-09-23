@@ -666,8 +666,8 @@ def chunk_gla_bwd_dqk_intra_fn(q, k, g_cumsum, dA, BT):
     NK = triton.cdiv(K, BK)
     NT = triton.cdiv(T, BT)
     NC = triton.cdiv(BT, BC)
-    dq = torch.empty_like(q, dtype=torch.float32).fill_(float('nan'))
-    dk = torch.empty_like(k, dtype=torch.float32).fill_(float('nan'))
+    dq = torch.empty_like(q, dtype=torch.float32)
+    dk = torch.empty_like(k, dtype=torch.float32)
     grid = (NK, NT * NC, B * H)
     chunk_gla_bwd_kernel_intra[grid](
         q, k, g_cumsum, dA, dq, dk,
@@ -675,6 +675,7 @@ def chunk_gla_bwd_dqk_intra_fn(q, k, g_cumsum, dA, BT):
         T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC
     )
     return dq, dk
+
 
 
 def chunk_gla_bwd_dqkg_fn(q, k, v, h, g_cumsum, do, dh, dq, dk, BT, scale):
