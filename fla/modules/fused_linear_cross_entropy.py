@@ -29,6 +29,7 @@ def cross_entropy_kernel(
     total,
     ignore_index,
     label_smoothing: tl.constexpr,
+    logit_scale: tl.constexpr,
     reduction: tl.constexpr,
     V: tl.constexpr,
     BV: tl.constexpr
@@ -88,7 +89,7 @@ def cross_entropy_kernel(
     # 3. [Online softmax] first pass: find max + sum
     m = float('-inf')  # m is the max value. use the notation from the paper
     d = 0.0  # d is the sum. use the notation from the paper
-    b_x_t = tl.load(x + y)
+    b_x_t = tl.load(x + y) * logit_scale
 
     # Label smoothing is a general case of normal cross entropy
     # See the full derivation at https://github.com/linkedin/Liger-Kernel/pull/198#issue-2503665310
@@ -99,6 +100,7 @@ def cross_entropy_kernel(
     for iv in range(0, NV):
         o_x = iv * BV + tl.arange(0, BV)
         b_x = tl.load(x + o_x, mask=o_x < V, other=float('-inf'))
+        b_x = b_x.to(tl.float32) * logit_scale
         b_m = tl.max(b_x)
         if label_smoothing > 0:
             # scale X beforehand to avoid overflow
@@ -118,10 +120,11 @@ def cross_entropy_kernel(
     for iv in range(0, NV):
         o_x = iv * BV + tl.arange(0, BV)
         b_x = tl.load(x + o_x, mask=o_x < V, other=float('-inf'))
-        b_x = (tl.exp(b_x - m) / d - eps)
+        b_x = b_x.to(tl.float32) * logit_scale
+        b_p = (tl.exp(b_x - m) / d - eps) * logit_scale
         if reduction == "mean":
-            b_x = b_x / total
-        tl.store(x + o_x, b_x, mask=o_x < V)
+            b_p = b_p / total
+        tl.store(x + o_x, b_p, mask=o_x < V)
 
     # We need tl.debug_barrier() to ensure the new result of x is written as mentioned in
     # https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/ops/cross_entropy.py#L34
@@ -132,7 +135,7 @@ def cross_entropy_kernel(
     #      = (b_x_t - max(X)) - log(sum(e ^ (X - max(X))))
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
     # So we can safely calculate log (softmax(b_x_t)) without overflow
-    b_loss = -(b_x_t - m - tl.log(d))
+    b_loss = tl.log(d) + m - b_x_t
 
     # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
@@ -153,9 +156,9 @@ def cross_entropy_kernel(
     # Normalize the loss by the number of non-ignored elements if reduction is "mean"
     if reduction == 'mean':
         b_loss = b_loss / total
-        b_x_t += (label_smoothing - 1) / total
+        b_x_t += (label_smoothing - 1) / total * logit_scale
     else:
-        b_x_t += label_smoothing - 1
+        b_x_t += (label_smoothing - 1) * logit_scale
 
     tl.store(loss + i_n * s_loss, b_loss)
     tl.store(x + y, b_x_t)
@@ -200,6 +203,8 @@ def fused_linear_cross_entropy_forward(
     bias: torch.Tensor = None,
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
+    logit_scale: float = 1.0,
+    num_chunks: int = 8,
     reduction: str = "mean"
 ):
     device = x.device
@@ -218,7 +223,7 @@ def fused_linear_cross_entropy_forward(
     BV = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     # TODO: in real cases, we may need to limit the number of chunks NC to
     # ensure the precisions of accumulated gradients
-    NC = min(8, triton.cdiv(V, H))
+    NC = min(num_chunks, triton.cdiv(V, H))
     C = triton.next_power_of_2(triton.cdiv(N, NC))
     NC = triton.cdiv(N, C)
 
@@ -253,6 +258,7 @@ def fused_linear_cross_entropy_forward(
             total=total,
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
+            logit_scale=logit_scale,
             reduction=reduction,
             V=V,
             BV=BV,
@@ -333,6 +339,8 @@ class FusedLinearCrossEntropyFunction(torch.autograd.Function):
         bias: torch.Tensor = None,
         ignore_index: int = -100,
         label_smoothing: float = 0.0,
+        logit_scale: float = 1.0,
+        num_chunks: int = 8,
         reduction: str = "mean"
     ):
         """
@@ -355,6 +363,12 @@ class FusedLinearCrossEntropyFunction(torch.autograd.Function):
             the index to ignore in the target.
         label_smoothing:
             the amount of smoothing when computing the loss, where 0.0 means no smoothing.
+        logit_scale: float = 1.0,
+            A scaling factor applied to the logits. Default: 1.0
+        num_chunks: int
+            The number of chunks to split the input tensor into for processing.
+            This can help optimize memory usage and computation speed.
+            Default: 8
         reduction:
             Specifies the reduction to apply to the output: 'mean' | 'sum'.
             'mean': the weighted mean of the output is taken,
@@ -368,6 +382,8 @@ class FusedLinearCrossEntropyFunction(torch.autograd.Function):
             bias,
             ignore_index,
             label_smoothing,
+            logit_scale,
+            num_chunks,
             reduction
         )
         # downcast to dtype and store for backward
@@ -382,7 +398,7 @@ class FusedLinearCrossEntropyFunction(torch.autograd.Function):
     def backward(ctx, do):
         dx, dw, db = ctx.saved_tensors
         dx, dw, db = fused_linear_cross_entropy_backward(do, dx, dw, db)
-        return dx, None, dw, db, None, None, None
+        return dx, None, dw, db, None, None, None, None, None
 
 
 def fused_linear_cross_entropy_loss(
@@ -392,6 +408,8 @@ def fused_linear_cross_entropy_loss(
     bias: torch.Tensor = None,
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
+    logit_scale: float = 1.0,
+    num_chunks: int = 8,
     reduction: str = "mean"
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -406,6 +424,12 @@ def fused_linear_cross_entropy_loss(
         ignore_index: int.
             If target == ignore_index, the loss is set to 0.0.
         label_smoothing: float
+        logit_scale: float
+            A scaling factor applied to the logits. Default: 1.0
+        num_chunks: int
+            The number of chunks to split the input tensor into for processing.
+            This can help optimize memory usage and computation speed.
+            Default: 8
         reduction:
             Specifies the reduction to apply to the output: 'mean' | 'sum'.
             'mean': the weighted mean of the output is taken,
@@ -421,6 +445,8 @@ def fused_linear_cross_entropy_loss(
         bias,
         ignore_index,
         label_smoothing,
+        logit_scale,
+        num_chunks,
         reduction
     )
 
@@ -431,6 +457,8 @@ class FusedLinearCrossEntropyLoss(nn.Module):
         self,
         ignore_index: int = -100,
         label_smoothing: float = 0.0,
+        logit_scale: float = 1.0,
+        num_chunks: int = 8,
         reduction: str = "mean"
     ):
         """
@@ -438,6 +466,12 @@ class FusedLinearCrossEntropyLoss(nn.Module):
             ignore_index: int.
                 If target == ignore_index, the loss is set to 0.0.
             label_smoothing: float
+            logit_scale: float
+                A scaling factor applied to the logits. Default: 1.0
+            num_chunks: int
+                The number of chunks to split the input tensor into for processing.
+                This can help optimize memory usage and computation speed.
+                Default: 8
             reduction:
                 Specifies the reduction to apply to the output: 'mean' | 'sum'.
                 'mean': the weighted mean of the output is taken,
@@ -450,6 +484,8 @@ class FusedLinearCrossEntropyLoss(nn.Module):
 
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
+        self.logit_scale = logit_scale
+        self.num_chunks = num_chunks
         self.reduction = reduction
 
     def forward(
@@ -478,6 +514,8 @@ class FusedLinearCrossEntropyLoss(nn.Module):
             bias=bias,
             ignore_index=self.ignore_index,
             label_smoothing=self.label_smoothing,
+            logit_scale=self.logit_scale,
+            num_chunks=self.num_chunks,
             reduction=self.reduction
         )
         return loss
