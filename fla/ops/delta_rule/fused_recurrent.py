@@ -266,7 +266,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
             num_warps=num_warps,
             num_stages=num_stages,
         )
-        o = o.squeeze(1)
+        o = o.squeeze(0)
         ctx.save_for_backward(q, k, v, beta, initial_state)
         ctx.scale = scale
         return o, final_state
