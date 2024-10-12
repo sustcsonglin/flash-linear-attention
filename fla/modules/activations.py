@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-from fla.utils import contiguous
+from fla.utils import autocast_custom_fwd, autocast_custom_bwd, contiguous
 
 sigmoid_fwd_codestring = """
 template <typename T> T sigmoid_fwd(T x) {
@@ -359,15 +359,17 @@ class SwiGLULinearFunction(torch.autograd.Function):
     """
 
     @staticmethod
+    @autocast_custom_fwd
     def forward(ctx, x, y, weight, bias):
         z = swiglu_fwd(x, y)
-        out = F.linear(z.to(weight.dtype), weight, bias)
+        out = F.linear(z, weight, bias)
         # We don't store z, will be recomputed in the backward pass to save memory
         ctx.save_for_backward(x, y, weight)
         ctx.linear_bias_is_none = bias is None
         return out
 
     @staticmethod
+    @autocast_custom_bwd
     def backward(ctx, dout, *args):
         x, y, weight = ctx.saved_tensors
         dout = dout.reshape(-1, dout.shape[-1])
