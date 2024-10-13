@@ -39,7 +39,8 @@ def chunk_gla_fwd_A_kernel_intra_sub_inter(
 ):
     i_t, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_i, i_j = i_c // NC, i_c % NC
-    m_t = (i_t * BT + i_i * BC) < T
+    if i_t * BT + i_i * BC >= T:
+        return
     if i_i <= i_j:
         return
 
@@ -54,7 +55,7 @@ def chunk_gla_fwd_A_kernel_intra_sub_inter(
         p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (K, T), (1, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
         p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
         # [BK,]
-        b_gn = tl.load(p_gn, mask=m_k & m_t, other=0)
+        b_gn = tl.load(p_gn, mask=m_k, other=0)
         # [BC, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_g = tl.load(p_g, boundary_check=(0, 1))
@@ -111,14 +112,12 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra(
 
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_g = tl.load(p_g, boundary_check=(0, 1))
-    for j in range(0, BC):
-        m_t = (i_t * BT + i_j * BC + j) < T
-        b_k = tl.load(p_k, mask=m_k & m_t, other=0).to(tl.float32)
-        b_gk = tl.load(p_gk, mask=m_k & m_t, other=0).to(tl.float32)
+    for j in range(0, min(BC, T-i_t*BT-i_i*BC)):
+        b_k = tl.load(p_k, mask=m_k, other=0).to(tl.float32)
+        b_gk = tl.load(p_gk, mask=m_k, other=0).to(tl.float32)
         b_A = tl.sum(b_q * b_k[None, :] * tl.exp(b_g - b_gk[None, :]), 1)
         b_A = tl.where(o_i >= j, b_A * scale, 0.)
         tl.store(A + o_A + j, b_A, mask=m_A)
-
         p_k += K
         p_gk += K
 
@@ -166,15 +165,13 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_split(
 
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_g = tl.load(p_g, boundary_check=(0, 1))
-    for j in range(0, BC):
+    for j in range(0, min(BC, T-i_t*BT-i_i*BC)):
         b_A = tl.zeros([BC], dtype=tl.float32)
-
         b_k = tl.load(p_k, mask=m_k, other=0).to(tl.float32)
         b_gk = tl.load(p_gk, mask=m_k, other=0).to(tl.float32)
         b_A += tl.sum(b_q * b_k[None, :] * tl.exp(b_g - b_gk[None, :]), 1)
         b_A = tl.where(o_i >= j, b_A * scale, 0.)
         tl.store(A + o_A + j, b_A, mask=m_A)
-
         p_k += K
         p_gk += K
 
@@ -198,6 +195,8 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_merge(
     NK: tl.constexpr
 ):
     i_t, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    if i_t * BT + i_c * BC >= T:
+        return
     n_bh = tl.num_programs(2)
     b_A = tl.zeros([BC, BC], dtype=tl.float32)
     for i_k in range(0, NK):
@@ -301,50 +300,50 @@ def chunk_gla_bwd_kernel_intra(
 ):
     i_k, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_t, i_i = i_c // NC, i_c % NC
+    if i_t * BT + i_i * BC >= T:
+        return
+        
     o_k = i_k * BK + tl.arange(0, BK)
     m_k = o_k < K
-    m_t = i_t * BT + i_i * BC < T
 
     p_g = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
     # [BK,]
-    b_gn = tl.load(p_gn, mask=m_k & m_t, other=0)
+    b_gn = tl.load(p_gn, mask=m_k, other=0)
     # [BC, BK]
     b_g = tl.load(p_g, boundary_check=(0, 1))
     b_dq = tl.zeros([BC, BK], dtype=tl.float32)
-    for i_j in range(0, i_i):
-        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-        p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-        p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
-        # [BC, BK]
-        b_k = tl.load(p_k, boundary_check=(0, 1))
-        b_gk = tl.load(p_gk, boundary_check=(0, 1))
-        b_kg = (b_k * tl.exp(b_gn[None, :] - b_gk))
-        # [BC, BC]
-        b_dA = tl.load(p_dA, boundary_check=(0, 1))
-        # [BC, BK]
-        b_dq += tl.dot(b_dA, b_kg)
-    b_dq *= tl.exp(b_g - b_gn[None, :])
-
+    if i_i > 0:
+        for i_j in range(0, i_i):
+            p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+            p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+            p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
+            # [BC, BK]
+            b_k = tl.load(p_k, boundary_check=(0, 1))
+            b_gk = tl.load(p_gk, boundary_check=(0, 1))
+            b_kg = (b_k * tl.exp(b_gn[None, :] - b_gk))
+            # [BC, BC]
+            b_dA = tl.load(p_dA, boundary_check=(0, 1))
+            # [BC, BK]
+            b_dq += tl.dot(b_dA, b_kg)
+        b_dq *= tl.exp(b_g - b_gn[None, :])
     o_i = tl.arange(0, BC)
     o_dA = i_bh * T * BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_i * BC
     m_dA = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
 
     p_kj = tl.max_contiguous(tl.multiple_of(k + i_bh * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
     p_gkj = tl.max_contiguous(tl.multiple_of(g + i_bh * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
-    for j in range(0, BC):
-        m_t = i_t * BT + i_i * BC + j < T
+    for j in range(0, min(BC, T-i_t*BT-i_i*BC)):
         # [BC,]
         b_dA = tl.load(dA + o_dA + j, mask=m_dA, other=0)
         # [BK,]
-        b_kj = tl.load(p_kj, mask=m_k & m_t, other=0).to(tl.float32)
-        b_gkj = tl.load(p_gkj, mask=m_k & m_t, other=0).to(tl.float32)
+        b_kj = tl.load(p_kj, mask=m_k, other=0).to(tl.float32)
+        b_gkj = tl.load(p_gkj, mask=m_k, other=0).to(tl.float32)
         # [BC, BK]
         m_i = o_i[:, None] >= j
         # [BC, BK]
         # (SY 09/17) important to not use bf16 here to have a good precision.
         b_dq += tl.where(m_i, b_dA[:, None] * b_kj[None, :] * tl.exp(b_g - b_gkj[None, :]), 0.)
-
         p_kj += K
         p_gkj += K
     p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
@@ -354,9 +353,8 @@ def chunk_gla_bwd_kernel_intra(
     p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * s_k_h + (i_t * BT + i_i * BC + BC - 1) * K + o_k, BK), BK)
-    m_t = i_t * BT + i_i * BC + BC - 1 < T
     # [BK,]
-    b_gn = tl.load(p_gn, mask=m_k & m_t, other=0)
+    b_gn = tl.load(p_gn, mask=m_k, other=0)
     # [BC, BK]
     b_k = tl.load(p_k, boundary_check=(0, 1))
     b_gk = tl.load(p_gk, boundary_check=(0, 1))
@@ -381,17 +379,15 @@ def chunk_gla_bwd_kernel_intra(
     p_qj = tl.max_contiguous(tl.multiple_of(q + i_bh * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
     p_gqj = tl.max_contiguous(tl.multiple_of(g + i_bh * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
 
-    for j in range(0, BC):
-        m_t = i_t * BT + i_i * BC + j < T
+    for j in range(0, min(BC, T-i_t*BT-i_i*BC)):
         # [BC,]
-        b_dA = tl.load(dA + o_dA + j * BT, mask=m_t, other=0)
+        b_dA = tl.load(dA + o_dA + j * BT)
         # [BK,]
-        b_qj = tl.load(p_qj, mask=m_k & m_t, other=0).to(tl.float32)
-        b_gqj = tl.load(p_gqj, mask=m_k & m_t, other=0).to(tl.float32)
+        b_qj = tl.load(p_qj, mask=m_k, other=0).to(tl.float32)
+        b_gqj = tl.load(p_gqj, mask=m_k, other=0).to(tl.float32)
         # [BC, BK]
         m_i = o_i[:, None] <= j
         b_dk += tl.where(m_i, b_dA[:, None] * b_qj[None, :] * tl.exp(b_gqj[None, :] - b_gk), 0.)
-
         p_qj += K
         p_gqj += K
     p_dk = tl.make_block_ptr(dk + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
