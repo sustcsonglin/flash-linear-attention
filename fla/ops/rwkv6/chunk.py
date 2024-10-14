@@ -101,6 +101,8 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_inter(
     i_i, i_j = i_c // NC, i_c % NC
     if i_i <= i_j:
         return
+    if i_t * BT + i_i * BC >= T:
+        return
     b_A = tl.zeros([BC, BC], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
         p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
@@ -157,9 +159,11 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_intra(
     NC: tl.constexpr
 ):
     i_t, i_i, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    if i_t * BT + i_i * BC >= T:
+        return
+    
     i_j = i_i
     i_h = i_bh % H
-
     o_i = tl.arange(0, BC)
     o_A = i_bh * T * BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_j * BC
     m_A = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
@@ -171,7 +175,7 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_intra(
     p_u = tl.make_block_ptr(u + i_h * s_k_t, (s_k_t,), (1,), (i_k * BK), (BK,), (0,))
     b_u = tl.load(p_u, boundary_check=(0,))
 
-    for j in range(0, BC):
+    for j in range(0, min(BC, T-i_t*BT-i_i*BC)):
         b_A = tl.zeros([BC], dtype=tl.float32)
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
         p_gk = tl.make_block_ptr(gi + i_bh * s_k_h, (T*K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
@@ -221,28 +225,29 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_intra_split(
     i_k, i_tc, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     n_bh = tl.num_programs(2)
     i_t, i_i = i_tc // NC, i_tc % NC
+    if i_t * BT + i_i * BC >= T:
+        return
+
     i_j = i_i
     i_h = i_bh % H
     o_i = tl.arange(0, BC)
     o_A = (i_bh + i_k * n_bh) * T * BC + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BC
     m_A = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
     p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-    p_g = tl.make_block_ptr(gi + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+    p_g = tl.make_block_ptr(ge + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_g = tl.load(p_g, boundary_check=(0, 1))
     p_u = tl.make_block_ptr(u + i_h * s_k_t, (s_k_t,), (1,), (i_k * BK), (BK,), (0,))
     b_u = tl.load(p_u, boundary_check=(0,))
 
-    for j in range(0, BC):
+    for j in range(0, min(BC, T-i_t*BT-i_i*BC)):
         b_A = tl.zeros([BC], dtype=tl.float32)
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
-        p_gk = tl.make_block_ptr(ge + i_bh * s_k_h, (T * K,), (s_k_d,),
-                                 ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
+        p_gk = tl.make_block_ptr(gi + i_bh * s_k_h, (T*K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
         b_k = tl.load(p_k, boundary_check=(0,)).to(tl.float32)
         b_gk = tl.load(p_gk, boundary_check=(0,)).to(tl.float32)
         b_A += tl.sum(b_q * b_k[None, :] * tl.exp(b_g - b_gk[None, :]), 1)
         b_A = tl.where(o_i > j, b_A * scale, 0.)
-
         p_qj = tl.make_block_ptr(k + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
         b_qj = tl.load(p_qj, boundary_check=(0,))        
         p_qi = tl.make_block_ptr(q + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
@@ -271,6 +276,9 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_intra_merge(
     NK: tl.constexpr
 ):
     i_t, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    if i_t * BT + i_c * BC >= T:
+        return
+
     n_bh = tl.num_programs(2)
     b_A = tl.zeros([BC, BC], dtype=tl.float32)
     for i_k in range(0, NK):
@@ -379,6 +387,8 @@ def chunk_rwkv6_bwd_kernel_intra(
     i_k, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     n_bh = tl.num_programs(2)
     i_t, i_i = i_c // NC, i_c % NC
+    if i_t * BT + i_i * BC >= T:
+        return
 
     o_k = i_k * BK + tl.arange(0, BK)
     o_q = i_t * BT + i_i * BC
@@ -398,25 +408,25 @@ def chunk_rwkv6_bwd_kernel_intra(
     b_k = tl.load(p_k, boundary_check=(0, 1))
     
     b_dq = tl.zeros([BC, BK], dtype=tl.float32)
+
+    if i_i > 0:
+        b_gn = tl.load(gi + i_bh * T * K + (o_q - 1) * K + o_k, mask=(m_k & (i_i > 0) & (o_q <= T)), other=0)
+        for i_j in range(0, i_i):
+            p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+            p_gk = tl.make_block_ptr(gi + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+            p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
+            # [BC, BK]
+            b_k = tl.load(p_k, boundary_check=(0, 1))
+            b_gk = tl.load(p_gk, boundary_check=(0, 1))
+            b_kg = (b_k * tl.exp(b_gn[None, :] - b_gk))
+            # [BC, BC]
+            b_dA = tl.load(p_dA, boundary_check=(0, 1))
+            # [BC, BK]
+            b_dq += tl.dot(b_dA, b_kg)
+        b_dq *= tl.exp(b_ge - b_gn[None, :])
+
     o_dA = i_bh * T * BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_i * BC
-    b_gn = tl.load(gi + i_bh * T * K + (o_q - 1) * K + o_k, mask=(m_k & (i_i > 0) & (o_q <= T)), other=0)
-
-    for i_j in range(0, i_i):
-        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-        p_gk = tl.make_block_ptr(gi + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-        p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
-        # [BC, BK]
-        b_k = tl.load(p_k, boundary_check=(0, 1))
-        b_gk = tl.load(p_gk, boundary_check=(0, 1))
-        b_kg = (b_k * tl.exp(b_gn[None, :] - b_gk))
-        # [BC, BC]
-        b_dA = tl.load(p_dA, boundary_check=(0, 1))
-        # [BC, BK]
-        b_dq += tl.dot(b_dA, b_kg)
-    b_dq *= tl.exp(b_ge - b_gn[None, :])
-
-
-    for j in range(0, BC):
+    for j in range(0, min(BC, T-i_t*BT-i_i*BC)):
         p_kj = tl.make_block_ptr(k + i_bh * s_k_h, (T * K,), (1,), ((i_t * BT + i_i*BC+j) * K + i_k * BK,), (BK,), (0,))
         p_gkj = tl.make_block_ptr(gi + i_bh * s_k_h, (T * K,), (1,), ((i_t * BT + i_i*BC+j) * K + i_k * BK,), (BK,), (0,))
         # [BC,]
@@ -433,29 +443,31 @@ def chunk_rwkv6_bwd_kernel_intra(
     p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
     tl.debug_barrier()
-
     b_dk = tl.zeros([BC, BK], dtype=tl.float32)
     p_gk = tl.make_block_ptr(gi + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-    p_gn = tl.make_block_ptr(gi + i_bh * s_k_h, (T*K,), (s_k_d,), ((i_t * BT + i_i * BC + BC - 1) * K + i_k * BK,), (BK,), (0,))
-    # [BK,]
-    b_gn = tl.load(p_gn, boundary_check=(0,))
     # [BC, BK]
     b_gk = tl.load(p_gk, boundary_check=(0, 1))
-    for i_j in range(i_i + 1, NC):
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-        p_ge = tl.make_block_ptr(ge + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-        p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_j * BC, i_i * BC), (BC, BC), (1, 0))
-        # [BC, BK]
-        b_q = tl.load(p_q, boundary_check=(0, 1))
-        b_ge = tl.load(p_ge, boundary_check=(0, 1))
-        b_qg = b_q * tl.exp(b_ge - b_gn[None, :])
-        # [BC, BC]
-        b_dA = tl.load(p_dA, boundary_check=(0, 1))
-        # [BC, BK] fp32
-        b_dk += tl.dot(tl.trans(b_dA), b_qg, allow_tf32=False)
-    b_dk *= tl.exp(b_gn[None, :] - b_gk)
+
+    max_block_idx = min(NC, tl.cdiv(T-i_t*BT,BC))
+    if i_i < max_block_idx - 1:
+        p_gn = tl.make_block_ptr(gi + i_bh * s_k_h, (T*K,), (s_k_d,), ((i_t * BT + i_i * BC + BC - 1) * K + i_k * BK,), (BK,), (0,))
+        # [BK,]
+        b_gn = tl.load(p_gn, boundary_check=(0,))
+        for i_j in range(i_i + 1, NC):
+            p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+            p_ge = tl.make_block_ptr(ge + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+            p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_j * BC, i_i * BC), (BC, BC), (1, 0))
+            # [BC, BK]
+            b_q = tl.load(p_q, boundary_check=(0, 1))
+            b_ge = tl.load(p_ge, boundary_check=(0, 1))
+            b_qg = b_q * tl.exp(b_ge - b_gn[None, :])
+            # [BC, BC]
+            b_dA = tl.load(p_dA, boundary_check=(0, 1))
+            # [BC, BK] fp32
+            b_dk += tl.dot(tl.trans(b_dA), b_qg, allow_tf32=False)
+        b_dk *= tl.exp(b_gn[None, :] - b_gk)
     o_dA = i_bh * T * BT + (i_t * BT + i_i * BC) * BT + i_i * BC + tl.arange(0, BC)
-    for j in range(0, BC):
+    for j in range(0, min(BC, T-i_t*BT-i_i*BC)):
         p_qj = tl.make_block_ptr(q + i_bh * s_k_h, (T * K,), (1,), ((i_t * BT + i_i * BC + j) * K + i_k * BK,), (BK,), (0,))
         p_gqj = tl.make_block_ptr(ge + i_bh * s_k_h, (T * K,), (1,), ((i_t * BT + i_i * BC + j) * K + i_k * BK,), (BK,), (0,))
         # [BC,]
@@ -561,10 +573,9 @@ def chunk_rwkv6_bwd_kernel_inter(
     b_k = tl.load(p_k, boundary_check=(0, 1))
     b_dgk += tl.sum(b_dk * b_k, axis=0)
 
-
     b_dq += tl.load(p_dq, boundary_check=(0, 1))
     b_dk += tl.load(p_dk, boundary_check=(0, 1))
-    b_dg = b_q * b_dq - b_k * b_dk 
+    b_dg = b_q * b_dq - b_k * b_dk
     b_dg = b_dg - tl.cumsum(b_dg, axis=0) + tl.sum(b_dg, axis=0)[None, :] + b_dgk[None, :] - b_q * b_dq
 
     o_i = tl.arange(0, BT)
@@ -572,8 +583,9 @@ def chunk_rwkv6_bwd_kernel_inter(
     b_dA_dig = tl.load(p_dA_dig, mask= (i_t * BT + o_i)<T, other=0)
     p_u = tl.make_block_ptr(u + i_h * K, (K,), (1,), (i_k * BK,), (BK,), (0,))
     b_u = tl.load(p_u, boundary_check=(0,))
+    # scale is already applied to b_dA_diag
     b_dq += (b_dA_dig[:, None] * b_u[None, :] * b_k)
-    b_dk += (b_dA_dig[:, None] * b_q * b_u[None, :])
+    b_dk += (b_dA_dig[:, None] * b_u[None, :] * b_q)
     b_du = tl.sum(b_dA_dig[:, None] * b_q * b_k, axis=0)
     p_du = tl.make_block_ptr(du + (i_h + i_t * n_bh) * K, (K,), (1,), (i_k * BK,), (BK,), (0,))
     tl.store(p_du, b_du, boundary_check=(0,))
@@ -626,7 +638,7 @@ def chunk_rwkv6_fwd_intra_A_gated_fn(q, k, gi, ge, u, scale, BT):
             q, k, gi, ge, u, A_intra,
             k.stride(1), k.stride(2), k.stride(3),
             scale,
-            T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC
+            H=H, T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC
         )
         grid = (NT, NC, B * H)
         chunk_rwkv6_fwd_A_kernel_intra_sub_intra_merge[grid](
@@ -636,7 +648,7 @@ def chunk_rwkv6_fwd_intra_A_gated_fn(q, k, gi, ge, u, scale, BT):
     return A
 
 
-def chunk_fwd_o_gated_gk_fn(q, v, g_cumsum, A, h, BT, scale):
+def chunk_rwkv6_fwd_o_gated_gk_fn(q, v, g_cumsum, A, h, BT, scale):
     B, H, T, K, V = *q.shape, v.shape[-1]
     BV = min(32, triton.next_power_of_2(V))
     BK = min(32, triton.next_power_of_2(K))
@@ -812,7 +824,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
             states_in_fp32=False
         )
         A = chunk_rwkv6_fwd_intra_A_gated_fn(q, k, g_cumsum_inclusive, g_cumsum_exclusive, u, scale, BT)
-        o = chunk_fwd_o_gated_gk_fn(q, v, g_cumsum_exclusive, A, h, BT, scale)
+        o = chunk_rwkv6_fwd_o_gated_gk_fn(q, v, g_cumsum_exclusive, A, h, BT, scale)
         ctx.save_for_backward(q, k, v, g, initial_state, A, u)
         ctx.BT = BT
         ctx.scale = scale
