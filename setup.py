@@ -130,6 +130,7 @@ setup(
     install_requires=[
         'triton>=2.2',
         'transformers',
+        'datasets',
         'einops',
         'ninja'
     ],
