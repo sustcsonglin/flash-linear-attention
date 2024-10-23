@@ -9,6 +9,8 @@ import torch.nn as nn
 import triton
 import triton.language as tl
 
+from fla.utils import contiguous
+
 # `all_gather_into_tensor` and `reduce_scatter_tensor` are new placeholders for
 # `_all_gather_base` and `_reduce_scatter_base`. They require the most recent
 # version of PyTorch. The following 2 lines are for backward compatibility with
@@ -230,6 +232,7 @@ def fused_cross_entropy_forward(
 class CrossEntropyLossFunction(torch.autograd.Function):
 
     @staticmethod
+    @contiguous
     def forward(
         ctx,
         logits,
@@ -263,6 +266,7 @@ class CrossEntropyLossFunction(torch.autograd.Function):
         return losses, z_losses
 
     @staticmethod
+    @contiguous
     def backward(ctx, grad_losses, grad_z_losses):
         del grad_z_losses  # z_losses are only for logging.
 

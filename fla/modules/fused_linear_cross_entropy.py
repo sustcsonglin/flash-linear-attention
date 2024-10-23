@@ -12,6 +12,7 @@ import triton
 import triton.language as tl
 
 from fla.ops.utils import logsumexp_fwd
+from fla.utils import contiguous
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576
 # https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
@@ -316,6 +317,7 @@ def fused_linear_cross_entropy_backward(
 class FusedLinearCrossEntropyFunction(torch.autograd.Function):
 
     @staticmethod
+    @contiguous
     def forward(
         ctx,
         x: torch.Tensor,
@@ -380,6 +382,7 @@ class FusedLinearCrossEntropyFunction(torch.autograd.Function):
         return loss
 
     @staticmethod
+    @contiguous
     def backward(ctx, do):
         dx, dw, db = ctx.saved_tensors
         dx, dw, db = fused_linear_cross_entropy_backward(do, dx, dw, db)
