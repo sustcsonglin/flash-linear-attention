@@ -81,10 +81,10 @@ def get_train_args():
         print("Got unknown args, potentially deprecated arguments: {}".format(unknown_args))
         raise ValueError("Some specified arguments are not used by the HfArgumentParser: {}".format(unknown_args))
 
-    # Setup logging
     if args.should_log:
         transformers.utils.logging.set_verbosity(args.get_process_log_level())
         transformers.utils.logging.enable_default_handler()
         transformers.utils.logging.enable_explicit_format()
-
+    # set seeds manually
+    transformers.set_seed(args.seed)
     return args
