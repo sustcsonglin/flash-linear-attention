@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
 
-import os
-
-import torch
 from datasets import load_from_disk
 from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
                           DataCollatorForLanguageModeling, Trainer)
@@ -65,20 +62,8 @@ def main():
     )
 
     results = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
-    if trainer.is_fsdp_enabled and hasattr(trainer, 'accelerator'):
-        from transformers.modeling_utils import unwrap_model
-        from transformers.trainer import TRAINING_ARGS_NAME
-        unwrap_model(trainer.model).save_pretrained(
-            trainer.args.output_dir,
-            is_main_process=trainer.accelerator.is_main_process,
-            save_function=trainer.accelerator.save,
-            state_dict=trainer.accelerator.get_state_dict(trainer.model)
-        )
-        if trainer.tokenizer is not None:
-            trainer.tokenizer.save_pretrained(trainer.args.output_dir)
-        torch.save(trainer.args, os.path.join(trainer.args.output_dir, TRAINING_ARGS_NAME))
-    else:
-        trainer.save_model()
+    trainer.save_model()
+    tokenizer.save_pretrained(trainer.args.output_dir)
 
     trainer.log_metrics("train", results.metrics)
     trainer.save_metrics("train", results.metrics)

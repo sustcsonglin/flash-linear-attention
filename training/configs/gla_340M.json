@@ -3,7 +3,7 @@
   "bos_token_id": 1,
   "clamp_min": null,
   "eos_token_id": 2,
-  "expand_k": 1,
+  "expand_k": 0.5,
   "expand_v": 1,
   "fuse_cross_entropy": true,
   "fuse_norm": true,
