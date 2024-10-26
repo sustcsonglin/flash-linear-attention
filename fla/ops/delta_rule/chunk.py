@@ -15,7 +15,6 @@ from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -80,7 +79,6 @@ def fwd_prepare_dv(q, k, do, BT, scale):
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -141,7 +139,7 @@ def chunk_delta_rule_fwd_kernel_h(
             b_d = tl.load(p_d, boundary_check=(0, 1))
             # [BT, BV]
             b_v = tl.load(p_v, boundary_check=(0, 1))
-            b_v -= tl.dot(b_d, b_h.to(b_k.dtype), allow_tf32=False)
+            b_v -= tl.dot(b_d, b_h.to(b_k.dtype))
             # [BK, BV]
             tl.store(p_v_new, b_v.to(p_v_new.dtype.element_ty), boundary_check=(0, 1))
             b_h_cumsum += tl.dot(b_k, b_v.to(b_k.dtype), allow_tf32=False)
@@ -157,7 +155,6 @@ def chunk_delta_rule_fwd_kernel_h(
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -218,8 +215,7 @@ def chunk_linear_attn_fwd_kernel_o(
     configs=[
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
+        triton.Config({}, num_warps=4)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -307,9 +303,7 @@ def chunk_delta_rule_bwd_kernel_dhu(
     configs=[
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16)
+        triton.Config({}, num_warps=4)
     ],
     key=["BT", "BK", "BV"],
 )
@@ -357,8 +351,8 @@ def chunk_delta_rule_bwd_kernel_dqkw(
     for i_v in range(tl.cdiv(V, BV)):
         p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         p_h = tl.make_block_ptr(h + i_bh * s_h_h, (V, NT * K), (1, s_h_t), (i_v * BV, i_t * K + i_k * BK), (BV, BK), (0, 1))
+        p_dh = tl.make_block_ptr(dh + i_bh * s_h_h, (V, NT * K), (1, s_h_t), (i_v * BV, i_t * K + i_k * BK), (BV, BK), (0, 1))
         p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dh = tl.make_block_ptr(dh + i_bh * s_h_h, (NT * K, V), (s_h_t, 1), (i_t * K + i_k * BK, i_v * BV), (BK, BV), (1, 0))
         p_dv = tl.make_block_ptr(dv + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         # [BT, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
@@ -371,7 +365,7 @@ def chunk_delta_rule_bwd_kernel_dqkw(
         b_ds += tl.dot(b_do, tl.trans(b_v), allow_tf32=False)
         # [BT, BK]
         b_dq += tl.dot(b_do, b_h, allow_tf32=False)
-        b_dk += tl.dot(b_v, tl.trans(b_dh), allow_tf32=False)
+        b_dk += tl.dot(b_v, b_dh, allow_tf32=False)
 
         b_dv = tl.load(p_dv, boundary_check=(0, 1))
         b_dw += tl.dot(b_dv.to(b_v.dtype), b_h.to(b_v.dtype), allow_tf32=False)
@@ -479,7 +473,7 @@ def chunk_bwd_dqkw_fn(q, k, v_new, w, h, du, do, dh, BT, scale):
     NT = triton.cdiv(T, BT)
     grid = (NK, NT, B * H)
     dq = torch.empty_like(q)
-    dk = torch.empty_like(k)
+    dk = torch.empty_like(k, dtype=torch.float32)
     dw = torch.empty_like(w)
     chunk_delta_rule_bwd_kernel_dqkw[grid](
         q, k, v_new, w, h, do, dh, dq, dk, du, dw,
@@ -489,7 +483,7 @@ def chunk_bwd_dqkw_fn(q, k, v_new, w, h, du, do, dh, BT, scale):
         scale=scale,
         H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
     )
-    return dq.to(q.dtype), dk.to(k.dtype), dw.to(w.dtype)
+    return dq, dk, dw
 
 
 class ChunkDeltaRuleFunction(torch.autograd.Function):
@@ -539,6 +533,7 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dbeta.to(beta.dtype), None, None, dh0, None, None, None
 
 
+
 def chunk_delta_rule(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -572,6 +567,7 @@ def chunk_delta_rule(
     assert q.dtype == k.dtype == v.dtype
     assert q.dtype != torch.float32, "ChunkDeltaRuleFunction does not support float32. Please use bfloat16."
     assert len(beta.shape) == 3, "beta must be of shape (batch size, num of head, seq len)."
+    assert BT in [32, 64], "ChunkDeltaRuleFunction only supports BT=32/64."
     if scale is None:
         scale = k.shape[-1] ** -0.5
     else:
