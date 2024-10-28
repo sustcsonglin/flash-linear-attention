@@ -162,7 +162,6 @@ def fused_chunk_gla_fwd_kernel(
         # [BK, BT]
         b_k = tl.load(p_k, boundary_check=(0, 1))
         # [BT, BV]
-        b_o = tl.zeros([BT, BV], dtype=tl.float32)
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
