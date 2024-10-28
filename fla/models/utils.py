@@ -61,12 +61,12 @@ class Cache(transformers.cache_utils.Cache):
         """
 
         if isinstance(state, torch.Tensor):
-            state = (state,)
+            state = [state,]
         if len(self.states) <= layer_idx:
-            self.states.append(state)
+            self.states.append(list(state))
         else:
             for i, s in enumerate(state):
-                self.states[layer_idx][i].copy_(s)
+                self.states[layer_idx][i] = s
             # update the number of seen tokens once we achieve the last layer
             if layer_idx == len(self) - 1:
                 self._seen_tokens += offset
