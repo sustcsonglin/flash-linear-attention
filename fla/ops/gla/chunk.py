@@ -169,7 +169,7 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_split(
 
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_g = tl.load(p_g, boundary_check=(0, 1))
-    for j in range(0, min(BC, T-i_t*BT-i_i*BC)):
+    for j in range(0, min(BC, T - i_t * BT - i_i * BC)):
         b_A = tl.zeros([BC], dtype=tl.float32)
         b_k = tl.load(p_k, mask=m_k, other=0).to(tl.float32)
         b_gk = tl.load(p_gk, mask=m_k, other=0).to(tl.float32)
@@ -204,7 +204,7 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_merge(
     n_bh = tl.num_programs(2)
     b_A = tl.zeros([BC, BC], dtype=tl.float32)
     for i_k in range(0, NK):
-        p_A = tl.make_block_ptr(A + (i_bh + i_k*n_bh) * T * BC, (T, BC), (BC, 1), (i_t * BT + i_c * BC, 0), (BC, BC), (1, 0))
+        p_A = tl.make_block_ptr(A + (i_bh + i_k * n_bh) * T * BC, (T, BC), (BC, 1), (i_t * BT + i_c * BC, 0), (BC, BC), (1, 0))
         b_A += tl.load(p_A, boundary_check=(0, 1))
     p_A2 = tl.make_block_ptr(A2 + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_c * BC, i_c * BC), (BC, BC), (1, 0))
     tl.store(p_A2, b_A.to(A2.dtype.element_ty), boundary_check=(0, 1))
@@ -387,7 +387,7 @@ def chunk_gla_bwd_kernel_intra(
     p_qj = tl.max_contiguous(tl.multiple_of(q + i_bh * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
     p_gqj = tl.max_contiguous(tl.multiple_of(g + i_bh * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
 
-    for j in range(0, min(BC, T-i_t*BT-i_i*BC)):
+    for j in range(0, min(BC, T - i_t * BT - i_i * BC)):
         # [BC,]
         b_dA = tl.load(dA + o_dA + j * BT)
         # [BK,]
@@ -479,15 +479,13 @@ def chunk_gla_bwd_kernel_dv(
     # (SY 09/17) important to disallow tf32 here to maintain a good precision.
     b_dv = tl.dot(b_A, b_do.to(b_A.dtype), allow_tf32=False)
 
-    last_idx = min(i_t * BT + BT, T) - 1
-
     for i_k in range(tl.cdiv(K, BK)):
         o_k = i_k * BK + tl.arange(0, BK)
         m_k = o_k < K
 
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * s_k_h + last_idx * K + o_k, BK), BK)
+        p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * s_k_h + min(i_t * BT + BT, T) * K - K + o_k, BK), BK)
 
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_gk = tl.load(p_gk, boundary_check=(0, 1))
@@ -505,8 +503,8 @@ def chunk_gla_bwd_kernel_dv(
 
 @triton.autotune(
     configs=[
-        # triton.Config({}, num_warps=1),
-        # triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=1),
+        triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
     ],
@@ -545,8 +543,7 @@ def chunk_gla_bwd_kernel_inter(
     m_k = o_k < K
 
     p_gk = tl.make_block_ptr(g + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    last_idx = min(T, i_t * BT + BT) - 1
-    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * s_k_h + last_idx * K + o_k, BK), BK)
+    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * s_k_h + min(T, i_t * BT + BT) * K - K + o_k, BK), BK)
     b_gn = tl.load(p_gn, mask=m_k, other=0)
     b_dq = tl.zeros([BT, BK], dtype=tl.float32)
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)

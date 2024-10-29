@@ -2,10 +2,11 @@
 
 import pytest
 import torch
-
-from fla.ops.simple_gla import chunk_simple_gla, fused_recurrent_simple_gla
-from fla.ops.simple_gla.naive import torch_simple_gla, torch_simple_gla_recurrent
 import torch.nn.functional as F
+
+from fla.ops.simple_gla import chunk_simple_gla
+from fla.ops.simple_gla.naive import torch_simple_gla_recurrent
+
 
 def get_err_ratio(x, y):
     err = (x-y).flatten().square().mean().sqrt().item()
@@ -53,12 +54,18 @@ def test_chunk(
     tri_dh0, h0.grad = h0.grad.clone(), None
 
     assert get_err_ratio(tri, ref) < 0.004, f" o diff: {torch.abs(ref - tri).max()}, ratio: {get_err_ratio(ref, tri)}"
-    assert get_err_ratio(tri_ht, ref_ht) < 0.005, f"ht diff: {torch.abs(ref_ht - tri_ht).max()}, ratio: {get_err_ratio(ref_ht, tri_ht)}"
-    assert get_err_ratio(tri_dq, ref_dq) < 0.005, f"dq diff: {torch.abs(ref_dq - tri_dq).max()}, ratio: {get_err_ratio(ref_dq, tri_dq)}"
-    assert get_err_ratio(tri_dk, ref_dk) < 0.005, f"dk diff: {torch.abs(ref_dk - tri_dk).max()}, ratio: {get_err_ratio(ref_dk, tri_dk)}"
-    assert get_err_ratio(tri_dv, ref_dv) < 0.005, f"dv diff: {torch.abs(ref_dv - tri_dv).max()}, ratio: {get_err_ratio(ref_dv, tri_dv)}"
-    assert get_err_ratio(tri_dg, ref_dg) < 0.005, f"dg diff: {torch.abs(ref_dg - tri_dg).max()}, ratio: {get_err_ratio(ref_dg, tri_dg)}"
-    assert get_err_ratio(tri_dh0, ref_dh0) < 0.005, f"dh0 diff: {torch.abs(ref_dh0 - tri_dh0).max()}, ratio: {get_err_ratio(ref_dh0, tri_dh0)}"
+    assert get_err_ratio(tri_ht, ref_ht) < 0.005, \
+        f"ht diff: {torch.abs(ref_ht - tri_ht).max()}, ratio: {get_err_ratio(ref_ht, tri_ht)}"
+    assert get_err_ratio(tri_dq, ref_dq) < 0.005, \
+        f"dq diff: {torch.abs(ref_dq - tri_dq).max()}, ratio: {get_err_ratio(ref_dq, tri_dq)}"
+    assert get_err_ratio(tri_dk, ref_dk) < 0.005, \
+        f"dk diff: {torch.abs(ref_dk - tri_dk).max()}, ratio: {get_err_ratio(ref_dk, tri_dk)}"
+    assert get_err_ratio(tri_dv, ref_dv) < 0.005, \
+        f"dv diff: {torch.abs(ref_dv - tri_dv).max()}, ratio: {get_err_ratio(ref_dv, tri_dv)}"
+    assert get_err_ratio(tri_dg, ref_dg) < 0.005, \
+        f"dg diff: {torch.abs(ref_dg - tri_dg).max()}, ratio: {get_err_ratio(ref_dg, tri_dg)}"
+    assert get_err_ratio(tri_dh0, ref_dh0) < 0.005, \
+        f"dh0 diff: {torch.abs(ref_dh0 - tri_dh0).max()}, ratio: {get_err_ratio(ref_dh0, tri_dh0)}"
 
 
 @pytest.mark.parametrize("vary_A", [True, False])
@@ -124,5 +131,3 @@ def test_simple_gla_to_mamba2(vary_A, dtype):
     assert y_rearrange.allclose(outputs_gla_fuse, 0, atol), f"y diff: {torch.abs(y_rearrange - outputs_gla_fuse).max()}"
     final_gla_fuse = final_gla_fuse.to(dtype)  # states hard-coded to float32 in FLA kernel
     assert final_rearrange.allclose(final_gla_fuse, 0, atol), f"final diff: {torch.abs(final_ssd - final_gla_fuse).max()}"
-
-
