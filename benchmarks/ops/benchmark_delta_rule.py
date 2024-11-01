@@ -4,7 +4,7 @@
 import torch
 from benchmark import benchmark_combined, benchmark_forward
 
-from fla.ops.delta_rule import (chunk_linear_attn_delta_rule,
+from fla.ops.delta_rule import (chunk_delta_rule,
                                 fused_recurrent_delta_rule)
 from fla.ops.retention import fused_chunk_retention
 
@@ -53,7 +53,7 @@ for causal in causal_vals:
             v2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
 
             f_b = time_fwd_bwd(
-                chunk_linear_attn_delta_rule, q, k, v, None, 32, False, verbose=False
+                chunk_delta_rule, q, k, v, None, 32, False, verbose=False
             )
             time_f_b[config, "delta_fused_chunk"] = f_b
 
@@ -62,7 +62,7 @@ for causal in causal_vals:
             v2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
 
             f_b = time_fwd_bwd(
-                chunk_linear_attn_delta_rule, q, k, v, None, 32, True, verbose=False
+                chunk_delta_rule, q, k, v, None, 32, True, verbose=False
             )
             time_f_b[config, "delta_chunk"] = f_b
 
