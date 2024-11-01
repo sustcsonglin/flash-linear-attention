@@ -395,7 +395,7 @@ class ParallelRetentionFunction(torch.autograd.Function):
 
         grid = (NK * NV, triton.cdiv(T, BT), B * H)
         o = torch.empty(NK, B, H, T, V, dtype=q.dtype, device=q.device)
-        attn = q.new_empty(NK, B, H, T, T) if output_attentions else None
+        attn = q.new_zeros(NK, B, H, T, T) if output_attentions else None
         parallel_retention_fwd_kernel[grid](
             q=q,
             k=k,
