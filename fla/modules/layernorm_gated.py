@@ -395,7 +395,7 @@ def rmsnorm_fn(x, weight, bias, z=None, eps=1e-6, group_size=None, norm_before_g
     return LayerNormFn.apply(x, weight, bias, z, eps, group_size, norm_before_gate, True)
 
 
-class LayerNorm(torch.nn.Module):
+class LayerNormGated(torch.nn.Module):
 
     def __init__(self, hidden_size, eps=1e-5, group_size=None, norm_before_gate=True, device=None, dtype=None):
         """If group_size is not None, we do GroupNorm with each group having group_size elements.
@@ -422,7 +422,7 @@ class LayerNorm(torch.nn.Module):
                             norm_before_gate=self.norm_before_gate)
 
 
-class RMSNorm(torch.nn.Module):
+class RMSNormGated(torch.nn.Module):
 
     def __init__(self, hidden_size, eps=1e-5, group_size=None, norm_before_gate=False, device=None, dtype=None):
         """If group_size is not None, we do GroupNorm with each group having group_size elements.
