@@ -181,10 +181,9 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    def forward(ctx, q, k, v, initial_state=None, output_final_state=False):
+    def forward(ctx, q, k, v, scale, initial_state=None, output_final_state=False):
         B, H, T, K, V = *q.shape, v.shape[-1]
 
-        scale = K ** -0.5
         BK, BV = min(K, 64), min(V, 64)
         NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
         num_stages = 1
@@ -210,6 +209,7 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
         )
         o = o.sum(0)
         ctx.save_for_backward(q, k, v, initial_state)
+        ctx.scale = scale
         return o.to(v.dtype), final_state
 
     @staticmethod
@@ -217,7 +217,7 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
     def backward(ctx, do, dht):
         q, k, v, initial_state = ctx.saved_tensors
         B, H, T, K, V = *q.shape, v.shape[-1]
-        scale = K ** -0.5
+        scale = ctx.scale
 
         BK, BV = min(K, 64), min(V, 64)
         NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
@@ -227,8 +227,7 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
         dq = q.new_empty(NV, B, H, T, K, dtype=torch.float)
         dk = q.new_empty(NV, B, H, T, K, dtype=torch.float)
         dv = q.new_empty(NK, B, H, T, V, dtype=torch.float)
-        if initial_state is not None:
-            dh0 = q.new_empty(B, H, K, V, dtype=torch.float)
+        dh0 = q.new_empty(B, H, K, V, dtype=torch.float) if initial_state is not None else None
 
         grid = (NV, NK, B * H)
         fused_recurrent_retention_bwd_kernel[grid](
@@ -243,17 +242,33 @@ class FusedRecurrentRetentionFunction(torch.autograd.Function):
         dq = dq.sum(0)
         dk = dk.sum(0)
         dv = dv.sum(0)
-        return dq.to(q), dk.to(k), dv.to(v), dh0, None
+        return dq.to(q), dk.to(k), dv.to(v), None, dh0, None
 
 
 def fused_recurrent_retention(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    scale: float = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if initial_state is not None:
-        initial_state = initial_state.detach()
-    o, final_state = FusedRecurrentRetentionFunction.apply(q, k, v, initial_state, output_final_state)
-    return o, final_state
+    r"""
+    Args:
+        q (torch.Tensor):
+            queries of shape `[B, H, T, K]`
+        k (torch.Tensor):
+            keys of shape `[B, H, T, K]`
+        v (torch.Tensor):
+            values of shape `[B, H, T, V]`
+        scale (Optional[int]):
+            Scale factor for attention scores.
+            If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
+        initial_state (Optional[Tuple[torch.Tensor]]):
+            Initial state tuple having tensors of shape `[B, H, K, V]`. Default: `None`.
+        output_final_state (Optional[bool]):
+            Whether to output the final state tuple, having tensors of shape `[B, H, K, V]`. Default: `False`.
+    """
+    if scale is None:
+        scale = k.shape[-1] ** -0.5
+    return FusedRecurrentRetentionFunction.apply(q, k, v, scale, initial_state, output_final_state)
