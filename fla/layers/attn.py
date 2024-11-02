@@ -21,8 +21,10 @@ try:
     from flash_attn.bert_padding import (index_first_axis, pad_input,
                                          unpad_input)
 except ImportError:
-    warnings.warn("Flash Attention is not installed. Please install it via `pip install flash-attn --no-build-isolation`", 
-                  category=ImportWarning)
+    warnings.warn(
+        "Flash Attention is not installed. Please install it via `pip install flash-attn --no-build-isolation`",
+        category=ImportWarning
+    )
     flash_attn_func = None
 
 logger = logging.get_logger(__name__)
@@ -85,7 +87,7 @@ class Attention(nn.Module):
         batch_size, q_len, _ = hidden_states.size()
         q = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
         k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_kv_heads)
-        v = rearrange(self.v_proj(hidden_states), 'b t (h d) -> b h t d', h=self.num_kv_heads)
+        v = rearrange(self.v_proj(hidden_states), '... (h d) -> ... h d', h=self.num_kv_heads)
 
         seqlen_offset, max_seqlen = 0, q.shape[1]
         if past_key_values is not None:
@@ -101,13 +103,10 @@ class Attention(nn.Module):
             max_seqlen = max(max_seqlen, self.max_position_embeddings)
         q, k = self.rotary(q, k, seqlen_offset, max_seqlen)
 
-        k = rearrange(k, 'b t h d -> b h t d')
         if past_key_values is not None:
-            k, v = past_key_values.update(k, v, self.layer_idx)
-        k, v = rearrange(k, 'b h t d -> b t h d'), rearrange(v, 'b h t d -> b t h d')
-        if self.num_kv_groups > 1:
-            k = rearrange(k.unsqueeze(-2).repeat(1, 1, 1, self.num_kv_groups, 1), 'b t h g d -> b t (h g) d')
-            v = rearrange(v.unsqueeze(-2).repeat(1, 1, 1, self.num_kv_groups, 1), 'b t h g d -> b t (h g) d')
+            k, v = past_key_values.update(k.flatten(-2, -1), v.flatten(-2, -1), self.layer_idx)
+            k = rearrange(k, '... (h d) -> ... h d', h=self.num_kv_heads)
+            v = rearrange(v, '... (h d) -> ... h d', h=self.num_kv_heads)
 
         if flash_attn_func is None:
             raise ImportError("Please install Flash Attention via `pip install flash-attn --no-build-isolation` first")
