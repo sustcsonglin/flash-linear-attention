@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast)
 from transformers.modeling_utils import PreTrainedModel
@@ -204,11 +203,6 @@ class TransformerModel(TransformerPreTrainedModel):
         elif input_ids is None and inputs_embeds is None:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
-        if use_cache:
-            use_legacy_cache = not isinstance(past_key_values, Cache)
-            if use_legacy_cache:
-                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-
         if inputs_embeds is None:
             inputs_embeds = self.embeddings(input_ids)
 
@@ -224,7 +218,7 @@ class TransformerModel(TransformerPreTrainedModel):
 
         all_hidden_states = () if output_hidden_states else None
         all_attns = () if output_attentions else None
-        next_decoder_cache = None
+        next_cache = None
 
         for layer in self.layers:
             if output_hidden_states:
@@ -251,7 +245,7 @@ class TransformerModel(TransformerPreTrainedModel):
             hidden_states = layer_outputs[0]
 
             if use_cache:
-                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+                next_cache = layer_outputs[2 if output_attentions else 1]
 
             if output_attentions:
                 all_attns += (layer_outputs[1],)
@@ -262,9 +256,6 @@ class TransformerModel(TransformerPreTrainedModel):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = None
-        if use_cache:
-            next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_attns] if v is not None)
 
