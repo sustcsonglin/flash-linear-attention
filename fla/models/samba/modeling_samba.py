@@ -10,6 +10,7 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 from transformers.activations import ACT2FN
+from transformers.generation import GenerationMixin
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import ModelOutput, logging
 
@@ -292,7 +293,8 @@ class SambaModel(SambaPreTrainedModel):
         )
 
 
-class SambaForCausalLM(SambaPreTrainedModel):
+class SambaForCausalLM(SambaPreTrainedModel, GenerationMixin):
+
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
@@ -321,7 +323,15 @@ class SambaForCausalLM(SambaPreTrainedModel):
         return model_kwargs
 
     def prepare_inputs_for_generation(
-        self, input_ids, cache_params: Optional[MambaCache] = None, inputs_embeds=None, attention_mask=None, **kwargs
+        self,
+        input_ids,
+        cache_params:
+        Optional[MambaCache] = None,
+        inputs_embeds=None,
+        attention_mask=None,
+        use_cache: Optional[bool] = True,
+        num_logits_to_keep: Optional[int] = None,
+        **kwargs
     ):
         # only last token for inputs_ids if the state is passed along.
         if cache_params is not None:
@@ -332,7 +342,15 @@ class SambaForCausalLM(SambaPreTrainedModel):
         else:
             model_inputs = {"input_ids": input_ids}
 
-        model_inputs["cache_params"] = cache_params
+        if num_logits_to_keep is not None:
+            model_inputs['num_logits_to_keep'] = num_logits_to_keep
+
+        model_inputs.update({
+            'cache_params': cache_params,
+            'use_cache': use_cache,
+            'attention_mask': attention_mask,
+            'num_logits_to_keep': num_logits_to_keep,
+        })
         return model_inputs
 
     def forward(
@@ -345,6 +363,7 @@ class SambaForCausalLM(SambaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         use_cache: Optional[bool] = None,
+        num_logits_to_keep: Optional[int] = 0,
         **kwargs,  # for now we need this for generation
     ) -> Union[Tuple, SambaCausalLMOutput]:
         r"""
@@ -365,7 +384,7 @@ class SambaForCausalLM(SambaPreTrainedModel):
         )
         hidden_states = samba_outputs[0]
         fuse_linear_and_cross_entropy = self.config.fuse_cross_entropy and self.training
-        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states)
+        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states[:, -num_logits_to_keep:])
 
         loss = None
         if labels is not None:

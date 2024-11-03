@@ -21,6 +21,7 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 from transformers.activations import ACT2FN
+from transformers.generation import GenerationMixin
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import ModelOutput, logging
 
@@ -649,7 +650,7 @@ class Mamba2Block(nn.Module):
         return hidden_states
 
 
-class Mamba2PreTrainedModel(PreTrainedModel):
+class Mamba2PreTrainedModel(PreTrainedModel, GenerationMixin):
     """
     An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
     models.
@@ -901,6 +902,7 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel):
         cache_params: Optional[Mamba2Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        num_logits_to_keep: Optional[int] = None,
         **kwargs,
     ):
         if inputs_embeds is not None:
@@ -947,14 +949,16 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel):
         else:
             model_inputs = {"input_ids": input_ids}
 
-        model_inputs.update(
-            {
-                "attention_mask": attention_mask,
-                "cache_params": cache_params,
-                "use_cache": use_cache,
-                "cache_position": cache_position,
-            }
-        )
+        if num_logits_to_keep is not None:
+            model_inputs['num_logits_to_keep'] = num_logits_to_keep
+
+        model_inputs.update({
+            'attention_mask': attention_mask,
+            'cache_params': cache_params,
+            'use_cache': use_cache,
+            'cache_position': cache_position,
+            'num_logits_to_keep': num_logits_to_keep
+        })
         return model_inputs
 
     def forward(
@@ -968,6 +972,7 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel):
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        num_logits_to_keep: Optional[int] = 0,
         **kwargs,  # for now we need this for generation
     ) -> Union[Tuple, Mamba2CausalLMOutput]:
         r"""
@@ -990,7 +995,7 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel):
         )
         hidden_states = outputs[0]
         fuse_linear_and_cross_entropy = self.config.fuse_cross_entropy and self.training
-        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states)
+        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states[:, -num_logits_to_keep:])
 
         loss = None
         if labels is not None:

@@ -275,6 +275,7 @@ class TransformerModel(TransformerPreTrainedModel):
 
 
 class TransformerForCausalLM(TransformerPreTrainedModel, GenerationMixin):
+
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
@@ -349,7 +350,7 @@ class TransformerForCausalLM(TransformerPreTrainedModel, GenerationMixin):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        num_logits_to_keep: int = 0
+        num_logits_to_keep: Optional[int] = 0
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
