@@ -22,8 +22,8 @@ def sizeof_fmt(num, suffix='B'):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generation benchmarking")
     parser.add_argument("--path", type=str, default="fla-hub/transformer-1.3B-100B")
-    parser.add_argument("--data", type=str, default="karpathy/tiny_shakespeare")
-    parser.add_argument("--length", type=int, default=1024)
+    parser.add_argument("--data", type=str, default="fla-hub/pg19")
+    parser.add_argument("--length", type=int, default=128)
     parser.add_argument("--maxlen", type=int, default=128)
     parser.add_argument("--no-cache", action='store_true')
     parser.add_argument("--temperature", type=float, default=0.5)
@@ -64,21 +64,22 @@ if __name__ == "__main__":
 
     torch.cuda.synchronize()
     start = time.time()
-    text = model.generate(
-        input_ids=input_ids,
-        use_cache=not args.no_cache,
-        max_length=max_length,
-        pad_token_id=tokenizer.eos_token_id,
-        eos_token_id=tokenizer.bos_token_id,
-        do_sample=True,
-        temperature=args.temperature,
-        top_p=args.topp,
-        repetition_penalty=args.repetition_penalty
-    )
+    with torch.inference_mode():
+        text = model.generate(
+            input_ids=input_ids,
+            use_cache=not args.no_cache,
+            max_length=max_length,
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.bos_token_id,
+            do_sample=True,
+            temperature=args.temperature,
+            top_p=args.topp,
+            repetition_penalty=args.repetition_penalty
+        )
     torch.cuda.synchronize()
     elapsed = time.time() - start
-    print(f"Prompt:\n{tokenizer.batch_decode(input_ids, skip_special_tokens=True)[0]}\n")
-    print(f"Generated:\n{tokenizer.batch_decode(text, skip_special_tokens=True)[0]}\n")
+    print(f"Prompt:\n{tokenizer.batch_decode(input_ids, skip_special_tokens=True)[0].strip()}\n")
+    print(f"Generated:\n{tokenizer.batch_decode(text, skip_special_tokens=True)[0].strip()}\n")
     print(f"Prompt length: {len(input_ids[0])}, generation length: {len(text[0]) - len(input_ids[0])}")
     print(f"Total prompt processing + decoding time: {elapsed * 1000:.0f}ms")
     print(f"Max memory used: {sizeof_fmt(torch.cuda.max_memory_allocated())}")
