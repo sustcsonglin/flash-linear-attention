@@ -63,17 +63,17 @@ class SambaBlock(nn.Module):
         self.layer_idx = layer_idx
 
         self.mixer_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
-        if self.layer_idx % 2 == 0:
-            self.mixer = MambaMixer(config, layer_idx=layer_idx)
-        else:
+        if config.attn is not None and layer_idx in config.attn['layers']:
             self.mixer = Attention(
                 hidden_size=config.hidden_size,
-                num_heads=config.num_heads,
-                num_kv_heads=config.num_kv_heads,
-                window_size=config.window_size,
+                num_heads=config.attn['num_heads'],
+                num_kv_heads=config.attn['num_kv_heads'],
+                window_size=config.attn['window_size'],
                 max_position_embeddings=config.max_position_embeddings,
                 layer_idx=layer_idx
             )
+        else:
+            self.mixer = MambaMixer(config, layer_idx=layer_idx)
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = SambaMLP(
             hidden_size=config.hidden_size,
