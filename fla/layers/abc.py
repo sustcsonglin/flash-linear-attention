@@ -13,7 +13,6 @@ from einops import rearrange
 from fla.modules import (FusedRMSNormSwishGate, RMSNorm, RotaryEmbedding,
                          ShortConvolution)
 from fla.modules.activations import swiglu, swish
-from fla.modules.convolution import proj_then_conv1d
 from fla.ops.abc.chunk import chunk_abc
 
 if TYPE_CHECKING:
@@ -128,10 +127,16 @@ class ABCAttention(nn.Module):
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
 
+        last_state = None
+        if past_key_values is not None and len(past_key_values) > self.layer_idx:
+            last_state = past_key_values[self.layer_idx]
         if self.use_short_conv:
-            q = proj_then_conv1d(hidden_states, self.q_proj.weight, self.q_conv1d.weight, self.q_conv1d.bias)
-            k = proj_then_conv1d(hidden_states, self.k_proj.weight, self.k_conv1d.weight, self.k_conv1d.bias)
-            v = proj_then_conv1d(hidden_states, self.v_proj.weight, self.v_conv1d.weight, self.v_conv1d.bias)
+            conv_state_q = last_state[0] if last_state is not None else None
+            conv_state_k = last_state[1] if last_state is not None else None
+            conv_state_v = last_state[2] if last_state is not None else None
+            q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
+            k = self.k_conv1d(self.k_proj(hidden_states), attention_mask, conv_state_k)
+            v = self.v_conv1d(self.v_proj(hidden_states), attention_mask, conv_state_v)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
@@ -158,7 +163,6 @@ class ABCAttention(nn.Module):
         s = rearrange(self.s_proj(hidden_states), 'b t (h m) -> b h t m', h=self.num_heads)
         s = s.clamp_(self.clamp_min, self.clamp_max)
 
-        last_state = past_key_values[self.layer_idx] if use_cache else None
         o, last_state = chunk_abc(q, k, v, s, initial_state=last_state, output_final_state=use_cache)
         if past_key_values is not None and last_state is not None:
             past_key_values.update(last_state, self.layer_idx, q.shape[2])
@@ -173,15 +177,6 @@ class ABCAttention(nn.Module):
         o = self.o_proj(o)
 
         return o, None, past_key_values
-
-    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
-        param = next(self.parameters())
-        state = tuple()
-        if self.use_short_conv:
-            state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),)
-        state += (param.new_zeros(batch_size, self.num_heads, self.head_k_dim, self.num_slots),
-                  param.new_zeros(batch_size, self.num_heads, self.num_slots, self.head_v_dim))
-        return state
 
     def state_size(self, sequence_length: int = 2048):
         return self.num_heads * self.key_dim * self.head_v_dim

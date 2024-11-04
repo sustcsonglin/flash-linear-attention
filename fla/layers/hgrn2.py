@@ -101,17 +101,16 @@ class HGRN2Attention(nn.Module):
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
-        last_state = past_key_values[self.layer_idx] if use_cache else None
+        last_state = None
+        if past_key_values is not None and len(past_key_values) > self.layer_idx:
+            last_state = past_key_values[self.layer_idx]
         if self.use_short_conv:
-            conv_state_q = last_state[0] if use_cache else None
-            conv_state_f = last_state[1] if use_cache else None
-            conv_state_i = last_state[2] if use_cache else None
-            q = self.q_proj(hidden_states)
-            f = self.f_proj(hidden_states)
-            i = self.i_proj(hidden_states)
-            q = self.q_conv1d(q, attention_mask, conv_state_q)
-            f = self.f_conv1d(f, attention_mask, conv_state_f)
-            i = self.i_conv1d(i, attention_mask, conv_state_i)
+            conv_state_q = last_state[0] if last_state is not None else None
+            conv_state_f = last_state[1] if last_state is not None else None
+            conv_state_i = last_state[2] if last_state is not None else None
+            q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
+            f = self.f_conv1d(self.f_proj(hidden_states), attention_mask, conv_state_f)
+            i = self.i_conv1d(self.i_proj(hidden_states), attention_mask, conv_state_i)
         else:
             q = self.q_proj(hidden_states)
             f = self.f_proj(hidden_states)
@@ -133,9 +132,9 @@ class HGRN2Attention(nn.Module):
             g = lower_bound + (1 - lower_bound) * f.sigmoid()
             k, g = 1 - g, g.log()
 
-        q, k, i, g = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k.to(i), i, g))
+        q, k, i, g = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (q, k.to(i), i, g))
 
-        recurrent_state = last_state[-1] if use_cache else None
+        recurrent_state = last_state[-1] if last_state is not None else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_gla(q, k, i, g, initial_state=recurrent_state, output_final_state=use_cache)
         elif mode == 'fused_chunk':
@@ -152,20 +151,10 @@ class HGRN2Attention(nn.Module):
                 last_state = (recurrent_state,)
             past_key_values.update(last_state, self.layer_idx, q.shape[2])
 
-        o = self.g_norm(rearrange(o, 'b h l d -> b l (h d)'))
+        o = self.g_norm(rearrange(o, 'b h t d -> b t (h d)'))
         o = self.o_proj(o)
 
         return o, None, past_key_values
-
-    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
-        param = next(self.parameters())
-        state = tuple()
-        if self.use_short_conv:
-            state += (param.new_zeros(batch_size, self.forget_dim, self.conv_size),
-                      param.new_zeros(batch_size, self.forget_dim, self.conv_size),
-                      param.new_zeros(batch_size, self.input_dim, self.conv_size))
-        state += (param.new_zeros(batch_size, self.num_heads, self.head_f_dim, self.head_i_dim),)
-        return state
 
     def state_size(self, **kwargs) -> int:
         state_size = self.forget_dim * self.head_i_dim

@@ -78,11 +78,6 @@ class RWKV6FeedForward(nn.Module):
             state[self.layer_idx][-1] = x[:, -1]
         return receptance.sigmoid() * value, state
 
-    def init_state(self, batch_size: Optional[int] = None) -> Tuple[torch.Tensor]:
-        param = next(self.parameters())
-        state = [param.new_zeros(batch_size, self.hidden_size)]
-        return state
-
 
 class RWKV6Block(nn.Module):
     def __init__(self, config: RWKV6Config, layer_idx: int):
@@ -141,14 +136,6 @@ class RWKV6Block(nn.Module):
         outputs = (hidden_states, attentions, past_key_values)
 
         return outputs
-
-    def init_state(self, **kwargs) -> Tuple[torch.Tensor]:
-        state = []
-        if callable(getattr(self.attn, 'init_state', None)):
-            state += self.attn.init_state(**kwargs)
-        if callable(getattr(self.ffn, 'init_state', None)):
-            state += self.ffn.init_state(**kwargs)
-        return state
 
 
 class RWKV6PreTrainedModel(PreTrainedModel):
@@ -239,29 +226,19 @@ class RWKV6Model(RWKV6PreTrainedModel):
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
-        elif input_ids is not None:
-            batch_size = input_ids.shape[0]
-        elif inputs_embeds is not None:
-            batch_size = inputs_embeds.shape[0]
-        else:
+        if input_ids is None and inputs_embeds is None:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if inputs_embeds is None:
             inputs_embeds = self.embeddings(input_ids)
         hidden_states = inputs_embeds
 
-        if use_cache:
-            if past_key_values is None:
-                past_key_values = [layer.init_state(batch_size=batch_size) for layer in self.layers]
-            if not isinstance(past_key_values, Cache):
-                past_key_values = Cache.from_legacy_cache(past_key_values)
+        if use_cache and not isinstance(past_key_values, Cache):
+            past_key_values = Cache.from_legacy_cache(past_key_values)
 
-        if self.gradient_checkpointing and self.training:
-            if use_cache:
-                logger.warning_once(
-                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
-                )
-                use_cache = False
+        if self.gradient_checkpointing and self.training and use_cache:
+            logger.warning_once("`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...")
+            use_cache = False
 
         all_hidden_states = () if output_hidden_states else None
         all_attns = () if output_attentions else None

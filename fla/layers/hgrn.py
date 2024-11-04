@@ -85,10 +85,12 @@ class HGRNAttention(nn.Module):
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
-        last_state = past_key_values[self.layer_idx] if use_cache else None
+        last_state = None
+        if past_key_values is not None and len(past_key_values) > self.layer_idx:
+            last_state = past_key_values[self.layer_idx]
         if self.use_short_conv:
-            conv_state_i = last_state[0] if use_cache else None
-            conv_state_f = last_state[1] if use_cache else None
+            conv_state_i = last_state[0] if last_state is not None else None
+            conv_state_f = last_state[1] if last_state is not None else None
             i = self.i_conv1d(self.i_proj(hidden_states), attention_mask, conv_state_i)
             f = self.f_conv1d(self.f_proj(hidden_states), attention_mask, conv_state_f)
         else:
@@ -106,7 +108,7 @@ class HGRNAttention(nn.Module):
         if attention_mask is not None:
             i = i.mul_(attention_mask.unsqueeze(-1))
 
-        recurrent_state = last_state[-1] if use_cache else None
+        recurrent_state = last_state[-1] if last_state is not None else None
         if mode == 'chunk':
             o, recurrent_state = chunk_hgrn(i, f, initial_state=recurrent_state, output_final_state=use_cache)
         elif mode == 'fused_recurrent':
@@ -125,16 +127,6 @@ class HGRNAttention(nn.Module):
         o = self.o_proj(o)
 
         return o, None, past_key_values
-
-    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
-        param = next(self.parameters())
-        state = tuple()
-        if self.use_short_conv:
-            state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),
-                      param.new_zeros(batch_size, self.hidden_size, self.conv_size),
-                      param.new_zeros(batch_size, self.hidden_size, self.conv_size))
-        state += (param.new_zeros(batch_size, self.hidden_size),)
-        return state
 
     def state_size(self, **kwargs) -> int:
         state_size = self.hidden_size

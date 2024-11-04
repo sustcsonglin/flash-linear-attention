@@ -104,7 +104,9 @@ class RWKV6Attention(nn.Module):
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
-        last_state = past_key_values[self.layer_idx] if use_cache else None
+        last_state = None
+        if past_key_values is not None and len(past_key_values) > self.layer_idx:
+            last_state = past_key_values[self.layer_idx]
 
         if attention_mask is not None:
             hidden_states = hidden_states.mul_(attention_mask.unsqueeze(-1))
@@ -133,7 +135,7 @@ class RWKV6Attention(nn.Module):
         w = -torch.exp(w)
         u = self.bonus
 
-        recurrent_state = last_state[1] if use_cache else None
+        recurrent_state = last_state[1] if last_state is not None else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_rwkv6(r, k, v, w, u,
                                                        scale=1.,
@@ -154,16 +156,6 @@ class RWKV6Attention(nn.Module):
         o = self.o_proj(o)
 
         return o, None, past_key_values
-
-    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
-        param = next(self.parameters())
-        state = [param.new_zeros(batch_size, self.hidden_size),
-                 param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim)]
-        return state
-
-    def state_size(self, **kwargs) -> int:
-        state_size = self.key_dim * self.head_v_dim
-        return state_size
 
 
 class LoRA(nn.Module):

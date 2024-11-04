@@ -160,17 +160,16 @@ class MultiScaleRetention(nn.Module):
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
-        last_state = past_key_values[self.layer_idx] if use_cache else None
+        last_state = None
+        if past_key_values is not None and len(past_key_values) > self.layer_idx:
+            last_state = past_key_values[self.layer_idx]
         if self.use_short_conv:
-            conv_state_q = last_state[0] if use_cache else None
-            conv_state_k = last_state[1] if use_cache else None
-            conv_state_v = last_state[2] if use_cache else None
-            q = self.q_proj(hidden_states)
-            k = self.k_proj(hidden_states)
-            v = self.v_proj(hidden_states)
-            q = self.q_conv1d(q, attention_mask, conv_state_q)
-            k = self.k_conv1d(k, attention_mask, conv_state_k)
-            v = self.v_conv1d(v, attention_mask, conv_state_v)
+            conv_state_q = last_state[0] if last_state is not None else None
+            conv_state_k = last_state[1] if last_state is not None else None
+            conv_state_v = last_state[2] if last_state is not None else None
+            q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
+            k = self.k_conv1d(self.k_proj(hidden_states), attention_mask, conv_state_k)
+            v = self.v_conv1d(self.v_proj(hidden_states), attention_mask, conv_state_v)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
@@ -202,13 +201,13 @@ class MultiScaleRetention(nn.Module):
         else:
             k, v = rearrange(k, 'b t h d -> b h t d'), rearrange(v, 'b t (h d) -> b h t d', h=self.num_kv_heads)
 
-        state = last_state[-1] if use_cache else None
+        state = last_state[-1] if last_state is not None else None
         if mode == 'chunk':
             o, recurrent_state = chunk_retention(q, k, v, initial_state=state, output_final_state=use_cache)
         elif mode == 'fused_chunk':
             o, recurrent_state = fused_chunk_retention(q, k, v, initial_state=state, output_final_state=use_cache)
         elif mode == 'parallel':
-            o, recurrent_state = parallel_retention(q, k, v, initial_state=state, output_final_state=use_cache)
+            o, recurrent_state = parallel_retention(q, k, v)
         elif mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_retention(q, k, v, initial_state=state, output_final_state=use_cache)
         else:
@@ -236,16 +235,6 @@ class MultiScaleRetention(nn.Module):
         o = self.o_proj(o)
 
         return o, None, past_key_values
-
-    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
-        param = next(self.parameters())
-        state = tuple()
-        if self.use_short_conv:
-            state += (param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                      param.new_zeros(batch_size, self.key_dim, self.conv_size),
-                      param.new_zeros(batch_size, self.value_dim, self.conv_size))
-        state += (param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim),)
-        return state
 
     def state_size(self, **kwargs) -> int:
         state_size = self.key_dim * self.head_v_dim
