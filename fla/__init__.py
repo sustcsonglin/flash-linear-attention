@@ -11,8 +11,6 @@ from fla.models import (ABCForCausalLM, ABCModel, DeltaNetForCausalLM,
                         LinearAttentionModel, RetNetForCausalLM, RetNetModel,
                         RWKV6ForCausalLM, RWKV6Model, TransformerForCausalLM,
                         TransformerModel)
-from fla.ops import (chunk_gla, chunk_retention, fused_chunk_based,
-                     fused_chunk_gla, fused_chunk_retention)
 
 __all__ = [
     'ABCAttention',
