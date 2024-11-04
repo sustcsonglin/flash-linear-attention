@@ -130,10 +130,12 @@ class ABCAttention(nn.Module):
         last_state = None
         if past_key_values is not None and len(past_key_values) > self.layer_idx:
             last_state = past_key_values[self.layer_idx]
+
         if self.use_short_conv:
-            conv_state_q = last_state[0] if last_state is not None else None
-            conv_state_k = last_state[1] if last_state is not None else None
-            conv_state_v = last_state[2] if last_state is not None else None
+            if last_state is not None:
+                conv_state_q, conv_state_k, conv_state_v = last_state['conv_state']
+            else:
+                conv_state_q, conv_state_k, conv_state_v = None, None, None
             q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
             k = self.k_conv1d(self.k_proj(hidden_states), attention_mask, conv_state_k)
             v = self.v_conv1d(self.v_proj(hidden_states), attention_mask, conv_state_v)
@@ -144,6 +146,9 @@ class ABCAttention(nn.Module):
 
         if self.use_input_gate:
             q, k, v = map(lambda x: swish(x), (q, k, v))
+        # dealing with left-padding
+        if attention_mask is not None:
+            v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
 
         if self.use_rope:
             q = rearrange(q, '... (h d) -> ... h d', h=self.num_heads)
@@ -152,20 +157,26 @@ class ABCAttention(nn.Module):
             if past_key_values is not None:
                 seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
             q, k = self.rotary(q, k, seqlen_offset)
-            q = rearrange(q, 'b n h d -> b h n d', h=self.num_heads)
-            k = rearrange(k, 'b n h d -> b h n d', h=self.num_heads)
+            q = rearrange(q, 'b t h d -> b h t d', h=self.num_heads)
+            k = rearrange(k, 'b t h d -> b h t d', h=self.num_heads)
         else:
-            q = rearrange(q, 'b n (h d) -> b h n d', h=self.num_heads)
-            k = rearrange(k, 'b n (h d) -> b h n d', h=self.num_heads)
-        v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_heads)
+            q = rearrange(q, 'b t (h d) -> b h t d', h=self.num_heads)
+            k = rearrange(k, 'b t (h d) -> b h t d', h=self.num_heads)
+        v = rearrange(v, 'b t (h d) -> b h t d', h=self.num_heads)
 
         # [batch_size, n_heads, seq_len, num_slots]
         s = rearrange(self.s_proj(hidden_states), 'b t (h m) -> b h t m', h=self.num_heads)
         s = s.clamp_(self.clamp_min, self.clamp_max)
 
-        o, last_state = chunk_abc(q, k, v, s, initial_state=last_state, output_final_state=use_cache)
-        if past_key_values is not None and last_state is not None:
-            past_key_values.update(last_state, self.layer_idx, q.shape[2])
+        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
+        o, recurrent_state = chunk_abc(q, k, v, s, initial_state=recurrent_state, output_final_state=use_cache)
+        if past_key_values is not None:
+            past_key_values.update(
+                recurrent_state=recurrent_state,
+                conv_state=(conv_state_q, conv_state_k, conv_state_v) if self.use_short_conv else None,
+                layer_idx=self.layer_idx,
+                offset=q.shape[2]
+            )
 
         o = rearrange(o, 'b h t d -> b t h d')
         if self.use_norm and not self.use_output_gate:

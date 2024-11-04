@@ -20,10 +20,11 @@ class Cache(transformers.cache_utils.Cache):
         seen_tokens: int = 0
     ) -> Cache:
 
-        self.states: List[torch.Tensor] = []
+        self.states: List[Dict[str, Any]] = []
+
         self._seen_tokens = seen_tokens  # Used in `generate` to keep tally of how many tokens the cache has seen
 
-    def __getitem__(self, layer_idx: int) -> torch.Tensor:
+    def __getitem__(self, layer_idx: int) -> Dict[str, Any]:
         if layer_idx < len(self):
             return self.states[layer_idx]
         else:
@@ -38,38 +39,79 @@ class Cache(transformers.cache_utils.Cache):
 
     def update(
         self,
-        state: Tuple[torch.Tensor],
-        layer_idx: int,
+        recurrent_state: torch.Tensor = None,
+        attn_state: Tuple[torch.Tensor, torch.Tensor] = None,
+        conv_state: Tuple[torch.Tensor] = None,
+        ffn_state: torch.Tensor = None,
+        layer_idx: int = 0,
         offset: Optional[int] = 1,
         cache_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[torch.Tensor]:
+    ) -> Dict[str, Any]:
         """
-        Updates the cache with the new `state` for the layer `layer_idx`.
+        Updates the cache with the new `recurrent_state`/`attn_state`/`conv_state` for the layer `layer_idx`.
 
-        Parameters:
-            state (`Tuple[torch.Tensor]`):
-                The new state to cache.
-            layer_idx (`int`):
+        Args:
+            recurrent_state (`torch.Tensor`, `optional`):
+                The new recurrent state to cache.
+            attn_state (`Tuple[torch.Tensor, torch.Tensor]`, `optional`):
+                The new attention key/value states to cache.
+            conv_state (`Tuple[torch.Tensor]`, `optional`):
+                The new convolution state to cache.
+            layer_idx (`int`, defaults to 0):
                 The index of the layer to cache the states for.
-            offset (`int`):
-                The offset of current fed tokens.
+            offset (`int`, `optional`, defaults to 1):
+                The number of new tokens being processed.
             cache_kwargs (`Dict[str, Any]`, `optional`):
                 Additional arguments for the cache subclass.
 
         Return:
-            The updated state.
+            Dictionary of the updated state.
         """
 
-        if isinstance(state, torch.Tensor):
-            state = [state,]
+        # Update the number of seen tokens
+        if layer_idx == 0:
+            self._seen_tokens += offset
+
+        if attn_state is not None:
+            input_size = attn_state[0].shape[-2]
+            window_size = cache_kwargs.get('window_size', None)
+            if not isinstance(attn_state, Tuple) or len(attn_state) != 2:
+                raise ValueError("`attn_state` must be a tuple of two tensors for key/value states")
         if len(self.states) <= layer_idx:
-            self.states.append(list(state))
+            if attn_state is not None:
+                if window_size is not None and input_size > window_size:
+                    attn_state = (attn_state[0][..., -window_size:, :].contiguous(),
+                                  attn_state[1][..., -window_size:, :].contiguous())
+            state = dict(
+                recurrent_state=recurrent_state,
+                attn_state=attn_state,
+                conv_state=conv_state,
+                ffn_state=ffn_state
+            )
+            self.states.append(state)
         else:
-            for i, s in enumerate(state):
-                self.states[layer_idx][i] = s
-            # update the number of seen tokens once we achieve the last layer
-            if layer_idx == len(self) - 1:
-                self._seen_tokens += offset
+            state = self.states[layer_idx]
+            if recurrent_state is not None:
+                state['recurrent_state'] = recurrent_state
+            if attn_state is not None:
+                key_state, value_state = state['attn_state']
+                if window_size is not None and key_state.shape[-2] == window_size:
+                    # DO NOT allocate new memory if the cache is full
+                    # roll the key/value states to the left by `input_size`
+                    key_state = key_state.roll(-input_size, -2)
+                    value_state = value_state.roll(-input_size, -2)
+                    # replace the last `input_size` tokens with the new key/value states
+                    key_state[..., -input_size:, :] = attn_state[0]
+                    value_state[..., -input_size:, :] = attn_state[1]
+                    attn_state = (key_state, value_state)
+                else:
+                    attn_state = (torch.cat([key_state, attn_state[0]], -2),
+                                  torch.cat([value_state, attn_state[1]], -2),)
+                state['attn_state'] = attn_state
+            if conv_state is not None:
+                state['conv_state'] = conv_state
+            if ffn_state is not None:
+                state['ffn_state'] = ffn_state
 
         return state
 
@@ -83,19 +125,13 @@ class Cache(transformers.cache_utils.Cache):
         """Returns the maximum sequence length of the cached states. Cache does not have a maximum length."""
         return None
 
-    def reorder_cache(self, beam_idx: torch.LongTensor):
-        """Reorders the cache for beam search, given the selected beam indices."""
-        for layer_idx in range(len(self.states)):
-            device = self.states[layer_idx].device
-            self.states[layer_idx] = self.states[layer_idx].index_select(0, beam_idx.to(device))
-
-    def to_legacy_cache(self) -> Tuple[torch.Tensor]:
+    def to_legacy_cache(self) -> Tuple:
         return tuple(self.states)
 
     @classmethod
     def from_legacy_cache(
         cls,
-        past_key_values: Optional[Tuple[torch.Tensor]] = None,
+        past_key_values: Optional[Tuple] = None,
         seen_tokens: int = 0
     ) -> Cache:
         """Converts a cache in the legacy cache format into an equivalent `Cache`."""
@@ -103,5 +139,5 @@ class Cache(transformers.cache_utils.Cache):
         cache = cls(seen_tokens)
         if past_key_values is not None:
             for layer_idx in range(len(past_key_values)):
-                cache.update(past_key_values[layer_idx], layer_idx)
+                cache.states.append(past_key_values[layer_idx])
         return cache

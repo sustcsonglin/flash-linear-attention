@@ -151,14 +151,11 @@ class DeltaNet(nn.Module):
         if past_key_values is not None and len(past_key_values) > self.layer_idx:
             last_state = past_key_values[self.layer_idx]
 
-        if attention_mask is not None:
-            if attention_mask.shape[-1] != hidden_states.shape[-2]:
-                attention_mask = attention_mask[:, -1:]
-
         if self.use_short_conv:
-            conv_state_q = last_state[0] if last_state is not None else None
-            conv_state_k = last_state[1] if last_state is not None else None
-            conv_state_v = last_state[2] if last_state is not None else None
+            if last_state is not None:
+                conv_state_q, conv_state_k, conv_state_v = last_state['conv_state']
+            else:
+                conv_state_q, conv_state_k, conv_state_v = None, None, None
             q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
             k = self.k_conv1d(self.k_proj(hidden_states), attention_mask, conv_state_k)
             v = self.v_conv1d(self.v_proj(hidden_states), attention_mask, conv_state_v)
@@ -169,7 +166,7 @@ class DeltaNet(nn.Module):
 
         # dealing with left-padding
         if attention_mask is not None:
-            v = v.mul_(attention_mask.unsqueeze(-1))
+            v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
 
         q, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (q, k, v))
         if self.qk_activation != 'silu':
@@ -195,14 +192,14 @@ class DeltaNet(nn.Module):
         else:
             beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
 
-        state = last_state[-1] if last_state is not None else None
+        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_delta_rule(
                 q=q,
                 k=k,
                 v=v,
                 beta=beta,
-                initial_state=state,
+                initial_state=recurrent_state,
                 output_final_state=use_cache
             )
         elif mode == 'fused_chunk':
@@ -212,7 +209,7 @@ class DeltaNet(nn.Module):
                 v=v,
                 beta=beta,
                 BT=self.chunk_size,
-                initial_state=state,
+                initial_state=recurrent_state,
                 output_final_state=use_cache
             )
         elif mode == 'chunk':
@@ -222,18 +219,19 @@ class DeltaNet(nn.Module):
                 v=v,
                 beta=beta,
                 BT=self.chunk_size,
-                initial_state=state,
+                initial_state=recurrent_state,
                 output_final_state=use_cache
             )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
-            if self.use_short_conv:
-                state = (conv_state_q, conv_state_k, conv_state_v, recurrent_state)
-            else:
-                state = (recurrent_state,)
-            past_key_values.update(state, self.layer_idx)
+            past_key_values.update(
+                recurrent_state=recurrent_state,
+                conv_state=(conv_state_q, conv_state_k, conv_state_v) if self.use_short_conv else None,
+                layer_idx=self.layer_idx,
+                offset=q.shape[2]
+            )
 
         o = rearrange(o, 'b h t d -> b t h d')
         if self.use_gate:

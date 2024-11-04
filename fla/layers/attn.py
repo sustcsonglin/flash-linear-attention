@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import warnings
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from einops import rearrange
-from transformers.cache_utils import Cache
 from transformers.utils import logging
 
 from fla.modules import RotaryEmbedding
+
+if TYPE_CHECKING:
+    from fla.models.utils import Cache
 
 try:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -89,7 +91,7 @@ class Attention(nn.Module):
         k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_kv_heads)
         v = rearrange(self.v_proj(hidden_states), '... (h d) -> ... h d', h=self.num_kv_heads)
 
-        seqlen_offset, max_seqlen = 0, q.shape[1]
+        seqlen_offset, max_seqlen = 0, q_len
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
             max_seqlen = q.shape[1] + seqlen_offset
@@ -104,7 +106,12 @@ class Attention(nn.Module):
         q, k = self.rotary(q, k, seqlen_offset, max_seqlen)
 
         if past_key_values is not None:
-            k, v = past_key_values.update(k.flatten(-2, -1), v.flatten(-2, -1), self.layer_idx)
+            k, v = past_key_values.update(
+                attn_state=(k.flatten(-2, -1), v.flatten(-2, -1)),
+                layer_idx=self.layer_idx,
+                offset=q_len,
+                cache_kwargs=dict(window_size=self.window_size)
+            )['attn_state']
             k = rearrange(k, '... (h d) -> ... h d', h=self.num_kv_heads)
             v = rearrange(v, '... (h d) -> ... h d', h=self.num_kv_heads)
 

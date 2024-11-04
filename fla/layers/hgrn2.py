@@ -11,7 +11,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-
 from fla.modules import RMSNorm, ShortConvolution
 from fla.modules.activations import swish
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
@@ -104,10 +103,12 @@ class HGRN2Attention(nn.Module):
         last_state = None
         if past_key_values is not None and len(past_key_values) > self.layer_idx:
             last_state = past_key_values[self.layer_idx]
+
         if self.use_short_conv:
-            conv_state_q = last_state[0] if last_state is not None else None
-            conv_state_f = last_state[1] if last_state is not None else None
-            conv_state_i = last_state[2] if last_state is not None else None
+            if last_state is not None:
+                conv_state_q, conv_state_f, conv_state_i = last_state['conv_state']
+            else:
+                conv_state_q, conv_state_f, conv_state_i = None, None, None
             q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
             f = self.f_conv1d(self.f_proj(hidden_states), attention_mask, conv_state_f)
             i = self.i_conv1d(self.i_proj(hidden_states), attention_mask, conv_state_i)
@@ -118,7 +119,7 @@ class HGRN2Attention(nn.Module):
 
         # dealing with left-padding
         if attention_mask is not None:
-            i = i.mul_(attention_mask.unsqueeze(-1))
+            i = i.mul_(attention_mask[:, -i.shape[-2]:, None])
 
         q = swish(q)
 
@@ -134,9 +135,16 @@ class HGRN2Attention(nn.Module):
 
         q, k, i, g = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (q, k.to(i), i, g))
 
-        recurrent_state = last_state[-1] if last_state is not None else None
+        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_gla(q, k, i, g, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_gla(
+                q=q,
+                k=k,
+                v=i,
+                gk=g,
+                initial_state=recurrent_state,
+                output_final_state=use_cache
+            )
         elif mode == 'fused_chunk':
             o, recurrent_state = fused_chunk_gla(q, k, i, g, initial_state=recurrent_state, output_final_state=use_cache)
         elif mode == 'chunk':
@@ -145,11 +153,12 @@ class HGRN2Attention(nn.Module):
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
-            if self.use_short_conv:
-                last_state = (conv_state_q, conv_state_f, conv_state_i, recurrent_state)
-            else:
-                last_state = (recurrent_state,)
-            past_key_values.update(last_state, self.layer_idx, q.shape[2])
+            past_key_values.update(
+                recurrent_state=recurrent_state,
+                conv_state=(conv_state_q, conv_state_f, conv_state_i) if self.use_short_conv else None,
+                layer_idx=self.layer_idx,
+                offset=q.shape[2]
+            )
 
         o = self.g_norm(rearrange(o, 'b h t d -> b t (h d)'))
         o = self.o_proj(o)

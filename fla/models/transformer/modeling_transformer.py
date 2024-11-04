@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast)
@@ -19,6 +18,7 @@ from transformers.utils import logging
 
 from fla.layers.attn import Attention
 from fla.models.transformer.configuration_transformer import TransformerConfig
+from fla.models.utils import Cache
 from fla.modules import (FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss,
                          RMSNorm)
 from fla.modules.activations import swiglu_linear
@@ -208,7 +208,7 @@ class TransformerModel(TransformerPreTrainedModel):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if use_cache and not isinstance(past_key_values, Cache):
-            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+            past_key_values = Cache.from_legacy_cache(past_key_values)
 
         if inputs_embeds is None:
             inputs_embeds = self.embeddings(input_ids)

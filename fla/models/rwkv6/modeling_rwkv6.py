@@ -62,9 +62,9 @@ class RWKV6FeedForward(nn.Module):
         state: Optional[Cache] = None
     ) -> torch.Tensor:
         if attention_mask is not None:
-            x = x.mul_(attention_mask.unsqueeze(-1))
+            x = x.mul_(attention_mask[:, -x.shape[-2]:, None])
         if x.shape[1] == 1 and state is not None:
-            shifted = state[self.layer_idx][-1].unsqueeze(1)
+            shifted = state[self.layer_idx]['ffn_state'].unsqueeze(1)
         else:
             shifted = self.time_shift(x)
             if state is not None:
@@ -75,7 +75,8 @@ class RWKV6FeedForward(nn.Module):
         receptance = self.receptance(x, delta)
 
         if state is not None:
-            state[self.layer_idx][-1] = x[:, -1]
+            # no need to update the offset twice
+            state.update(ffn_state=x[:, -1], layer_idx=self.layer_idx, offset=0)
         return receptance.sigmoid() * value, state
 
 
@@ -341,9 +342,7 @@ class RWKV6ForCausalLM(RWKV6PreTrainedModel, GenerationMixin):
     ):
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
-            if not isinstance(past_key_values, Cache):
-                past_key_values = Cache.from_legacy_cache(past_key_values, input_ids.shape[1] - 1)
-            input_ids, attention_mask = input_ids[:, -1:], attention_mask[:, -1:]
+            input_ids = input_ids[:, -1:]
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
             model_inputs = {'inputs_embeds': inputs_embeds}

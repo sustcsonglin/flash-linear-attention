@@ -157,10 +157,12 @@ class SimpleGatedLinearAttention(nn.Module):
         last_state = None
         if past_key_values is not None and len(past_key_values) > self.layer_idx:
             last_state = past_key_values[self.layer_idx]
+
         if self.use_short_conv:
-            conv_state_q = last_state[0] if last_state is not None else None
-            conv_state_k = last_state[1] if last_state is not None else None
-            conv_state_v = last_state[2] if last_state is not None else None
+            if last_state is not None:
+                conv_state_q, conv_state_k, conv_state_v = last_state['conv_state']
+            else:
+                conv_state_q, conv_state_k, conv_state_v = None, None, None
             q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
             k = self.k_conv1d(self.k_proj(hidden_states), attention_mask, conv_state_k)
             v = self.v_conv1d(self.v_proj(hidden_states), attention_mask, conv_state_v)
@@ -168,45 +170,58 @@ class SimpleGatedLinearAttention(nn.Module):
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
-        gk = rearrange(self.gk_proj(hidden_states), 'b l h -> b h l')
+        gk = rearrange(self.gk_proj(hidden_states), 'b t h -> b h t')
 
         if self.feature_map_fn is not None:
             q, k = map(self.feature_map_fn, (q, k))
         # dealing with left-padding
         if attention_mask is not None:
-            v = v.mul_(attention_mask.unsqueeze(-1))
-        q = rearrange(q, 'b l (h d) -> b h l d', h=self.num_heads)
+            v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
+        q = rearrange(q, 'b t (h d) -> b h t d', h=self.num_heads)
         if self.num_kv_groups > 1:
-            k, v = (repeat(x, 'b l (h d) -> b (h g) l d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v))
+            k, v = (repeat(x, 'b t (h d) -> b (h g) t d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v))
         else:
-            k, v = (rearrange(x, 'b l (h d) -> b h l d', h=self.num_kv_heads) for x in (k, v))
+            k, v = (rearrange(x, 'b t (h d) -> b h t d', h=self.num_kv_heads) for x in (k, v))
         gk = F.logsigmoid(gk) / self.gate_logit_normalizer
 
-        recurrent_state = last_state[-1] if last_state is not None else None
+        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'chunk':
-            o, recurrent_state = chunk_simple_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = chunk_simple_gla(
+                q=q,
+                k=k,
+                v=v,
+                gk=gk,
+                initial_state=recurrent_state,
+                output_final_state=use_cache
+            )
         elif mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_simple_gla(q, k, v, gk,
-                                                            initial_state=recurrent_state,
-                                                            output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_simple_gla(
+                q=q,
+                k=k,
+                v=v,
+                gk=gk,
+                initial_state=recurrent_state,
+                output_final_state=use_cache
+            )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
-            if self.use_short_conv:
-                last_state = (conv_state_q, conv_state_k, conv_state_v, recurrent_state)
-            else:
-                last_state = (recurrent_state,)
-            past_key_values.update(last_state, self.layer_idx, q.shape[2])
+            past_key_values.update(
+                recurrent_state=recurrent_state,
+                conv_state=(conv_state_q, conv_state_k, conv_state_v) if self.use_short_conv else None,
+                layer_idx=self.layer_idx,
+                offset=q.shape[2]
+            )
 
-        o = rearrange(o, 'b h l d -> b l h d')
+        o = rearrange(o, 'b h t d -> b t h d')
         g = self.g_proj(hidden_states)
         if self.fuse_norm_and_gate:
-            g = rearrange(g, 'b l (h d) -> b l h d', h=self.num_heads)
+            g = rearrange(g, 'b t (h d) -> b t h d', h=self.num_heads)
             o = self.g_norm_swish_gate(o, g)
-            o = rearrange(o, 'b l h d -> b l (h d)')
+            o = rearrange(o, 'b t h d -> b t (h d)')
         else:
-            o = rearrange(self.g_norm(o), 'b l h d -> b l (h d)')
+            o = rearrange(self.g_norm(o), 'b t h d -> b t (h d)')
             o = o * self.gate_fn(g)
         o = self.o_proj(o)
 

@@ -109,9 +109,9 @@ class RWKV6Attention(nn.Module):
             last_state = past_key_values[self.layer_idx]
 
         if attention_mask is not None:
-            hidden_states = hidden_states.mul_(attention_mask.unsqueeze(-1))
+            hidden_states = hidden_states.mul_(attention_mask[:, -hidden_states.shape[-2]:, None])
         if hidden_states.shape[1] == 1 and last_state is not None:
-            shifted = last_state[0].unsqueeze(1)
+            shifted = last_state['conv_state'].unsqueeze(1)
         else:
             shifted = self.time_shift(hidden_states)
             if last_state is not None:
@@ -119,7 +119,7 @@ class RWKV6Attention(nn.Module):
 
         delta = shifted - hidden_states
         x = self.x_proj[0](hidden_states, delta).view(batch_size, seq_len, -1, self.proj_low_rank_dim)
-        x = torch.einsum('b l n r, h n r-> b l n h', self.x_proj[1](x), self.x_proj[2].weight.view(hidden_size, 5, -1))
+        x = torch.einsum('b t n r, h n r-> b t n h', self.x_proj[1](x), self.x_proj[2].weight.view(hidden_size, 5, -1))
 
         r, w, k, v, g = x.add_(self.x_bias).unbind(-2)
         r = self.r_proj(hidden_states, r, delta)
@@ -130,12 +130,12 @@ class RWKV6Attention(nn.Module):
 
         # dealing with left-padding
         if attention_mask is not None:
-            v = v.mul_(attention_mask.unsqueeze(-1))
-        r, w, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (r, w, k, v))
+            v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
+        r, w, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (r, w, k, v))
         w = -torch.exp(w)
         u = self.bonus
 
-        recurrent_state = last_state[1] if last_state is not None else None
+        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_rwkv6(r, k, v, w, u,
                                                        scale=1.,
@@ -150,9 +150,14 @@ class RWKV6Attention(nn.Module):
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
-            past_key_values.update((hidden_states[:, -1], recurrent_state), self.layer_idx, r.shape[2])
+            past_key_values.update(
+                recurrent_state=recurrent_state,
+                conv_state=hidden_states[:, -1],
+                layer_idx=self.layer_idx,
+                offset=r.shape[2]
+            )
 
-        o = self.g_norm(rearrange(o, 'b h l d -> b l (h d)')) * self.gate_fn(g)
+        o = self.g_norm(rearrange(o, 'b h t d -> b t (h d)')) * self.gate_fn(g)
         o = self.o_proj(o)
 
         return o, None, past_key_values

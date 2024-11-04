@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-
 from fla.modules import RMSNorm, RMSNormLinear, ShortConvolution
 from fla.modules.activations import swish
 from fla.modules.feature_map import (ReLUFeatureMap, SwishFeatureMap,
@@ -141,10 +140,12 @@ class GatedSlotAttention(nn.Module):
         last_state = None
         if past_key_values is not None and len(past_key_values) > self.layer_idx:
             last_state = past_key_values[self.layer_idx]
+
         if self.use_short_conv:
-            conv_state_q = last_state[0] if last_state is not None else None
-            conv_state_k = last_state[1] if last_state is not None else None
-            conv_state_v = last_state[2] if last_state is not None else None
+            if last_state is not None:
+                conv_state_q, conv_state_k, conv_state_v = last_state['conv_state']
+            else:
+                conv_state_q, conv_state_k, conv_state_v = None, None, None
             q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
             k = self.k_conv1d(self.k_proj(hidden_states), attention_mask, conv_state_k)
             v = self.v_conv1d(self.v_proj(hidden_states), attention_mask, conv_state_v)
@@ -154,10 +155,10 @@ class GatedSlotAttention(nn.Module):
             v = self.v_proj(hidden_states)
         f = self.f_proj(hidden_states)
 
-        q = rearrange(q, 'b n (h d) -> b h n d', h=self.num_heads)
-        k = rearrange(k, 'b n (h d) -> b h n d', h=self.num_kv_heads)
-        v = rearrange(v, 'b n (h d) -> b h n d', h=self.num_kv_heads)
-        f = rearrange(f, 'b n (h m) -> b h n m', h=self.num_kv_heads)
+        q = rearrange(q, 'b t (h d) -> b h t d', h=self.num_heads)
+        k = rearrange(k, 'b t (h d) -> b h t d', h=self.num_kv_heads)
+        v = rearrange(v, 'b t (h d) -> b h t d', h=self.num_kv_heads)
+        f = rearrange(f, 'b t (h m) -> b h t m', h=self.num_kv_heads)
 
         if self.feature_map is not None:
             q, k = map(lambda x: self.feature_map(x), (q, k))
@@ -167,29 +168,42 @@ class GatedSlotAttention(nn.Module):
         s = (1 - f.exp()).to(f.dtype)
         # dealing with left-padding
         if attention_mask is not None:
-            s = s.mul_(attention_mask.view(attention_mask.shape[0], 1, -1, 1))
-            v = v.mul_(attention_mask.view(attention_mask.shape[0], 1, -1, 1))
+            s = s.mul_(attention_mask[:, None, -s.shape[-2]:, None])
+            v = v.mul_(attention_mask[:, None, -v.shape[-2]:, None])
 
-        recurrent_state = last_state[-2:] if last_state is not None else None
+        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_gsa(q, k, v, s, f,
-                                                     initial_state=recurrent_state,
-                                                     output_final_state=use_cache,
-                                                     scale=self.scale)
+            o, recurrent_state = fused_recurrent_gsa(
+                q=q,
+                k=k,
+                v=v,
+                s=s,
+                g=f,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                scale=self.scale
+            )
         elif mode == 'chunk':
-            o, recurrent_state = chunk_gsa(q, k, v, s, f,
-                                           initial_state=recurrent_state,
-                                           output_final_state=use_cache,
-                                           scale=self.scale)
+            o, recurrent_state = chunk_gsa(
+                q=q,
+                k=k,
+                v=v,
+                s=s,
+                g=f,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                scale=self.scale
+            )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
-            if self.use_short_conv:
-                last_state = (conv_state_q, conv_state_k, conv_state_v) + recurrent_state
-            else:
-                last_state = recurrent_state
-            past_key_values.update(last_state, self.layer_idx, q.shape[2])
+            past_key_values.update(
+                recurrent_state=recurrent_state,
+                conv_state=(conv_state_q, conv_state_k, conv_state_v) if self.use_short_conv else None,
+                layer_idx=self.layer_idx,
+                offset=q.shape[2]
+            )
 
         o = rearrange(o, 'b h t d -> b t (h d)')
         o = self.g_norm(swish(o), self.o_proj.weight, self.o_proj.bias)
