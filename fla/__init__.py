@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 
 from fla.layers import (ABCAttention, Attention, BasedLinearAttention,
-                        DeltaNet, GatedLinearAttention, HGRN2Attention,
-                        LinearAttention, MultiScaleRetention,
-                        ReBasedLinearAttention)
+                        DeltaNet, GatedLinearAttention, GatedSlotAttention,
+                        HGRN2Attention, HGRNAttention, LinearAttention,
+                        MultiScaleRetention, ReBasedLinearAttention)
 from fla.models import (ABCForCausalLM, ABCModel, DeltaNetForCausalLM,
                         DeltaNetModel, GLAForCausalLM, GLAModel,
-                        HGRN2ForCausalLM, HGRN2Model, HGRNForCausalLM,
-                        HGRNModel, LinearAttentionForCausalLM,
+                        GSAForCausalLM, GSAModel, HGRN2ForCausalLM, HGRN2Model,
+                        HGRNForCausalLM, LinearAttentionForCausalLM,
                         LinearAttentionModel, RetNetForCausalLM, RetNetModel,
                         RWKV6ForCausalLM, RWKV6Model, TransformerForCausalLM,
                         TransformerModel)
@@ -17,8 +17,10 @@ __all__ = [
     'Attention',
     'BasedLinearAttention',
     'DeltaNet',
+    'HGRNAttention',
     'HGRN2Attention',
     'GatedLinearAttention',
+    'GatedSlotAttention',
     'LinearAttention',
     'MultiScaleRetention',
     'ReBasedLinearAttention',
@@ -32,6 +34,8 @@ __all__ = [
     'HGRN2Model',
     'GLAForCausalLM',
     'GLAModel',
+    'GSAForCausalLM',
+    'GSAModel',
     'LinearAttentionForCausalLM',
     'LinearAttentionModel',
     'RetNetForCausalLM',
