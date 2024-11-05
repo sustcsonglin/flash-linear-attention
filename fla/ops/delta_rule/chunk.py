@@ -79,6 +79,8 @@ def fwd_prepare_dv(q, k, do, BT, scale):
         triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=16),
     ],
     key=["BT", "BK", "BV"],
 )
@@ -393,10 +395,18 @@ def chunk_fwd_h_fn(k, w, u, BT, initial_state, final_state):
 
     BK = triton.next_power_of_2(K)
     assert BK <= 256, "current kernel does not support head dimension larger than 256."
-    BV = 16 if BK > 128 else 32
-    BV = 64 if BK <= 64 else BV
-    BC = 16 if BK > 128 else 32
-    BC = 64 if BK <= 64 else BC
+    # H100 can have larger block size
+    if torch.cuda.get_device_capability()[0] >= 9:
+        BV = 64 
+        BC = 64 
+    #A 100
+    elif torch.cuda.get_device_capability() == (8, 0):
+        BV = 32 
+        BC = 64 
+    else:
+        BV = 32
+        BC = 64 if K <= 128 else 32
+
     BC = min(BT, BC)
     NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
     assert NK == 1, 'NK > 1 is not supported because it involves time-consuming synchronization'
@@ -421,10 +431,18 @@ def chunk_bwd_dhu_fn(q, k, w, dht, dh0, do, dv, BT, scale):
 
     BK = triton.next_power_of_2(K)
     assert BK <= 256, "current kernel does not support head dimension being larger than 256."
-    BV = 16 if BK > 128 else 32
-    BV = 64 if BK <= 64 else BV
-    BC = 16 if BK > 128 else 32
-    BC = 64 if BK <= 64 else BC
+    # H100
+    if torch.cuda.get_device_capability()[0] >= 9:
+        BV = 64 
+        BC = 64 
+    # A100
+    elif torch.cuda.get_device_capability() == (8, 0):
+        BV = 32 
+        BC = 64 if K <= 128 else 32
+    else:
+        BV = 32
+        BC = 64 if K <= 128 else 32
+
     BC = min(BT, BC)
     NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
     assert NK == 1, 'NK > 1 is not supported because it involves time-consuming synchronization'
@@ -473,7 +491,7 @@ def chunk_bwd_dqkw_fn(q, k, v_new, w, h, du, do, dh, BT, scale):
     NT = triton.cdiv(T, BT)
     grid = (NK, NT, B * H)
     dq = torch.empty_like(q)
-    dk = torch.empty_like(k, dtype=torch.float32)
+    dk = torch.empty_like(k)
     dw = torch.empty_like(w)
     chunk_delta_rule_bwd_kernel_dqkw[grid](
         q, k, v_new, w, h, do, dh, dq, dk, du, dw,
@@ -540,7 +558,6 @@ def chunk_delta_rule(
     v: torch.Tensor,
     beta: torch.Tensor,
     scale: float = None,
-    BT: int = 64,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
 ):
@@ -557,8 +574,6 @@ def chunk_delta_rule(
         scale (Optional[int]):
             Scale factor for the RetNet attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
-        BT (int):
-            chunk size. Default: `64`.
         initial_state (Optional[torch.Tensor]):
             Initial state of shape `(B, H, K, V)`. Default: `None`.
         output_final_state (Optional[bool]):
@@ -567,7 +582,7 @@ def chunk_delta_rule(
     assert q.dtype == k.dtype == v.dtype
     assert q.dtype != torch.float32, "ChunkDeltaRuleFunction does not support float32. Please use bfloat16."
     assert len(beta.shape) == 3, "beta must be of shape (batch size, num of head, seq len)."
-    assert BT in [32, 64], "ChunkDeltaRuleFunction only supports BT=32/64."
+    BT = 64
     if scale is None:
         scale = k.shape[-1] ** -0.5
     else:

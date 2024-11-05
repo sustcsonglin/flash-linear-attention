@@ -39,12 +39,11 @@ class DeltaNet(nn.Module):
         expand_v: float = 1.0,
         num_heads: int = 4,
         mode: str = 'chunk',
-        chunk_size: int = 64,
         use_beta: bool = True,
         use_gate: bool = False,
         use_output_norm: bool = True,
         use_elu: bool = False,
-        use_short_conv: bool = True,
+        use_short_conv: bool = True, # Shortconv is crucial to the performance. Do not turn it off unless you know what you are doing.
         conv_size: int = 4,
         conv_bias: bool = False,
         layer_idx: int = None,
@@ -69,7 +68,6 @@ class DeltaNet(nn.Module):
         self.expand_k = expand_k
         self.expand_v = expand_v
         self.num_heads = num_heads
-        self.chunk_size = chunk_size
         self.use_gate = use_gate
         self.use_output_norm = use_output_norm
         self.use_short_conv = use_short_conv
@@ -184,7 +182,7 @@ class DeltaNet(nn.Module):
         else:
             beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
 
-        # dealing with left-padding
+        # dealing with padding
         if attention_mask is not None:
             beta = beta.mul_(attention_mask[:, None, -beta.shape[-1]:])
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
@@ -203,7 +201,6 @@ class DeltaNet(nn.Module):
                 k=k,
                 v=v,
                 beta=beta,
-                BT=self.chunk_size,
                 initial_state=recurrent_state,
                 output_final_state=use_cache
             )
@@ -213,7 +210,6 @@ class DeltaNet(nn.Module):
                 k=k,
                 v=v,
                 beta=beta,
-                BT=self.chunk_size,
                 initial_state=recurrent_state,
                 output_final_state=use_cache
             )
