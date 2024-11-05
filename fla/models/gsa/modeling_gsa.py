@@ -20,8 +20,9 @@ from fla.layers.gsa import GatedSlotAttention
 from fla.models.gsa.configuration_gsa import GSAConfig
 from fla.models.utils import Cache
 from fla.modules import (FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss,
-                         RMSNorm, RMSNormLinear)
+                         RMSNorm)
 from fla.modules.activations import swiglu_linear
+from fla.modules.layernorm import rms_norm_linear
 
 logger = logging.get_logger(__name__)
 
@@ -52,7 +53,7 @@ class GSAMLP(nn.Module):
         self.norm_first = norm_first
 
         if norm_first:
-            self.norm = RMSNormLinear(hidden_size=hidden_size, eps=norm_eps)
+            self.norm = RMSNorm(hidden_size=hidden_size, eps=norm_eps)
 
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
@@ -60,9 +61,10 @@ class GSAMLP(nn.Module):
 
     def forward(self, x):
         if self.norm_first:
-            gate, y = self.norm(x, self.gate_proj.weight, self.gate_proj.bias).chunk(2, -1)
+            x = rms_norm_linear(x, self.norm.weight, self.norm.bias, self.gate_proj.weight, self.gate_proj.bias)
         else:
-            gate, y = self.gate_proj(x).chunk(2, -1)
+            x = self.gate_proj(x)
+        gate, y = x.chunk(2, -1)
         return swiglu_linear(gate, y, self.down_proj.weight, self.down_proj.bias)
 
 

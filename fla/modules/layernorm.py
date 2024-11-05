@@ -942,17 +942,17 @@ def layer_norm_linear(
     num_groups: int = 1
 ):
     return LayerNormLinearFunction.apply(
-        x=x,
-        norm_weight=norm_weight,
-        norm_bias=norm_bias,
-        linear_weight=linear_weight,
-        linear_bias=linear_bias,
-        residual=residual,
-        eps=eps,
-        prenorm=prenorm,
-        residual_in_fp32=residual_in_fp32,
-        is_rms_norm=is_rms_norm,
-        num_groups=num_groups
+        x,
+        norm_weight,
+        norm_bias,
+        linear_weight,
+        linear_bias,
+        residual,
+        eps,
+        prenorm,
+        residual_in_fp32,
+        is_rms_norm,
+        num_groups
     )
 
 

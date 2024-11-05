@@ -11,8 +11,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+
 from fla.modules import RMSNorm, ShortConvolution
 from fla.modules.activations import swish
+from fla.modules.layernorm import rms_norm_linear
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
 if TYPE_CHECKING:
@@ -160,9 +162,8 @@ class HGRN2Attention(nn.Module):
                 offset=q.shape[2]
             )
 
-        o = self.g_norm(rearrange(o, 'b h t d -> b t (h d)'))
-        o = self.o_proj(o)
-
+        o = rearrange(o, 'b h t d -> b t (h d)')
+        o = rms_norm_linear(o, self.g_norm.weight, self.g_norm.bias, self.o_proj.weight, self.o_proj.bias)
         return o, None, past_key_values
 
     def state_size(self, **kwargs) -> int:

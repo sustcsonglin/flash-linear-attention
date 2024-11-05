@@ -10,10 +10,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from fla.modules import RMSNorm, RMSNormLinear, ShortConvolution
+
+from fla.modules import RMSNorm, ShortConvolution
 from fla.modules.activations import swish
 from fla.modules.feature_map import (ReLUFeatureMap, SwishFeatureMap,
                                      T2RFeatureMap)
+from fla.modules.layernorm import rms_norm_linear
 from fla.ops.gsa import chunk_gsa, fused_recurrent_gsa
 
 if TYPE_CHECKING:
@@ -108,7 +110,7 @@ class GatedSlotAttention(nn.Module):
             self.k_conv1d = ShortConvolution(self.key_dim_per_group, conv_size, activation='silu')
             self.v_conv1d = ShortConvolution(self.value_dim_per_group, conv_size, activation='silu')
 
-        self.g_norm = RMSNormLinear(self.hidden_size, elementwise_affine, eps=norm_eps)
+        self.g_norm = RMSNorm(self.hidden_size, elementwise_affine, eps=norm_eps)
         self.o_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
         self.apply(self._initialize_weights)
@@ -206,7 +208,7 @@ class GatedSlotAttention(nn.Module):
             )
 
         o = rearrange(o, 'b h t d -> b t (h d)')
-        o = self.g_norm(swish(o), self.o_proj.weight, self.o_proj.bias)
+        o = rms_norm_linear(swish(o), self.g_norm.weight, self.g_norm.bias, self.o_proj.weight, self.o_proj.bias)
         return o, None, past_key_values
 
     def state_size(self, *args, **kwargs) -> int:
