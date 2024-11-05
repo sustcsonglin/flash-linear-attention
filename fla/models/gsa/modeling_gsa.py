@@ -16,6 +16,7 @@ from transformers.modeling_outputs import (BaseModelOutputWithPast,
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
+from fla.layers.attn import Attention
 from fla.layers.gsa import GatedSlotAttention
 from fla.models.gsa.configuration_gsa import GSAConfig
 from fla.models.utils import Cache
@@ -75,26 +76,36 @@ class GSABlock(nn.Module):
 
         if not config.norm_first:
             self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
-        self.attn = GatedSlotAttention(
-            hidden_size=config.hidden_size,
-            expand_k=config.expand_k,
-            expand_v=config.expand_v,
-            num_heads=config.num_heads,
-            num_kv_heads=config.num_kv_heads,
-            num_slots=config.num_slots,
-            use_short_conv=config.use_short_conv,
-            conv_size=config.conv_size,
-            feature_map=config.feature_map,
-            use_output_gate=config.use_output_gate,
-            use_norm=config.use_norm,
-            gate_fn=config.hidden_act,
-            gate_logit_normalizer=config.gate_logit_normalizer,
-            elementwise_affine=config.elementwise_affine,
-            norm_first=config.norm_first,
-            norm_eps=config.norm_eps,
-            fuse_norm=config.fuse_norm,
-            layer_idx=layer_idx
-        )
+        if config.attn is not None and layer_idx in config.attn['layers']:
+            self.attn = Attention(
+                hidden_size=config.hidden_size,
+                num_heads=config.attn['num_heads'],
+                num_kv_heads=config.attn['num_kv_heads'],
+                window_size=config.attn['window_size'],
+                max_position_embeddings=config.max_position_embeddings,
+                layer_idx=layer_idx
+            )
+        else:
+            self.attn = GatedSlotAttention(
+                hidden_size=config.hidden_size,
+                expand_k=config.expand_k,
+                expand_v=config.expand_v,
+                num_heads=config.num_heads,
+                num_kv_heads=config.num_kv_heads,
+                num_slots=config.num_slots,
+                use_short_conv=config.use_short_conv,
+                conv_size=config.conv_size,
+                feature_map=config.feature_map,
+                use_output_gate=config.use_output_gate,
+                use_norm=config.use_norm,
+                gate_fn=config.hidden_act,
+                gate_logit_normalizer=config.gate_logit_normalizer,
+                elementwise_affine=config.elementwise_affine,
+                norm_first=config.norm_first,
+                norm_eps=config.norm_eps,
+                fuse_norm=config.fuse_norm,
+                layer_idx=layer_idx
+            )
         if not config.norm_first:
             self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = GSAMLP(

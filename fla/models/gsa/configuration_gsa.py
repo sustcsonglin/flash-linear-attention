@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from typing import Optional
+from typing import Dict, Optional
 
 from transformers.configuration_utils import PretrainedConfig
 
@@ -12,7 +12,6 @@ class GSAConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size: int = 32000,
         hidden_size: int = 2048,
         gate_logit_normalizer: Optional[int] = 8,
         clamp_min: Optional[float] = None,
@@ -30,11 +29,12 @@ class GSAConfig(PretrainedConfig):
         feature_map: str = 'swish',
         use_output_gate: bool = False,
         use_norm: bool = True,
-        hidden_act: str = "swish",
         max_position_embeddings: int = 2048,
+        hidden_act: str = "swish",
         elementwise_affine: Optional[bool] = True,
         norm_first: bool = True,
         norm_eps: float = 1e-6,
+        attn: Optional[Dict] = None,
         use_cache: bool = True,
         pad_token_id: int = None,
         bos_token_id: int = 1,
@@ -43,10 +43,9 @@ class GSAConfig(PretrainedConfig):
         tie_word_embeddings: bool = False,
         fuse_norm: bool = True,
         fuse_cross_entropy: bool = True,
+        vocab_size: int = 32000,
         **kwargs
     ):
-        self.vocab_size = vocab_size
-        self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
         self.gate_logit_normalizer = gate_logit_normalizer
         self.clamp_min = clamp_min
@@ -64,14 +63,27 @@ class GSAConfig(PretrainedConfig):
         self.feature_map = feature_map
         self.use_output_gate = use_output_gate
         self.use_norm = use_norm
+        self.max_position_embeddings = max_position_embeddings
         self.hidden_act = hidden_act
         self.elementwise_affine = elementwise_affine
         self.norm_first = norm_first
         self.norm_eps = norm_eps
+        self.attn = attn
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         self.fuse_cross_entropy = fuse_cross_entropy
         self.fuse_norm = fuse_norm
+        self.vocab_size = vocab_size
+
+        if attn is not None:
+            if not isinstance(attn, Dict):
+                raise ValueError("attn must be a dictionary")
+            if 'layers' not in attn:
+                raise ValueError("Layer indices must be provided to initialize hybrid attention layers")
+            if 'num_heads' not in attn:
+                raise ValueError("Number of heads must be provided to initialize hybrid attention layers")
+            attn['num_kv_heads'] = attn.get('num_kv_heads', attn['num_heads'])
+            attn['window_size'] = attn.get('window_size', None)
 
         super().__init__(
             pad_token_id=pad_token_id,

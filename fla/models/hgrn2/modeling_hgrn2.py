@@ -16,6 +16,7 @@ from transformers.modeling_outputs import (BaseModelOutputWithPast,
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
+from fla.layers.attn import Attention
 from fla.layers.hgrn2 import HGRN2Attention
 from fla.models.hgrn2.configuration_hgrn2 import HGRN2Config
 from fla.models.utils import Cache
@@ -64,17 +65,27 @@ class HGRN2Block(nn.Module):
         self.hidden_size = config.hidden_size
 
         self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
-        self.attn = HGRN2Attention(
-            mode=config.attn_mode,
-            hidden_size=config.hidden_size,
-            num_heads=config.num_heads,
-            expand_ratio=config.expand_ratio,
-            use_short_conv=config.use_short_conv,
-            conv_size=config.conv_size,
-            elementwise_affine=config.elementwise_affine,
-            norm_eps=config.norm_eps,
-            layer_idx=layer_idx
-        )
+        if config.attn is not None and layer_idx in config.attn['layers']:
+            self.attn = Attention(
+                hidden_size=config.hidden_size,
+                num_heads=config.attn['num_heads'],
+                num_kv_heads=config.attn['num_kv_heads'],
+                window_size=config.attn['window_size'],
+                max_position_embeddings=config.max_position_embeddings,
+                layer_idx=layer_idx
+            )
+        else:
+            self.attn = HGRN2Attention(
+                mode=config.attn_mode,
+                hidden_size=config.hidden_size,
+                num_heads=config.num_heads,
+                expand_ratio=config.expand_ratio,
+                use_short_conv=config.use_short_conv,
+                conv_size=config.conv_size,
+                elementwise_affine=config.elementwise_affine,
+                norm_eps=config.norm_eps,
+                layer_idx=layer_idx
+            )
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = HGRN2MLP(
             hidden_size=config.hidden_size,

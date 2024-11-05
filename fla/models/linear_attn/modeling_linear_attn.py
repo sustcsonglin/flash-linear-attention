@@ -16,6 +16,7 @@ from transformers.modeling_outputs import (BaseModelOutputWithPast,
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
+from fla.layers.attn import Attention
 from fla.layers.linear_attn import LinearAttention
 from fla.models.linear_attn.configuration_linear_attn import \
     LinearAttentionConfig
@@ -65,22 +66,32 @@ class LinearAttentionBlock(nn.Module):
         self.hidden_size = config.hidden_size
 
         self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
-        self.attn = LinearAttention(
-            mode=config.attn_mode,
-            hidden_size=config.hidden_size,
-            expand_k=config.expand_k,
-            expand_v=config.expand_v,
-            num_heads=config.num_heads,
-            num_kv_heads=config.num_kv_heads,
-            feature_map=config.feature_map,
-            tie_feature_map_qk=config.tie_feature_map_qk,
-            norm_q=config.norm_q,
-            norm_k=config.norm_k,
-            do_feature_map_norm=config.norm_feature_map,
-            elementwise_affine=config.elementwise_affine,
-            norm_eps=config.norm_eps,
-            layer_idx=layer_idx
-        )
+        if config.attn is not None and layer_idx in config.attn['layers']:
+            self.attn = Attention(
+                hidden_size=config.hidden_size,
+                num_heads=config.attn['num_heads'],
+                num_kv_heads=config.attn['num_kv_heads'],
+                window_size=config.attn['window_size'],
+                max_position_embeddings=config.max_position_embeddings,
+                layer_idx=layer_idx
+            )
+        else:
+            self.attn = LinearAttention(
+                mode=config.attn_mode,
+                hidden_size=config.hidden_size,
+                expand_k=config.expand_k,
+                expand_v=config.expand_v,
+                num_heads=config.num_heads,
+                num_kv_heads=config.num_kv_heads,
+                feature_map=config.feature_map,
+                tie_feature_map_qk=config.tie_feature_map_qk,
+                norm_q=config.norm_q,
+                norm_k=config.norm_k,
+                do_feature_map_norm=config.norm_feature_map,
+                elementwise_affine=config.elementwise_affine,
+                norm_eps=config.norm_eps,
+                layer_idx=layer_idx
+            )
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = LinearAttentionMLP(
             hidden_size=config.hidden_size,

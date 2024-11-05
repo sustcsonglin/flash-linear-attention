@@ -15,6 +15,7 @@ from transformers.modeling_outputs import (BaseModelOutputWithPast,
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
+from fla.layers.attn import Attention
 from fla.layers.rwkv6 import LerpLinear, RWKV6Attention
 from fla.models.rwkv6.configuration_rwkv6 import RWKV6Config
 from fla.models.utils import Cache
@@ -91,18 +92,28 @@ class RWKV6Block(nn.Module):
         if config.norm_first and layer_idx == 0:
             self.pre_norm = LayerNorm(hidden_size=config.hidden_size, bias=config.norm_bias, eps=config.norm_eps)
         self.attn_norm = LayerNorm(hidden_size=config.hidden_size, bias=config.norm_bias, eps=config.norm_eps)
-        self.attn = RWKV6Attention(
-            mode=config.attn_mode,
-            hidden_size=config.hidden_size,
-            expand_k=config.expand_k,
-            expand_v=config.expand_v,
-            num_heads=config.num_heads,
-            proj_low_rank_dim=config.proj_low_rank_dim,
-            gate_low_rank_dim=config.gate_low_rank_dim,
-            norm_eps=config.norm_eps,
-            fuse_norm=config.fuse_norm,
-            layer_idx=layer_idx
-        )
+        if config.attn is not None and layer_idx in config.attn['layers']:
+            self.attn = Attention(
+                hidden_size=config.hidden_size,
+                num_heads=config.attn['num_heads'],
+                num_kv_heads=config.attn['num_kv_heads'],
+                window_size=config.attn['window_size'],
+                max_position_embeddings=config.max_position_embeddings,
+                layer_idx=layer_idx
+            )
+        else:
+            self.attn = RWKV6Attention(
+                mode=config.attn_mode,
+                hidden_size=config.hidden_size,
+                expand_k=config.expand_k,
+                expand_v=config.expand_v,
+                num_heads=config.num_heads,
+                proj_low_rank_dim=config.proj_low_rank_dim,
+                gate_low_rank_dim=config.gate_low_rank_dim,
+                norm_eps=config.norm_eps,
+                fuse_norm=config.fuse_norm,
+                layer_idx=layer_idx
+            )
         self.ffn_norm = LayerNorm(hidden_size=config.hidden_size, bias=config.norm_bias, eps=config.norm_eps)
         self.ffn = RWKV6FeedForward(
             hidden_size=config.hidden_size,

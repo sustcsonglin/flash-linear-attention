@@ -78,7 +78,7 @@ class GLAConfig(PretrainedConfig):
                 raise ValueError("Layer indices must be provided to initialize hybrid attention layers")
             if 'num_heads' not in attn:
                 raise ValueError("Number of heads must be provided to initialize hybrid attention layers")
-            attn['num_kv_heads'] = attn.get('num_kv_heads', num_heads)
+            attn['num_kv_heads'] = attn.get('num_kv_heads', attn['num_heads'])
             attn['window_size'] = attn.get('window_size', None)
 
         super().__init__(

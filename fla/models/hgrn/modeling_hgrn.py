@@ -16,6 +16,7 @@ from transformers.modeling_outputs import (BaseModelOutputWithPast,
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
+from fla.layers.attn import Attention
 from fla.layers.hgrn import HGRNAttention
 from fla.models.hgrn.configuration_hgrn import HGRNConfig
 from fla.models.utils import Cache
@@ -64,16 +65,26 @@ class HGRNBlock(nn.Module):
         self.hidden_size = config.hidden_size
 
         self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
-        self.attn = HGRNAttention(
-            mode=config.attn_mode,
-            hidden_size=config.hidden_size,
-            expand_ratio=config.expand_ratio,
-            use_short_conv=config.use_short_conv,
-            conv_size=config.conv_size,
-            elementwise_affine=config.elementwise_affine,
-            norm_eps=config.norm_eps,
-            layer_idx=layer_idx
-        )
+        if config.attn is not None and layer_idx in config.attn['layers']:
+            self.attn = Attention(
+                hidden_size=config.hidden_size,
+                num_heads=config.attn['num_heads'],
+                num_kv_heads=config.attn['num_kv_heads'],
+                window_size=config.attn['window_size'],
+                max_position_embeddings=config.max_position_embeddings,
+                layer_idx=layer_idx
+            )
+        else:
+            self.attn = HGRNAttention(
+                mode=config.attn_mode,
+                hidden_size=config.hidden_size,
+                expand_ratio=config.expand_ratio,
+                use_short_conv=config.use_short_conv,
+                conv_size=config.conv_size,
+                elementwise_affine=config.elementwise_affine,
+                norm_eps=config.norm_eps,
+                layer_idx=layer_idx
+            )
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = HGRNMLP(
             hidden_size=config.hidden_size,

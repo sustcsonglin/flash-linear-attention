@@ -16,6 +16,7 @@ from transformers.modeling_outputs import (BaseModelOutputWithPast,
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
+from fla.layers.attn import Attention
 from fla.layers.delta_net import DeltaNet
 from fla.models.delta_net.configuration_delta_net import DeltaNetConfig
 from fla.models.utils import Cache
@@ -75,23 +76,33 @@ class DeltaNetBlock(nn.Module):
 
         if not config.norm_first:
             self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
-        self.attn = DeltaNet(
-            mode=config.attn_mode,
-            hidden_size=config.hidden_size,
-            expand_k=config.expand_k,
-            expand_v=config.expand_v,
-            num_heads=config.num_heads,
-            use_gate=config.use_gate,
-            use_beta=config.use_beta,
-            use_short_conv=config.use_short_conv,
-            use_output_norm=config.use_output_norm,
-            conv_size=config.conv_size,
-            qk_norm=config.qk_norm,
-            qk_activation=config.qk_activation,
-            norm_first=config.norm_first,
-            norm_eps=config.norm_eps,
-            layer_idx=layer_idx
-        )
+        if config.attn is not None and layer_idx in config.attn['layers']:
+            self.attn = Attention(
+                hidden_size=config.hidden_size,
+                num_heads=config.attn['num_heads'],
+                num_kv_heads=config.attn['num_kv_heads'],
+                window_size=config.attn['window_size'],
+                max_position_embeddings=config.max_position_embeddings,
+                layer_idx=layer_idx
+            )
+        else:
+            self.attn = DeltaNet(
+                mode=config.attn_mode,
+                hidden_size=config.hidden_size,
+                expand_k=config.expand_k,
+                expand_v=config.expand_v,
+                num_heads=config.num_heads,
+                use_gate=config.use_gate,
+                use_beta=config.use_beta,
+                use_short_conv=config.use_short_conv,
+                use_output_norm=config.use_output_norm,
+                conv_size=config.conv_size,
+                qk_norm=config.qk_norm,
+                qk_activation=config.qk_activation,
+                norm_first=config.norm_first,
+                norm_eps=config.norm_eps,
+                layer_idx=layer_idx
+            )
         if not config.norm_first:
             self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = DeltaNetMLP(

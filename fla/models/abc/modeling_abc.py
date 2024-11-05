@@ -17,6 +17,7 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
 from fla.layers.abc import ABCAttention
+from fla.layers.attn import Attention
 from fla.models.abc.configuration_abc import ABCConfig
 from fla.models.utils import Cache
 from fla.modules import (FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss,
@@ -64,22 +65,32 @@ class ABCBlock(nn.Module):
         self.hidden_size = config.hidden_size
 
         self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
-        self.attn = ABCAttention(
-            hidden_size=config.hidden_size,
-            expand_k=config.expand_k,
-            expand_v=config.expand_v,
-            num_heads=config.num_heads,
-            num_slots=config.num_slots,
-            use_short_conv=config.use_short_conv,
-            conv_size=config.conv_size,
-            gate_fn=config.hidden_act,
-            elementwise_affine=config.elementwise_affine,
-            norm_eps=config.norm_eps,
-            clamp_min=config.clamp_min,
-            clamp_max=config.clamp_max,
-            fuse_norm=config.fuse_norm,
-            layer_idx=layer_idx
-        )
+        if config.attn is not None and layer_idx in config.attn['layers']:
+            self.attn = Attention(
+                hidden_size=config.hidden_size,
+                num_heads=config.attn['num_heads'],
+                num_kv_heads=config.attn['num_kv_heads'],
+                window_size=config.attn['window_size'],
+                max_position_embeddings=config.max_position_embeddings,
+                layer_idx=layer_idx
+            )
+        else:
+            self.attn = ABCAttention(
+                hidden_size=config.hidden_size,
+                expand_k=config.expand_k,
+                expand_v=config.expand_v,
+                num_heads=config.num_heads,
+                num_slots=config.num_slots,
+                use_short_conv=config.use_short_conv,
+                conv_size=config.conv_size,
+                gate_fn=config.hidden_act,
+                elementwise_affine=config.elementwise_affine,
+                norm_eps=config.norm_eps,
+                clamp_min=config.clamp_min,
+                clamp_max=config.clamp_max,
+                fuse_norm=config.fuse_norm,
+                layer_idx=layer_idx
+            )
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = ABCMLP(
             hidden_size=config.hidden_size,

@@ -16,6 +16,7 @@ from transformers.modeling_outputs import (BaseModelOutputWithPast,
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
+from fla.layers.attn import Attention
 from fla.layers.gla import GatedLinearAttention
 from fla.models.gla.configuration_gla import GLAConfig
 from fla.models.utils import Cache
@@ -65,7 +66,6 @@ class GLABlock(nn.Module):
 
         self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         if config.attn is not None and layer_idx in config.attn['layers']:
-            from fla.layers.attn import Attention
             self.attn = Attention(
                 hidden_size=config.hidden_size,
                 num_heads=config.attn['num_heads'],
