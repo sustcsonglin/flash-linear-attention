@@ -32,7 +32,7 @@ Roughly sorted according to the timeline supported in FLA
 
 # Installation
 
-The following requirements should be satisfied 
+The following requirements should be satisfied
 - [PyTorch](https://pytorch.org/) >= 2.0
 - [Triton](https://github.com/openai/triton) >=2.2
 - [einops](https://einops.rocks/)
@@ -40,17 +40,17 @@ The following requirements should be satisfied
 As `fla` is actively developed now, no released packages are provided at this time.
 If you do need to use `fla` ops/modules and contemplate further explorations, an alternative way is to install the package from source
 ```sh
-pip install -U git+https://github.com/sustcsonglin/flash-linear-attention
+pip install -U git+https://github.com/hypnopump/flash-linear-attention
 ```
 or manage `fla` with submodules
 ```sh
-git submodule add https://github.com/sustcsonglin/flash-linear-attention.git 3rdparty/flash-linear-attention
+git submodule add https://github.com/hypnopump/flash-linear-attention.git 3rdparty/flash-linear-attention
 ln -s 3rdparty/flash-linear-attention/fla fla
 ```
 
 > [!CAUTION]
-> If you're not working with Triton v2.2 or its nightly release, it's important to be aware of potential issues with the `FusedChunk` implementation, detailed in this [issue](https://github.com/openai/triton/issues/2852). 
-You can run the test `python tests/test_fused_chunk.py` to check if your version is affected by similar compiler problems. 
+> If you're not working with Triton v2.2 or its nightly release, it's important to be aware of potential issues with the `FusedChunk` implementation, detailed in this [issue](https://github.com/openai/triton/issues/2852).
+You can run the test `python tests/test_fused_chunk.py` to check if your version is affected by similar compiler problems.
 While we offer some fixes for Triton<=2.1, be aware that these may result in reduced performance.
 >
 > For both Triton 2.2 and earlier versions (up to 2.1), you can reliably use the `Chunk` version (with hidden states materialized into HBMs).
@@ -60,9 +60,9 @@ While we offer some fixes for Triton<=2.1, be aware that these may result in red
 
 ## Token Mixing
 
-We provide "token mixing" linear attention layers in `fla.layers` for you to use. 
-You can replace the standard multihead attention layer in your model with other linear attention layers. 
-Example usage is as follows: 
+We provide "token mixing" linear attention layers in `fla.layers` for you to use.
+You can replace the standard multihead attention layer in your model with other linear attention layers.
+Example usage is as follows:
 ```py
 >>> import torch
 >>> from fla.layers import MultiScaleRetention
@@ -75,7 +75,7 @@ Example usage is as follows:
 torch.Size([32, 2048, 1024])
 ```
 
-We provide the implementations of models that are compatible with 🤗 Transformers library. 
+We provide the implementations of models that are compatible with 🤗 Transformers library.
 Here's an example of how to initialize a GLA model from the default configs in `fla`:
 
 ```py
@@ -187,10 +187,10 @@ All of the pretrained models currently available can be found in [`fla-hub`](htt
 
 # Evaluations
 
-The [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) library allows you to easily perform (zero-shot) model evaluations. 
+The [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) library allows you to easily perform (zero-shot) model evaluations.
 Follow the steps below to use this library:
 
-1. Install `lm_eval` following [their instructions](https://github.com/EleutherAI/lm-evaluation-harness/blob/main/README.md). 
+1. Install `lm_eval` following [their instructions](https://github.com/EleutherAI/lm-evaluation-harness/blob/main/README.md).
 
 2. Run evaluation with:
 ```sh
@@ -201,7 +201,7 @@ $ python -m evals.harness --model hf \
     --batch_size 64 \
     --num_fewshot 0 \
     --device cuda \
-    --show_config                  
+    --show_config  
 ```
 
 We've made `fla` compatible with hf-style evaluations, you can call [evals.harness](evals/harness.py) to finish the evaluations.
@@ -215,7 +215,7 @@ Running the command above will provide the task results reported in the GLA pape
 
 # Benchmarks
 
-We compared our Triton-based RetNet implementation with CUDA-based FlashAttention2, using a batch size of 8, 32 heads, and a head dimension of 128, across different sequence lengths. 
+We compared our Triton-based RetNet implementation with CUDA-based FlashAttention2, using a batch size of 8, 32 heads, and a head dimension of 128, across different sequence lengths.
 These tests were conducted on a single A100 80GB GPU, as illustrated in the following graph
 ```py
 # you might have to first install `fla` to enable its import via `pip install -e .`
@@ -255,14 +255,14 @@ If you find this repo useful, please consider citing our works:
 }
 
 @article{yang2024delta,
-  title   = {Parallelizing Linear Transformers with the Delta Rule over Sequence Length}, 
+  title   = {Parallelizing Linear Transformers with the Delta Rule over Sequence Length},
   author  = {Songlin Yang and Bailin Wang and Yu Zhang and Yikang Shen and Yoon Kim},
   journal = {arXiv preprint arXiv:2406.06484},
   year    = {2024},
 }
 
 @article{zhang2024gsa,
-  title   = {Gated Slot Attention for Efficient Linear-Time Sequence Modeling}, 
+  title   = {Gated Slot Attention for Efficient Linear-Time Sequence Modeling},
   author  = {Yu Zhang and Songlin Yang and Ruijie Zhu and Yue Zhang and Leyang Cui and Yiqiao Wang and Bolun Wang and Freda Shi and Bailin Wang and Wei Bi and Peng Zhou and Guohong Fu},
   journal = {arXiv preprint arXiv:2409.07146},
   year    = {2024},
