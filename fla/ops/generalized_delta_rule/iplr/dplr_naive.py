@@ -4,7 +4,7 @@ import torch
 from einops import rearrange
 
 
-# S_t = S_t @ (W + alpha_t beta_t^T) + v_t k_t^T
+# S_t = S_{t-1} @ (W + alpha_t beta_t^T) + v_t k_t^T
 # r, w, k, alpha, beta [B, H, L, D_K]
 # v [B, H, L, D_V]
 def dplr_recurrence(r, w,  k, v, alpha, beta, initial_state=None, output_final_state=True):

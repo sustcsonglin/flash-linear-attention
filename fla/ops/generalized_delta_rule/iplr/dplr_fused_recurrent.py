@@ -71,7 +71,7 @@ def fused_recurrent_fwd_kernel(
         tmp = tl.sum(h * b_alpha[None, :], axis=1)
         # S_{t} = S_{t-1}w + S_{t-1}ab^T + vk^T
         # pass w in log space bc chunked kernel needs logsumexp trick!
-        h *= b_w.exp()
+        h *= b_w[None, :].exp()
         h += (tmp[:, None] * b_beta[None, :] + b_k[None, :] * b_v[:, None])
         _o = h * b_r[None, :]
         _o = tl.sum(_o, axis=1)
@@ -154,6 +154,7 @@ def fused_recurrent_bwd_kernel(
     for _ in range(T):
         # FIXME: hypnopump@ add calculation of W gradient!
         b_r = tl.load(p_r, mask=mask_bk, other=0).to(tl.float32) * scale
+        b_w = tl.load(p_w, mask=mask_bk, other=0).to(tl.float32)
         b_k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         b_v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
         b_do = tl.load(p_do, mask=mask_bv, other=0).to(tl.float32)
@@ -172,6 +173,7 @@ def fused_recurrent_bwd_kernel(
         b_dbeta = tl.sum(d_h * b_ha[None, :], axis=1)
         tl.store(p_dbeta, b_dbeta.to(p_dbeta.dtype.element_ty), mask=mask_bk)
 
+        d_h *= b_w[:, None]
         d_h += b_dha[None, :] * b_alpha[:, None]
         p_do -= V
         p_r -= K
@@ -211,16 +213,18 @@ def fused_recurrent_bwd_kernel(
         p_h0 = h0 + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[:, None]) * V + (i_v * BV + tl.arange(0, BV)[None, :])
         h += tl.load(p_h0, mask=mask_kv, other=0).to(tl.float32)
 
+    # calculation of dr(do) and da(dha) based on the state, another forward
     for i in range(0, T):
-        # FIXME: hypnopump@ add calculation of W gradient!
         d_ha = tl.load(p_dha, mask=mask_bv, other=0).to(tl.float32)
         d_alpha = tl.sum(d_ha[None, :] * h, axis=1)
         tl.store(p_dalpha, d_alpha.to(p_dalpha.dtype.element_ty), mask=mask_bk)
+        b_w = tl.load(p_w, mask=mask_bk, other=0).to(tl.float32)
         b_k = tl.load(p_k, mask=mask_bk, other=0).to(tl.float32)
         b_v = tl.load(p_v, mask=mask_bv, other=0).to(tl.float32)
         b_do = tl.load(p_do, mask=mask_bv, other=0).to(tl.float32)
         b_beta = tl.load(p_beta, mask=mask_bk, other=0).to(tl.float32)
         b_ha = tl.load(p_ha, mask=mask_bv, other=0).to(tl.float32)
+        h *= b_w[:, None].exp()
         h += b_k[:, None] * b_v[None, :] + b_beta[:, None] * b_ha[None, :]
         _d_r = h * b_do[None, :]
         d_r = tl.sum(_d_r, axis=1) * scale
