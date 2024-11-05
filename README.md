@@ -60,15 +60,25 @@ While we offer some fixes for Triton<=2.1, be aware that these may result in red
 
 ## Token Mixing
 
-We provide "token mixing" linear attention layers in `fla.layers` for you to use. 
+We provide ``token mixing'' linear attention layers in `fla.layers` for you to use. 
 You can replace the standard multihead attention layer in your model with other linear attention layers. 
 Example usage is as follows: 
 ```py
 >>> import torch
 >>> from fla.layers import MultiScaleRetention
->>> batch_size, num_heads, seq_len, hidden_size,  = 32, 4, 2048, 1024
+>>> batch_size, num_heads, seq_len, hidden_size = 32, 4, 2048, 1024
 >>> device, dtype = 'cuda:0', torch.bfloat16
 >>> retnet = MultiScaleRetention(hidden_size=hidden_size, num_heads=num_heads).to(device=device, dtype=dtype)
+>>> retnet
+MultiScaleRetention(
+  (q_proj): Linear(in_features=1024, out_features=1024, bias=False)
+  (k_proj): Linear(in_features=1024, out_features=1024, bias=False)
+  (v_proj): Linear(in_features=1024, out_features=2048, bias=False)
+  (g_proj): Linear(in_features=1024, out_features=2048, bias=False)
+  (o_proj): Linear(in_features=2048, out_features=1024, bias=False)
+  (g_norm_swish_gate): FusedRMSNormSwishGate(512, eps=1e-05)
+  (rotary): RotaryEmbedding()
+)
 >>> x = torch.randn(batch_size, seq_len, hidden_size).to(device=device, dtype=dtype)
 >>> y, *_ = retnet(x)
 >>> y.shape
@@ -80,17 +90,20 @@ Here's an example of how to initialize a GLA model from the default configs in `
 
 ```py
 >>> from fla.models import GLAConfig
->>> from transformers import AutoModel
+>>> from transformers import AutoModelForCausalLM
 >>> config = GLAConfig()
 >>> config
 GLAConfig {
-  "attn_mode": "fused_chunk",
+  "attn": null,
+  "attn_mode": "chunk",
   "bos_token_id": 1,
   "clamp_min": null,
   "conv_size": 4,
+  "elementwise_affine": true,
   "eos_token_id": 2,
   "expand_k": 0.5,
   "expand_v": 1,
+  "feature_map": null,
   "fuse_cross_entropy": true,
   "fuse_norm": true,
   "hidden_act": "swish",
@@ -100,47 +113,50 @@ GLAConfig {
   "intermediate_size": null,
   "max_position_embeddings": 2048,
   "model_type": "gla",
+  "norm_eps": 1e-06,
   "num_heads": 4,
   "num_hidden_layers": 24,
-  "rms_norm_eps": 1e-06,
-  "share_conv_kernel": true,
+  "num_kv_heads": null,
   "tie_word_embeddings": false,
-  "transformers_version": "4.39.1",
+  "transformers_version": "4.45.0",
   "use_cache": true,
   "use_gk": true,
   "use_gv": false,
+  "use_output_gate": true,
   "use_short_conv": false,
   "vocab_size": 32000
 }
 
->>> AutoModel.from_config(config)
-GLAModel(
-  (embed_tokens): Embedding(32000, 2048)
-  (layers): ModuleList(
-    (0-23): 24 x GLABlock(
-      (attn_norm): RMSNorm()
-      (attn): GatedLinearAttention(
-        (gate_fn): SiLU()
-        (q_proj): Linear(in_features=2048, out_features=1024, bias=False)
-        (k_proj): Linear(in_features=2048, out_features=1024, bias=False)
-        (v_proj): Linear(in_features=2048, out_features=2048, bias=False)
-        (g_proj): Linear(in_features=2048, out_features=2048, bias=False)
-        (gk_proj): Sequential(
-          (0): Linear(in_features=2048, out_features=16, bias=False)
-          (1): Linear(in_features=16, out_features=1024, bias=True)
+>>> AutoModelForCausalLM.from_config(config)
+GLAForCausalLM(
+  (model): GLAModel(
+    (embeddings): Embedding(32000, 2048)
+    (layers): ModuleList(
+      (0-23): 24 x GLABlock(
+        (attn_norm): RMSNorm(2048, eps=1e-06)
+        (attn): GatedLinearAttention(
+          (q_proj): Linear(in_features=2048, out_features=1024, bias=False)
+          (k_proj): Linear(in_features=2048, out_features=1024, bias=False)
+          (v_proj): Linear(in_features=2048, out_features=2048, bias=False)
+          (g_proj): Linear(in_features=2048, out_features=2048, bias=False)
+          (gk_proj): Sequential(
+            (0): Linear(in_features=2048, out_features=16, bias=False)
+            (1): Linear(in_features=16, out_features=1024, bias=True)
+          )
+          (o_proj): Linear(in_features=2048, out_features=2048, bias=False)
+          (g_norm_swish_gate): FusedRMSNormSwishGate(512, eps=1e-06)
         )
-        (o_proj): Linear(in_features=2048, out_features=2048, bias=False)
-        (g_norm_swish_gate): FusedRMSNormSwishGate()
-      )
-      (mlp_norm): RMSNorm()
-      (mlp): GLAMLP(
-        (gate_proj): Linear(in_features=2048, out_features=11264, bias=False)
-        (down_proj): Linear(in_features=5632, out_features=2048, bias=False)
-        (act_fn): SiLU()
+        (mlp_norm): RMSNorm(2048, eps=1e-06)
+        (mlp): GLAMLP(
+          (gate_proj): Linear(in_features=2048, out_features=11264, bias=False)
+          (down_proj): Linear(in_features=5632, out_features=2048, bias=False)
+          (act_fn): SiLU()
+        )
       )
     )
+    (norm): RMSNorm(2048, eps=1e-06)
   )
-  (norm): RMSNorm()
+  (lm_head): Linear(in_features=2048, out_features=32000, bias=False)
 )
 
 ```
@@ -184,6 +200,114 @@ All of the pretrained models currently available can be found in [`fla-hub`](htt
 >>> from huggingface_hub import list_models
 >>> for model in list_models(author='fla-hub'): print(model.id)
 ```
+
+## Hybrid Models
+
+`fla` provides a flexible method to incorporate standard attention layers into existing linear attention models. 
+This is easily achieved by specifying the `attn` argument in the model configuration.
+
+For example, to create a 2-layer Samba model with interleaved Mamba and local attention layers, using a sliding window size of 2048:
+
+```py
+>>> from fla.models import SambaConfig
+>>> from transformers import AutoModelForCausalLM
+>>> config = SambaConfig(num_hidden_layers=2)
+>>> config.attn = { 
+  'layers': [1], 
+  'num_heads': 18, 
+  'num_kv_heads': 18,
+  'window_size': 2048
+}
+>>> config
+SambaConfig {
+  "attn": {
+    "layers": [
+      1
+    ],
+    "num_heads": 18,
+    "num_kv_heads": 18,
+    "window_size": 2048
+  },
+  "bos_token_id": 1,
+  "conv_kernel": 4,
+  "eos_token_id": 2,
+  "expand": 2,
+  "fuse_cross_entropy": true,
+  "fuse_norm": true,
+  "hidden_act": "silu",
+  "hidden_ratio": 4,
+  "hidden_size": 2304,
+  "initializer_range": 0.02,
+  "intermediate_size": 4608,
+  "max_position_embeddings": 2048,
+  "model_type": "samba",
+  "norm_eps": 1e-05,
+  "num_hidden_layers": 2,
+  "pad_token_id": 0,
+  "rescale_prenorm_residual": false,
+  "residual_in_fp32": false,
+  "state_size": 16,
+  "tie_word_embeddings": false,
+  "time_step_floor": 0.0001,
+  "time_step_init_scheme": "random",
+  "time_step_max": 0.1,
+  "time_step_min": 0.001,
+  "time_step_rank": 144,
+  "time_step_scale": 1.0,
+  "transformers_version": "4.45.0",
+  "use_bias": false,
+  "use_cache": true,
+  "use_conv_bias": true,
+  "vocab_size": 32000
+}
+
+>>> AutoModelForCausalLM.from_config(config)
+SambaForCausalLM(
+  (backbone): SambaModel(
+    (embeddings): Embedding(32000, 2304)
+    (layers): ModuleList(
+      (0): SambaBlock(
+        (mixer_norm): RMSNorm(2304, eps=1e-05)
+        (mixer): MambaMixer(
+          (conv1d): Conv1d(4608, 4608, kernel_size=(4,), stride=(1,), padding=(3,), groups=4608)
+          (act): SiLU()
+          (in_proj): Linear(in_features=2304, out_features=9216, bias=False)
+          (x_proj): Linear(in_features=4608, out_features=176, bias=False)
+          (dt_proj): Linear(in_features=144, out_features=4608, bias=True)
+          (out_proj): Linear(in_features=4608, out_features=2304, bias=False)
+        )
+        (mlp_norm): RMSNorm(2304, eps=1e-05)
+        (mlp): SambaMLP(
+          (gate_proj): Linear(in_features=2304, out_features=12288, bias=False)
+          (down_proj): Linear(in_features=6144, out_features=2304, bias=False)
+          (act_fn): SiLU()
+        )
+      )
+      (1): SambaBlock(
+        (mixer_norm): RMSNorm(2304, eps=1e-05)
+        (mixer): Attention(
+          (q_proj): Linear(in_features=2304, out_features=2304, bias=False)
+          (k_proj): Linear(in_features=2304, out_features=2304, bias=False)
+          (v_proj): Linear(in_features=2304, out_features=2304, bias=False)
+          (o_proj): Linear(in_features=2304, out_features=2304, bias=False)
+          (rotary): RotaryEmbedding()
+        )
+        (mlp_norm): RMSNorm(2304, eps=1e-05)
+        (mlp): SambaMLP(
+          (gate_proj): Linear(in_features=2304, out_features=12288, bias=False)
+          (down_proj): Linear(in_features=6144, out_features=2304, bias=False)
+          (act_fn): SiLU()
+        )
+      )
+    )
+    (norm_f): RMSNorm(2304, eps=1e-05)
+  )
+  (lm_head): Linear(in_features=2304, out_features=32000, bias=False)
+)
+```
+
+During inference, you **DO NOT** need to revise anything for generation!
+The model will produce output as-is, without any need for additional configurations or modifications.
 
 # Evaluations
 
@@ -256,14 +380,14 @@ If you find this repo useful, please consider citing our works:
 
 @article{yang2024delta,
   title   = {Parallelizing Linear Transformers with the Delta Rule over Sequence Length}, 
-  author  = {Songlin Yang and Bailin Wang and Yu Zhang and Yikang Shen and Yoon Kim},
+  author  = {Yang, Songlin and Wang, Bailin and Zhang, Yu and Shen, Yikang and Kim, Yoon},
   journal = {arXiv preprint arXiv:2406.06484},
   year    = {2024},
 }
 
 @article{zhang2024gsa,
   title   = {Gated Slot Attention for Efficient Linear-Time Sequence Modeling}, 
-  author  = {Yu Zhang and Songlin Yang and Ruijie Zhu and Yue Zhang and Leyang Cui and Yiqiao Wang and Bolun Wang and Freda Shi and Bailin Wang and Wei Bi and Peng Zhou and Guohong Fu},
+  author  = {Zhang, Yu and Yang, Songlin and Zhu, Ruijie and Zhang, Yue and Cui, Leyang and Wang, Yiqiao and Wang, Bolun and Shi, Freda and Wang, Bailin and Bi, Wei and Zhou, Peng and Fu, Guohong},
   journal = {arXiv preprint arXiv:2409.07146},
   year    = {2024},
 }
