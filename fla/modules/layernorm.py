@@ -20,7 +20,15 @@ import triton.language as tl
 from fla.utils import contiguous
 
 
-def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
+def layer_norm_ref(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    residual: torch.Tensor = None,
+    eps: float = 1e-5,
+    prenorm: bool = False,
+    upcast: bool = False
+):
     dtype = x.dtype
     if upcast:
         weight = weight.float()
@@ -36,7 +44,15 @@ def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upca
     return out if not prenorm else (out, x)
 
 
-def rms_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
+def rms_norm_ref(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    residual: torch.Tensor = None,
+    eps: float = 1e-5,
+    prenorm: bool = False,
+    upcast: bool = False
+):
     dtype = x.dtype
     if upcast:
         weight = weight.float()
@@ -380,7 +396,7 @@ def _layer_norm_bwd(
     return (dx, dw, db, dresidual_in) if not recompute_output else (dx, dw, db, dresidual_in, y)
 
 
-class LayerNormFn(torch.autograd.Function):
+class LayerNormFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
@@ -390,7 +406,7 @@ class LayerNormFn(torch.autograd.Function):
         weight,
         bias,
         residual=None,
-        eps=1e-6,
+        eps=1e-5,
         prenorm=False,
         residual_in_fp32=False,
         is_rms_norm=False,
@@ -466,17 +482,17 @@ class LayerNormFn(torch.autograd.Function):
         )
 
 
-def layer_norm_fn(
-    x,
-    weight,
-    bias,
-    residual=None,
-    eps=1e-6,
-    prenorm=False,
-    residual_in_fp32=False,
-    is_rms_norm=False
+def layer_norm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    residual: torch.Tensor = None,
+    eps: float = 1e-5,
+    prenorm: bool = False,
+    residual_in_fp32: bool = False,
+    is_rms_norm: bool = False
 ):
-    return LayerNormFn.apply(
+    return LayerNormFunction.apply(
         x,
         weight,
         bias,
@@ -488,18 +504,18 @@ def layer_norm_fn(
     )
 
 
-def group_norm_fn(
-    x,
-    weight,
-    bias,
-    residual=None,
-    eps=1e-6,
-    prenorm=False,
-    residual_in_fp32=False,
-    is_rms_norm=False,
-    num_groups=1
+def group_norm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    residual: torch.Tensor = None,
+    eps: float = 1e-5,
+    prenorm: bool = False,
+    residual_in_fp32: bool = False,
+    is_rms_norm: bool = False,
+    num_groups: int = 1
 ):
-    return LayerNormFn.apply(
+    return LayerNormFunction.apply(
         x,
         weight,
         bias,
@@ -512,16 +528,16 @@ def group_norm_fn(
     )
 
 
-def rms_norm_fn(
-    x,
-    weight,
-    bias,
-    residual=None,
-    eps=1e-6,
-    prenorm=False,
-    residual_in_fp32=False
+def rms_norm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    residual: torch.Tensor = None,
+    eps: float = 1e-5,
+    prenorm: bool = False,
+    residual_in_fp32: bool = False
 ):
-    return LayerNormFn.apply(
+    return LayerNormFunction.apply(
         x,
         weight,
         bias,
@@ -564,7 +580,7 @@ class LayerNorm(nn.Module):
         return s
 
     def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
-        return layer_norm_fn(
+        return layer_norm(
             x,
             self.weight,
             self.bias,
@@ -611,7 +627,7 @@ class GroupNorm(nn.Module):
         return s
 
     def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
-        return group_norm_fn(
+        return group_norm(
             x,
             self.weight,
             self.bias,
@@ -654,7 +670,7 @@ class RMSNorm(nn.Module):
         return s
 
     def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
-        return rms_norm_fn(
+        return rms_norm(
             x,
             self.weight,
             self.bias,
@@ -665,7 +681,7 @@ class RMSNorm(nn.Module):
         )
 
 
-class LayerNormLinearFn(torch.autograd.Function):
+class LayerNormLinearFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
@@ -677,7 +693,7 @@ class LayerNormLinearFn(torch.autograd.Function):
         linear_weight,
         linear_bias,
         residual=None,
-        eps=1e-6,
+        eps=1e-5,
         prenorm=False,
         residual_in_fp32=False,
         is_rms_norm=False,
@@ -771,34 +787,6 @@ class LayerNormLinearFn(torch.autograd.Function):
         )
 
 
-def layer_norm_linear_fn(
-    x,
-    norm_weight,
-    norm_bias,
-    linear_weight,
-    linear_bias,
-    residual=None,
-    eps=1e-6,
-    prenorm=False,
-    residual_in_fp32=False,
-    is_rms_norm=False,
-    num_groups=1
-):
-    return LayerNormLinearFn.apply(
-        x,
-        norm_weight,
-        norm_bias,
-        linear_weight,
-        linear_bias,
-        residual,
-        eps,
-        prenorm,
-        residual_in_fp32,
-        is_rms_norm,
-        num_groups
-    )
-
-
 class LayerNormLinear(nn.Module):
 
     def __init__(
@@ -830,12 +818,12 @@ class LayerNormLinear(nn.Module):
         return s
 
     def forward(self, x, weight, bias, residual=None, prenorm=False, residual_in_fp32=False):
-        return layer_norm_linear_fn(
-            x,
-            self.weight,
-            self.bias,
-            weight,
-            bias,
+        return layer_norm_linear(
+            x=x,
+            norm_weight=self.weight,
+            norm_bias=self.bias,
+            linear_weight=weight,
+            linear_bias=bias,
             residual=residual,
             eps=self.eps,
             prenorm=prenorm,
@@ -880,12 +868,12 @@ class GroupNormLinear(nn.Module):
         return s
 
     def forward(self, x, weight, bias, residual=None, prenorm=False, residual_in_fp32=False):
-        return layer_norm_linear_fn(
-            x,
-            self.weight,
-            self.bias,
-            weight,
-            bias,
+        return layer_norm_linear(
+            x=x,
+            norm_weight=self.weight,
+            norm_bias=self.bias,
+            linear_weight=weight,
+            linear_bias=bias,
             residual=residual,
             eps=self.eps,
             prenorm=prenorm,
@@ -926,15 +914,96 @@ class RMSNormLinear(nn.Module):
         return s
 
     def forward(self, x, weight, bias, residual=None, prenorm=False, residual_in_fp32=False):
-        return layer_norm_linear_fn(
-            x,
-            self.weight,
-            self.bias,
-            weight,
-            bias,
+        return layer_norm_linear(
+            x=x,
+            norm_weight=self.weight,
+            norm_bias=self.bias,
+            linear_weight=weight,
+            linear_bias=bias,
             residual=residual,
             eps=self.eps,
             prenorm=prenorm,
             residual_in_fp32=residual_in_fp32,
             is_rms_norm=True
         )
+
+
+def layer_norm_linear(
+    x: torch.Tensor,
+    norm_weight: torch.Tensor,
+    norm_bias: torch.Tensor,
+    linear_weight: torch.Tensor,
+    linear_bias: torch.Tensor,
+    residual: torch.Tensor = None,
+    eps: float = 1e-5,
+    prenorm: bool = False,
+    residual_in_fp32: bool = False,
+    is_rms_norm: bool = False,
+    num_groups: int = 1
+):
+    return LayerNormLinearFunction.apply(
+        x=x,
+        norm_weight=norm_weight,
+        norm_bias=norm_bias,
+        linear_weight=linear_weight,
+        linear_bias=linear_bias,
+        residual=residual,
+        eps=eps,
+        prenorm=prenorm,
+        residual_in_fp32=residual_in_fp32,
+        is_rms_norm=is_rms_norm,
+        num_groups=num_groups
+    )
+
+
+def rms_norm_linear(
+    x: torch.Tensor,
+    norm_weight: torch.Tensor,
+    norm_bias: torch.Tensor,
+    linear_weight: torch.Tensor,
+    linear_bias: torch.Tensor,
+    residual: torch.Tensor = None,
+    eps: float = 1e-5,
+    prenorm: bool = False,
+    residual_in_fp32: bool = False
+):
+    return layer_norm_linear(
+        x=x,
+        norm_weight=norm_weight,
+        norm_bias=norm_bias,
+        linear_weight=linear_weight,
+        linear_bias=linear_bias,
+        residual=residual,
+        eps=eps,
+        prenorm=prenorm,
+        residual_in_fp32=residual_in_fp32,
+        is_rms_norm=True
+    )
+
+
+def group_norm_linear(
+    x: torch.Tensor,
+    norm_weight: torch.Tensor,
+    norm_bias: torch.Tensor,
+    linear_weight: torch.Tensor,
+    linear_bias: torch.Tensor,
+    residual: torch.Tensor = None,
+    eps: float = 1e-5,
+    prenorm: bool = False,
+    residual_in_fp32: bool = False,
+    is_rms_norm: bool = False,
+    num_groups: int = 1
+):
+    return layer_norm_linear(
+        x=x,
+        norm_weight=norm_weight,
+        norm_bias=norm_bias,
+        linear_weight=linear_weight,
+        linear_bias=linear_bias,
+        residual=residual,
+        eps=eps,
+        prenorm=prenorm,
+        residual_in_fp32=residual_in_fp32,
+        is_rms_norm=is_rms_norm,
+        num_groups=num_groups
+    )

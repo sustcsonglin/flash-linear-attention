@@ -12,20 +12,16 @@ from einops import rearrange
 from torch.nn import functional as F
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
-from fla.modules.l2norm import l2_norm_fn
+from fla.modules.l2norm import l2_norm
 from fla.ops.delta_rule import (chunk_delta_rule, fused_chunk_delta_rule,
                                 fused_recurrent_delta_rule)
 
 if TYPE_CHECKING:
     from fla.models.utils import Cache
 
-# @torch.jit.script
-
 
 def elu_p1(x):
     return (F.elu(x, 1., False) + 1.).to(x)
-
-# @torch.jit.script
 
 
 def sum_norm(x):
@@ -164,10 +160,6 @@ class DeltaNet(nn.Module):
             k = self.k_proj(hidden_states)
             v = self.silu(self.v_proj(hidden_states))
 
-        # dealing with left-padding
-        if attention_mask is not None:
-            v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
-
         q, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (q, k, v))
         if self.qk_activation != 'silu':
             if self.qk_activation == 'relu':
@@ -181,17 +173,20 @@ class DeltaNet(nn.Module):
 
         if self.qk_norm is not None:
             if self.qk_norm == 'l2':
-                q = l2_norm_fn(q)
-                k = l2_norm_fn(k)
+                q = l2_norm(q)
+                k = l2_norm(k)
             elif self.qk_norm == 'sum':
-                q = sum_norm(q).to(v)
-                k = sum_norm(k).to(v)
+                q = sum_norm(q).to(q)
+                k = sum_norm(k).to(k)
 
         if self.use_beta:
             beta = rearrange(self.b_proj(hidden_states), 'b t h -> b h t').sigmoid()
         else:
             beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
 
+        # dealing with left-padding
+        if attention_mask is not None:
+            beta = beta.mul_(attention_mask[:, None, -beta.shape[-1]:])
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_delta_rule(

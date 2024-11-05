@@ -169,7 +169,7 @@ def _l2_norm_bwd(
     return dx.reshape(x_shape_og)
 
 
-class L2NormFN(torch.autograd.Function):
+class L2NormFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(
@@ -198,4 +198,4 @@ class L2NormFN(torch.autograd.Function):
         )
 
 
-l2_norm_fn = L2NormFN.apply
+l2_norm = L2NormFunction.apply
