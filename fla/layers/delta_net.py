@@ -43,7 +43,7 @@ class DeltaNet(nn.Module):
         use_gate: bool = False,
         use_output_norm: bool = True,
         use_elu: bool = False,
-        use_short_conv: bool = True, # Shortconv is crucial to the performance. Do not turn it off unless you know what you are doing.
+        use_short_conv: bool = True,
         conv_size: int = 4,
         conv_bias: bool = False,
         layer_idx: int = None,
@@ -100,13 +100,26 @@ class DeltaNet(nn.Module):
             self.b_proj = nn.Linear(hidden_size, self.num_heads, bias=False)
         if use_short_conv:
             self.conv_size = conv_size
-            self.q_conv1d = ShortConvolution(self.key_dim,
-                                             conv_size,
-                                             activation='silu' if qk_activation == 'silu' else None)
-            self.k_conv1d = ShortConvolution(self.key_dim,
-                                             conv_size,
-                                             activation='silu' if qk_activation == 'silu' else None)
-            self.v_conv1d = ShortConvolution(self.value_dim, conv_size, activation='silu')
+            self.q_conv1d = ShortConvolution(
+                hidden_size=self.key_dim,
+                kernel_size=conv_size,
+                activation='silu' if qk_activation == 'silu' else None
+            )
+            self.k_conv1d = ShortConvolution(
+                hidden_size=self.key_dim,
+                kernel_size=conv_size,
+                activation='silu' if qk_activation == 'silu' else None
+            )
+            self.v_conv1d = ShortConvolution(
+                hidden_size=self.value_dim,
+                kernel_size=conv_size,
+                activation='silu'
+            )
+        else:
+            raise UserWarning(
+                "ShortConvolution is crucial to the performance. "
+                "Do not turn it off, i.e., setting `use_short_conv=False` unless you know what you are doing."
+            )
         if use_gate:
             self.g_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
             self.o_norm = FusedRMSNormSwishGate(self.head_v_dim, eps=norm_eps)
@@ -184,7 +197,7 @@ class DeltaNet(nn.Module):
 
         # dealing with padding
         if attention_mask is not None:
-            beta = beta.mul_(attention_mask[:, None, -beta.shape[-1]:])
+            beta = (torch.mul if self.training else torch.mul_)(beta, attention_mask[:, None, -beta.shape[-1]:])
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_delta_rule(
