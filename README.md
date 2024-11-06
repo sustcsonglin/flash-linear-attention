@@ -11,6 +11,18 @@ This repo aims at providing a collection of efficient Triton-based implementatio
   <img width="400" alt="image" src="https://github.com/sustcsonglin/flash-linear-attention/assets/18402347/02ff2e26-1495-4088-b701-e72cd65ac6cf">
 </div>
 
+# Table of Contents
+
+- [Models](#models)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Token Mixing](#token-mixing)
+  - [Generation](#generation)
+  - [Hybrid Models](#hybrid-models)
+- [Evaluations](#evaluations)
+- [Benchmarks](#benchmarks)
+- [Citation](#citation)
+
 # Models
 Roughly sorted according to the timeline supported in FLA
 
