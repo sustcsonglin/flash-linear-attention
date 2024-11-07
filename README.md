@@ -375,11 +375,12 @@ Performance:
 If you find this repo useful, please consider citing our works:
 ```bib
 
-@article{yang2023gated,
-  title   = {Gated Linear Attention Transformers with Hardware-Efficient Training},
-  author  = {Yang, Songlin and Wang, Bailin and Shen, Yikang and Panda, Rameswar and Kim, Yoon},
-  journal = {arXiv preprint arXiv:2312.06635},
-  year    = {2023}
+@inproceedings{
+yang2024gated,
+title={Gated Linear Attention Transformers with Hardware-Efficient Training},
+author={Songlin Yang and Bailin Wang and Yikang Shen and Rameswar Panda and Yoon Kim},
+booktitle={Forty-first International Conference on Machine Learning},
+year={2024}
 }
 
 @software{yang2024fla,
@@ -390,18 +391,19 @@ If you find this repo useful, please consider citing our works:
   year   = {2024}
 }
 
-@article{yang2024delta,
-  title   = {Parallelizing Linear Transformers with the Delta Rule over Sequence Length}, 
-  author  = {Yang, Songlin and Wang, Bailin and Zhang, Yu and Shen, Yikang and Kim, Yoon},
-  journal = {arXiv preprint arXiv:2406.06484},
-  year    = {2024},
+@inproceedings{
+yang2024parallelizing,
+title={Parallelizing Linear Transformers with the Delta Rule over Sequence Length},
+author={Songlin Yang and Bailin Wang and Yu Zhang and Yikang Shen and Yoon Kim},
+booktitle={The Thirty-eighth Annual Conference on Neural Information Processing Systems},
+year={2024}
 }
 
-@article{zhang2024gsa,
-  title   = {Gated Slot Attention for Efficient Linear-Time Sequence Modeling}, 
-  author  = {Zhang, Yu and Yang, Songlin and Zhu, Ruijie and Zhang, Yue and Cui, Leyang and Wang, Yiqiao and Wang, Bolun and Shi, Freda and Wang, Bailin and Bi, Wei and Zhou, Peng and Fu, Guohong},
-  journal = {arXiv preprint arXiv:2409.07146},
-  year    = {2024},
+@inproceedings{
+zhang2024gated,
+title={Gated Slot Attention for Efficient Linear-Time Sequence Modeling},
+author={Yu Zhang and Songlin Yang and Rui-Jie Zhu and Yue Zhang and Leyang Cui and Yiqiao Wang and Bolun Wang and Freda Shi and Bailin Wang and Wei Bi and Peng Zhou and Guohong Fu},
+booktitle={The Thirty-eighth Annual Conference on Neural Information Processing Systems},
+year={2024}
 }
-
 ```
