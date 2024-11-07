@@ -376,102 +376,127 @@ def parallel_retention_bwd_kernel(
     )
 
 
+def parallel_retention_fwd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    scale: float,
+    output_attentions: bool = False
+):
+    B, H, T, K, V = *k.shape, v.shape[-1]
+    BT, BS = 64, 32
+    if torch.cuda.get_device_capability()[0] >= 9:
+        BK = min(256, triton.next_power_of_2(K))
+        BV = min(256, triton.next_power_of_2(V))
+    else:
+        BK = min(128, triton.next_power_of_2(K))
+        BV = min(128, triton.next_power_of_2(V))
+    NK = triton.cdiv(K, BK)
+    NV = triton.cdiv(V, BV)
+    assert BT % BS == 0
+
+    num_stages = 3 if K <= 64 else 2
+    num_warps = 4
+
+    grid = (NK * NV, triton.cdiv(T, BT), B * H)
+    o = torch.empty(NK, B, H, T, V, dtype=q.dtype, device=q.device)
+    attn = q.new_zeros(NK, B, H, T, T) if output_attentions else None
+    parallel_retention_fwd_kernel[grid](
+        q=q,
+        k=k,
+        v=v,
+        o=o,
+        attn=attn,
+        s_k_h=k.stride(1),
+        s_k_t=k.stride(2),
+        s_v_h=v.stride(1),
+        s_v_t=v.stride(2),
+        scale=scale,
+        B=B,
+        H=H,
+        T=T,
+        K=K,
+        V=V,
+        BT=BT,
+        BS=BS,
+        BK=BK,
+        BV=BV,
+        num_stages=num_stages,
+        num_warps=num_warps
+    )
+    o = o.sum(0)
+    if output_attentions:
+        attn = attn.sum(0)
+    return o, attn
+
+
+def parallel_retention_bwd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    do: torch.Tensor,
+    scale: float,
+):
+    B, H, T, K, V = *k.shape, v.shape[-1]
+    BT, BS = 64, 32
+    BK = min(128, triton.next_power_of_2(k.shape[-1]))
+    BV = min(128, triton.next_power_of_2(v.shape[-1]))
+    NK = triton.cdiv(K, BK)
+    NV = triton.cdiv(V, BV)
+    assert BT % BS == 0
+
+    num_stages = 3 if K <= 64 else 2
+    num_warps = 4
+
+    dq = torch.empty(NV, B, H, T, K, dtype=q.dtype, device=q.device)
+    dk = torch.empty(NV, B, H, T, K, dtype=q.dtype, device=q.device)
+    dv = torch.empty(NK, B, H, T, V, dtype=q.dtype, device=q.device)
+    grid = (NK * NV, triton.cdiv(T, BT), B * H)
+    parallel_retention_bwd_kernel[grid](
+        q=q,
+        k=k,
+        v=v,
+        do=do,
+        dq=dq,
+        dk=dk,
+        dv=dv,
+        s_k_h=k.stride(1),
+        s_k_t=k.stride(2),
+        s_v_h=v.stride(1),
+        s_v_t=v.stride(2),
+        scale=scale,
+        B=B,
+        H=H,
+        T=T,
+        K=K,
+        V=V,
+        BT=BT,
+        BS=BS,
+        BK=BK,
+        BV=BV,
+        num_stages=num_stages,
+        num_warps=num_warps
+    )
+    return dq, dk, dv
+
+
 class ParallelRetentionFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
     @autocast_custom_fwd
     def forward(ctx, q, k, v, scale, output_attentions):
-        B, H, T, K, V = *k.shape, v.shape[-1]
-        BT, BS = 128, 32
-        BK = min(128, triton.next_power_of_2(k.shape[-1]))
-        BV = min(128, triton.next_power_of_2(v.shape[-1]))
-        NK = triton.cdiv(K, BK)
-        NV = triton.cdiv(V, BV)
-        assert BT % BS == 0
-
-        num_stages = 3 if K <= 64 else 2
-        num_warps = 4
-
-        grid = (NK * NV, triton.cdiv(T, BT), B * H)
-        o = torch.empty(NK, B, H, T, V, dtype=q.dtype, device=q.device)
-        attn = q.new_zeros(NK, B, H, T, T) if output_attentions else None
-        parallel_retention_fwd_kernel[grid](
-            q=q,
-            k=k,
-            v=v,
-            o=o,
-            attn=attn,
-            s_k_h=k.stride(1),
-            s_k_t=k.stride(2),
-            s_v_h=v.stride(1),
-            s_v_t=v.stride(2),
-            scale=scale,
-            B=B,
-            H=H,
-            T=T,
-            K=K,
-            V=V,
-            BT=BT,
-            BS=BS,
-            BK=BK,
-            BV=BV,
-            num_stages=num_stages,
-            num_warps=num_warps
-        )
-        if output_attentions:
-            attn = attn.sum(0)
+        o, attn = parallel_retention_fwd(q, k, v, scale, output_attentions)
         ctx.save_for_backward(q, k, v)
         ctx.scale = scale
-        return o.sum(0).to(q.dtype), attn
+        return o.to(q.dtype), attn
 
     @staticmethod
     @contiguous
     @autocast_custom_bwd
     def backward(ctx, do, d_attn=None):
         q, k, v = ctx.saved_tensors
-        scale = ctx.scale
-        B, H, T, K, V = *k.shape, v.shape[-1]
-        BT, BS = 64, 32
-        BK = min(128, triton.next_power_of_2(k.shape[-1]))
-        BV = min(128, triton.next_power_of_2(v.shape[-1]))
-        NK = triton.cdiv(K, BK)
-        NV = triton.cdiv(V, BV)
-        assert BT % BS == 0
-
-        num_stages = 3 if K <= 64 else 2
-        num_warps = 4
-
-        dq = torch.empty(NV, B, H, T, K, dtype=q.dtype, device=q.device)
-        dk = torch.empty(NV, B, H, T, K, dtype=q.dtype, device=q.device)
-        dv = torch.empty(NK, B, H, T, V, dtype=q.dtype, device=q.device)
-        grid = (NK * NV, triton.cdiv(T, BT), B * H)
-        parallel_retention_bwd_kernel[grid](
-            q=q,
-            k=k,
-            v=v,
-            do=do,
-            dq=dq,
-            dk=dk,
-            dv=dv,
-            s_k_h=k.stride(1),
-            s_k_t=k.stride(2),
-            s_v_h=v.stride(1),
-            s_v_t=v.stride(2),
-            scale=scale,
-            B=B,
-            H=H,
-            T=T,
-            K=K,
-            V=V,
-            BT=BT,
-            BS=BS,
-            BK=BK,
-            BV=BV,
-            num_stages=num_stages,
-            num_warps=num_warps
-        )
-
+        dq, dk, dv = parallel_retention_bwd(q, k, v, do, ctx.scale)
         return dq.sum(0).to(q.dtype), dk.sum(0).to(k.dtype), dv.sum(0).to(v.dtype), None, None
 
 
