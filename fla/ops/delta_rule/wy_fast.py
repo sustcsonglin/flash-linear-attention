@@ -20,24 +20,16 @@ from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 @triton.jit
 def fwd_prepare_wy_repr_kernel_chunk32(
     k,
-    v,
     beta,
-    w,
-    u,
     A,
     s_qk_h,
     s_qk_t,
     s_qk_d,
-    s_vo_h,
-    s_vo_t,
-    s_vo_d,
     T,
     K,
-    V,
     BT: tl.constexpr,
     BK: tl.constexpr,
     BC: tl.constexpr,
-    BV: tl.constexpr
 ):
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
 
@@ -79,24 +71,16 @@ def fwd_prepare_wy_repr_kernel_chunk32(
 @triton.jit
 def fwd_prepare_wy_repr_kernel_chunk64(
     k,
-    v,
     beta,
-    w,
-    u,
     A,
     s_qk_h,
     s_qk_t,
     s_qk_d,
-    s_vo_h,
-    s_vo_t,
-    s_vo_d,
     T,
     K,
-    V,
     BT: tl.constexpr,
     BK: tl.constexpr,
     BC: tl.constexpr,
-    BV: tl.constexpr
 ):
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
     b_A = tl.zeros([BC, BC], dtype=tl.float32)
@@ -343,14 +327,27 @@ def fwd_prepare_wy_repr(k, v, beta, BT):
     fwd_fn = fwd_prepare_wy_repr_kernel_chunk64 if BT == 64 else fwd_prepare_wy_repr_kernel_chunk32
 
     fwd_fn[(NT, B*H)](
-        k, v, beta, w, u, A,
+        k, beta, A,
         k.stride(1), k.stride(2), k.stride(3),
-        v.stride(1), v.stride(2), v.stride(3),
-        T, K, V, BT, BK, 32, BV
+        T, K, BT, BK, 32
     )
     w, u = fwd_recompute_w_u(k, v, beta, A, BT)
     return w, u, A
 
+
+def fwd_prepare_T(k, beta, BT):
+    assert BT in [16, 32, 64]
+    B, H, T, K = k.shape
+    NT = triton.cdiv(T, BT)
+    BK = min(triton.next_power_of_2(K), 64)
+    A = torch.empty(B, H, T, BT, device=k.device, dtype=k.dtype)
+    fwd_fn = fwd_prepare_wy_repr_kernel_chunk64 if BT == 64 else fwd_prepare_wy_repr_kernel_chunk32
+    fwd_fn[(NT, B*H)](
+        k, beta, A,
+        k.stride(1), k.stride(2), k.stride(3),
+        T, K, BT, BK, 32
+    )
+    return A
 
 def fwd_recompute_w_u(k, v, beta, A, BT):
     B, H, T, K, V = *k.shape, v.shape[-1]
