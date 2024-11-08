@@ -17,6 +17,7 @@ def fused_recurrent_fwd_kernel(
     q,  # query [B, H, L, K]
     k,  # key [B, H, L, V]
     v,  # value [B, H, L, V].
+    u, # pseudo value [B, H, L, V]
     beta,  # beta [B, H, L]
     o,  # output [B, H, L, V]
     h0,
@@ -42,6 +43,7 @@ def fused_recurrent_fwd_kernel(
     p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
     p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
+    p_u = u + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     if IS_HEADWISE_BETA:
         p_beta = beta + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
     else:
@@ -68,8 +70,7 @@ def fused_recurrent_fwd_kernel(
             b_beta = tl.load(p_beta, mask=mask_bv, other=0).to(tl.float32)
         else:
             b_beta = tl.load(p_beta).to(tl.float32)
-        # in-place overwrite
-        tl.store(p_v, b_v.to(p_v.dtype.element_ty), mask=mask_bv)
+        tl.store(p_u, b_v.to(p_v.dtype.element_ty), mask=mask_bv)
         b_v *= b_beta
         h += b_k[None, :] * b_v[:, None]
         _o = h * b_q[None, :]
@@ -80,6 +81,7 @@ def fused_recurrent_fwd_kernel(
         p_k += K
         p_o += V
         p_v += V
+        p_u += V
         p_beta += V if IS_HEADWISE_BETA else 1
 
     if STORE_FINAL_STATE:
@@ -253,8 +255,9 @@ class FusedRecurrentFunction(torch.autograd.Function):
             final_state = None
 
         grid = (NV, NK, B * H)
+        u = torch.empty_like(v)
         fused_recurrent_fwd_kernel[grid](
-            q, k, v, beta, o, initial_state, final_state,
+            q, k, v, u, beta, o, initial_state, final_state,
             q.stride(1),
             v.stride(1),
             scale,
@@ -267,7 +270,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
             num_stages=num_stages,
         )
         o = o.squeeze(0)
-        ctx.save_for_backward(q, k, v, beta, initial_state)
+        ctx.save_for_backward(q, k, u, beta, initial_state)
         ctx.scale = scale
         return o, final_state
 

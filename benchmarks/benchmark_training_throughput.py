@@ -52,7 +52,8 @@ def profile(
         model.parameters(),
         lr=lr,
         betas=betas,
-        weight_decay=weight_decay
+        weight_decay=weight_decay,
+        fused=True
     )
     scheduler = get_cosine_schedule_with_warmup(optimizer, 0, total_steps)
 

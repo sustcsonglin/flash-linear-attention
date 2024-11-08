@@ -39,7 +39,7 @@ class Mamba2Config(PretrainedConfig):
             `inputs_ids` passed when calling [`Mamba2Model`].
         hidden_size (`int`, *optional*, defaults to 2048):
             Dimensionality of the embeddings and hidden states.
-        state_size (`int`, *optional*, defaults to 64): shape of the state space latents.
+        state_size (`int`, *optional*, defaults to 128): shape of the state space latents.
         num_hidden_layers (`int`, *optional*, defaults to 48):
             Number of hidden layers in the model.
         layer_norm_epsilon (`float`, *optional*, defaults to 1e-05):
@@ -52,7 +52,7 @@ class Mamba2Config(PretrainedConfig):
             The id of the end of sentence token in the vocabulary.
         expand (`int`, *optional*, defaults to 2): Expanding factor used to determine the intermediate size.
         conv_kernel (`int`, *optional*, defaults to 4): Size of the convolution kernel.
-        n_groups (`int`, *optional*, defaults to 8):
+        n_groups (`int`, *optional*, defaults to 1):
             Number of groups for the evolution matrices of mamba 2.
         use_bias (`bool`, *optional*, defaults to `False`):
             Whether or not to use bias in ["in_proj", "out_proj"] of the mixer block
@@ -96,7 +96,7 @@ class Mamba2Config(PretrainedConfig):
         head_dim: int = 64,
         vocab_size: int = 32000,
         hidden_size: int = 2048,
-        state_size: int = 64,
+        state_size: int = 128,
         num_hidden_layers: int = 48,
         layer_norm_epsilon: float = 1e-5,
         pad_token_id: int = 0,
@@ -104,7 +104,7 @@ class Mamba2Config(PretrainedConfig):
         eos_token_id: int = 2,
         expand: int = 2,
         conv_kernel: int = 4,
-        n_groups: int = 8,
+        n_groups: int = 1,
         use_bias: bool = False,
         use_conv_bias: bool = True,
         hidden_act: str = "silu",

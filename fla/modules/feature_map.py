@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from fla.modules.activations import fast_gelu_impl, sigmoid, sqrelu, swish
-from fla.modules.layernorm import layer_norm_fn
+from fla.modules.layernorm import layer_norm
 from fla.utils import checkpoint
 
 
@@ -177,7 +177,7 @@ class LearnablePolySketchNonNegativeFeatureMap(nn.Module):
 
     def forward(self, x: torch.Tensor):
         # Section 2.1
-        x = layer_norm_fn(x, self.gamma, self.beta)
+        x = layer_norm(x, self.gamma, self.beta)
         # first map the input to sketch size with learnable parameters
         x = self.sketches1[0](x) * self.sketches2[0](x) * self.head_dim ** -0.5
         for i in range(1, int(math.log2(self.degree)) - 1):
@@ -228,7 +228,7 @@ class RebasedFeatureMap(nn.Module):
 
     def forward(self, x: torch.Tensor, flatten: Optional[bool] = True):
         if self.use_beta and self.use_gamma and self.normalize:
-            x = layer_norm_fn(x, self.gamma, self.beta)
+            x = layer_norm(x, self.gamma, self.beta)
         elif self.normalize:
             x = F.layer_norm(x, (self.head_dim,), self.gamma, self.beta)
         elif self.use_gamma and self.use_beta:

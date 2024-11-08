@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast)
 from transformers.modeling_utils import PreTrainedModel
@@ -18,9 +18,11 @@ from transformers.utils import logging
 
 from fla.layers.attn import Attention
 from fla.models.transformer.configuration_transformer import TransformerConfig
+from fla.models.utils import Cache
 from fla.modules import (FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss,
                          RMSNorm)
 from fla.modules.activations import swiglu_linear
+from fla.modules.layernorm import rms_norm_linear
 
 logger = logging.get_logger(__name__)
 
@@ -32,7 +34,9 @@ class TransformerMLP(nn.Module):
         hidden_size: int,
         hidden_ratio: Optional[int] = None,
         intermediate_size: Optional[int] = None,
-        hidden_act: str = 'swish'
+        hidden_act: str = 'swish',
+        norm_first: bool = True,
+        norm_eps: float = 1e-5
     ) -> TransformerMLP:
         super().__init__()
 
@@ -46,29 +50,41 @@ class TransformerMLP(nn.Module):
             intermediate_size = 256 * ((intermediate_size + 256 - 1) // 256)
         self.hidden_ratio = hidden_ratio
         self.intermediate_size = intermediate_size
+        self.norm_first = norm_first
+
+        if norm_first:
+            self.norm = RMSNorm(hidden_size=hidden_size, eps=norm_eps)
 
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
     def forward(self, x):
-        y = self.gate_proj(x)
-        gate, y = y.chunk(2, -1)
+        if self.norm_first:
+            x = rms_norm_linear(x, self.norm.weight, self.norm.bias, self.gate_proj.weight, self.gate_proj.bias)
+        else:
+            x = self.gate_proj(x)
+        gate, y = x.chunk(2, -1)
         return swiglu_linear(gate, y, self.down_proj.weight, self.down_proj.bias)
 
 
 class TransformerBlock(nn.Module):
+
     def __init__(self, config: TransformerConfig, layer_idx: int):
         super().__init__()
+
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
+        if not config.norm_first:
+            self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.attn = Attention(
             hidden_size=config.hidden_size,
             num_heads=config.num_heads,
             num_kv_heads=config.num_kv_heads,
             window_size=config.window_size,
             max_position_embeddings=config.max_position_embeddings,
+            norm_first=config.norm_first,
+            norm_eps=config.norm_eps,
             layer_idx=layer_idx
         )
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
@@ -76,7 +92,9 @@ class TransformerBlock(nn.Module):
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
             intermediate_size=config.intermediate_size,
-            hidden_act=config.hidden_act
+            hidden_act=config.hidden_act,
+            norm_first=config.norm_first,
+            norm_eps=config.norm_eps
         )
 
     def forward(
@@ -90,7 +108,8 @@ class TransformerBlock(nn.Module):
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
         residual = hidden_states
-        hidden_states = self.attn_norm(hidden_states)
+        if hasattr(self, 'attn_norm'):
+            hidden_states = self.attn_norm(hidden_states)
         hidden_states, attentions, past_key_values = self.attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -98,7 +117,11 @@ class TransformerBlock(nn.Module):
             use_cache=use_cache,
             output_attentions=output_attentions
         )
-        hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
+        if hasattr(self, 'mlp_norm'):
+            hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
+        else:
+            hidden_states = residual + hidden_states
+            residual = hidden_states
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -204,10 +227,8 @@ class TransformerModel(TransformerPreTrainedModel):
         elif input_ids is None and inputs_embeds is None:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
-        if use_cache:
-            use_legacy_cache = not isinstance(past_key_values, Cache)
-            if use_legacy_cache:
-                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+        if use_cache and not isinstance(past_key_values, Cache):
+            past_key_values = Cache.from_legacy_cache(past_key_values)
 
         if inputs_embeds is None:
             inputs_embeds = self.embeddings(input_ids)
@@ -224,7 +245,7 @@ class TransformerModel(TransformerPreTrainedModel):
 
         all_hidden_states = () if output_hidden_states else None
         all_attns = () if output_attentions else None
-        next_decoder_cache = None
+        next_cache = None
 
         for layer in self.layers:
             if output_hidden_states:
@@ -251,7 +272,7 @@ class TransformerModel(TransformerPreTrainedModel):
             hidden_states = layer_outputs[0]
 
             if use_cache:
-                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+                next_cache = layer_outputs[2 if output_attentions else 1]
 
             if output_attentions:
                 all_attns += (layer_outputs[1],)
@@ -262,9 +283,6 @@ class TransformerModel(TransformerPreTrainedModel):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = None
-        if use_cache:
-            next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_attns] if v is not None)
 
@@ -276,7 +294,8 @@ class TransformerModel(TransformerPreTrainedModel):
         )
 
 
-class TransformerForCausalLM(TransformerPreTrainedModel):
+class TransformerForCausalLM(TransformerPreTrainedModel, GenerationMixin):
+
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
@@ -309,9 +328,11 @@ class TransformerForCausalLM(TransformerPreTrainedModel):
     def prepare_inputs_for_generation(
         self,
         input_ids: torch.LongTensor = None,
-        past_key_values: Optional[torch.Tensor] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         attention_mask: Optional[torch.Tensor] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
+        use_cache: bool = True,
+        num_logits_to_keep: Optional[int] = None,
         **kwargs
     ):
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
@@ -327,10 +348,14 @@ class TransformerForCausalLM(TransformerPreTrainedModel):
             # TODO: use `next_tokens` directly instead.
             model_inputs = {'input_ids': input_ids.contiguous()}
 
+        if num_logits_to_keep is not None:
+            model_inputs['num_logits_to_keep'] = num_logits_to_keep
+
         model_inputs.update({
             'past_key_values': past_key_values,
-            'use_cache': kwargs.get('use_cache'),
+            'use_cache': use_cache,
             'attention_mask': attention_mask,
+            'num_logits_to_keep': num_logits_to_keep,
         })
         return model_inputs
 
@@ -338,13 +363,14 @@ class TransformerForCausalLM(TransformerPreTrainedModel):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        num_logits_to_keep: Optional[int] = 0
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -365,7 +391,7 @@ class TransformerForCausalLM(TransformerPreTrainedModel):
 
         hidden_states = outputs[0]
         fuse_linear_and_cross_entropy = self.config.fuse_cross_entropy and self.training
-        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states)
+        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states[:, -num_logits_to_keep:])
 
         loss = None
         if labels is not None:

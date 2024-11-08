@@ -10,11 +10,13 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 from transformers.activations import ACT2FN
+from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast)
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
+from fla.layers.attn import Attention
 from fla.layers.hgrn2 import HGRN2Attention
 from fla.models.hgrn2.configuration_hgrn2 import HGRN2Config
 from fla.models.utils import Cache
@@ -63,17 +65,27 @@ class HGRN2Block(nn.Module):
         self.hidden_size = config.hidden_size
 
         self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
-        self.attn = HGRN2Attention(
-            mode=config.attn_mode,
-            hidden_size=config.hidden_size,
-            num_heads=config.num_heads,
-            expand_ratio=config.expand_ratio,
-            use_short_conv=config.use_short_conv,
-            conv_size=config.conv_size,
-            elementwise_affine=config.elementwise_affine,
-            norm_eps=config.norm_eps,
-            layer_idx=layer_idx
-        )
+        if config.attn is not None and layer_idx in config.attn['layers']:
+            self.attn = Attention(
+                hidden_size=config.hidden_size,
+                num_heads=config.attn['num_heads'],
+                num_kv_heads=config.attn['num_kv_heads'],
+                window_size=config.attn['window_size'],
+                max_position_embeddings=config.max_position_embeddings,
+                layer_idx=layer_idx
+            )
+        else:
+            self.attn = HGRN2Attention(
+                mode=config.attn_mode,
+                hidden_size=config.hidden_size,
+                num_heads=config.num_heads,
+                expand_ratio=config.expand_ratio,
+                use_short_conv=config.use_short_conv,
+                conv_size=config.conv_size,
+                elementwise_affine=config.elementwise_affine,
+                norm_eps=config.norm_eps,
+                layer_idx=layer_idx
+            )
         self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = HGRN2MLP(
             hidden_size=config.hidden_size,
@@ -86,7 +98,7 @@ class HGRN2Block(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
         lower_bound: Optional[torch.Tensor] = False,
@@ -182,7 +194,7 @@ class HGRN2Model(HGRN2PreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,  # noqa
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -199,29 +211,19 @@ class HGRN2Model(HGRN2PreTrainedModel):
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
-        elif input_ids is not None:
-            batch_size = input_ids.shape[0]
-        elif inputs_embeds is not None:
-            batch_size = inputs_embeds.shape[0]
-        else:
+        if input_ids is None and inputs_embeds is None:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if inputs_embeds is None:
             inputs_embeds = self.embeddings(input_ids)
         hidden_states = inputs_embeds
 
-        if use_cache:
-            if past_key_values is None:
-                past_key_values = [layer.attn.init_state(batch_size) for layer in self.layers]
-            if not isinstance(past_key_values, Cache):
-                past_key_values = Cache.from_legacy_cache(past_key_values)
+        if use_cache and not isinstance(past_key_values, Cache):
+            past_key_values = Cache.from_legacy_cache(past_key_values)
 
-        if self.gradient_checkpointing and self.training:
-            if use_cache:
-                logger.warning_once(
-                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
-                )
-                use_cache = False
+        if self.gradient_checkpointing and self.training and use_cache:
+            logger.warning_once("`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...")
+            use_cache = False
 
         all_hidden_states = () if output_hidden_states else None
         all_attns = () if output_attentions else None
@@ -273,7 +275,8 @@ class HGRN2Model(HGRN2PreTrainedModel):
         )
 
 
-class HGRN2ForCausalLM(HGRN2PreTrainedModel):
+class HGRN2ForCausalLM(HGRN2PreTrainedModel, GenerationMixin):
+
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
@@ -321,16 +324,16 @@ class HGRN2ForCausalLM(HGRN2PreTrainedModel):
     def prepare_inputs_for_generation(
         self,
         input_ids: torch.LongTensor = None,
-        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         attention_mask: Optional[torch.Tensor] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
+        use_cache: bool = True,
+        num_logits_to_keep: Optional[int] = None,
         **kwargs
     ):
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
-            if not isinstance(past_key_values, Cache):
-                past_key_values = Cache.from_legacy_cache(past_key_values, input_ids.shape[1] - 1)
-            input_ids, attention_mask = input_ids[:, -1:], attention_mask[:, -1:]
+            input_ids = input_ids[:, -1:]
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
             model_inputs = {'inputs_embeds': inputs_embeds}
@@ -341,10 +344,14 @@ class HGRN2ForCausalLM(HGRN2PreTrainedModel):
             # TODO: use `next_tokens` directly instead.
             model_inputs = {'input_ids': input_ids.contiguous()}
 
+        if num_logits_to_keep is not None:
+            model_inputs['num_logits_to_keep'] = num_logits_to_keep
+
         model_inputs.update({
             'past_key_values': past_key_values,
-            'use_cache': kwargs.get('use_cache'),
+            'use_cache': use_cache,
             'attention_mask': attention_mask,
+            'num_logits_to_keep': num_logits_to_keep,
         })
         return model_inputs
 
@@ -353,12 +360,13 @@ class HGRN2ForCausalLM(HGRN2PreTrainedModel):
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
-        past_key_values: Optional[Tuple[List[torch.Tensor]]] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        num_logits_to_keep: Optional[int] = 0
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -379,7 +387,7 @@ class HGRN2ForCausalLM(HGRN2PreTrainedModel):
 
         hidden_states = outputs[0]
         fuse_linear_and_cross_entropy = self.config.fuse_cross_entropy and self.training
-        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states)
+        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states[:, -num_logits_to_keep:])
 
         loss = None
         if labels is not None:

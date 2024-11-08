@@ -669,6 +669,7 @@ class MambaModel(MambaPreTrainedModel):
 
 
 class MambaForCausalLM(MambaPreTrainedModel, GenerationMixin):
+
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
@@ -720,6 +721,7 @@ class MambaForCausalLM(MambaPreTrainedModel, GenerationMixin):
         cache_params: Optional[MambaCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.LongTensor] = None,
+        num_logits_to_keep: Optional[int] = None,
         **kwargs,
     ):
         if use_cache:
@@ -748,11 +750,15 @@ class MambaForCausalLM(MambaPreTrainedModel, GenerationMixin):
         else:
             model_inputs = {"input_ids": input_ids.contiguous()}
 
+        if num_logits_to_keep is not None:
+            model_inputs['num_logits_to_keep'] = num_logits_to_keep
+
         model_inputs.update({
-            "cache_params": cache_params,
-            "use_cache": use_cache,
-            "cache_position": cache_position,
-            "attention_mask": attention_mask,
+            'cache_params': cache_params,
+            'use_cache': use_cache,
+            'cache_position': cache_position,
+            'attention_mask': attention_mask,
+            'num_logits_to_keep': num_logits_to_keep,
         })
         return model_inputs
 
@@ -767,6 +773,7 @@ class MambaForCausalLM(MambaPreTrainedModel, GenerationMixin):
         return_dict: Optional[bool] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.Tensor] = None,
+        num_logits_to_keep: Optional[int] = 0,
         **kwargs,  # for now we need this for generation
     ) -> Union[Tuple, MambaCausalLMOutput]:
         r"""
@@ -789,7 +796,7 @@ class MambaForCausalLM(MambaPreTrainedModel, GenerationMixin):
         )
         hidden_states = mamba_outputs[0]
         fuse_linear_and_cross_entropy = self.config.fuse_cross_entropy and self.training
-        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states)
+        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states[:, -num_logits_to_keep:])
 
         loss = None
         if labels is not None:
