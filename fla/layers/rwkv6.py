@@ -72,6 +72,7 @@ class RWKV6Attention(nn.Module):
         self.v_proj = DDLerpLinear(hidden_size, self.value_dim)
         self.g_proj = DDLerpLinear(hidden_size, self.value_dim)
         self.bonus = nn.Parameter(torch.zeros(num_heads, self.head_qk_dim))
+        self.bound_w = 20.0
 
         # TODO: fuse GroupNorm and output gate
         self.g_norm = GroupNorm(self.num_heads, self.value_dim, elementwise_affine=elementwise_affine, bias=True, eps=norm_eps)
@@ -130,7 +131,7 @@ class RWKV6Attention(nn.Module):
         if attention_mask is not None:
             v = v.mul_(attention_mask.unsqueeze(-1))
         r, w, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (r, w, k, v))
-        w = -torch.exp(w)
+        w = -torch.exp(self.bound_w * softsign(w / self.bound_w))
         u = self.bonus
 
         recurrent_state = last_state[1] if use_cache else None
