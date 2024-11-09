@@ -2,11 +2,12 @@
 # pip install "git+https://github.com/openai/triton.git#egg=triton&subdirectory=python"
 
 import torch
-from benchmark import benchmark_combined, benchmark_forward
+from benchmark import benchmark_combined, benchmark_forward, benchmark_backward
 
-from fla.ops.delta_rule import (chunk_linear_attn_delta_rule,
-                                fused_recurrent_delta_rule)
+from fla.ops.delta_rule import (chunk_delta_rule,
+                                fused_recurrent_delta_rule, fused_chunk_delta_rule)
 from fla.ops.retention import fused_chunk_retention
+# from flash_attn import flash_attn_func
 
 
 def time_fwd(func, *args, **kwargs):
@@ -18,19 +19,24 @@ def time_fwd_bwd(func, *args, **kwargs):
     time_fb = benchmark_combined(func, *args, **kwargs)
     return time_fb[1].mean
 
+def time_bwd(func, *args, **kwargs):
+    time_fb = benchmark_backward(func, *args, **kwargs)
+    return time_fb[1].mean
+
 
 repeats = 256
 device = 'cuda'
 dtype = torch.bfloat16
 
-bs_seqlen_vals = [(32, 512), (16, 1024), (8, 2048), (4, 4096), (2, 8192), (1, 16384)]
+
+bs_seqlen_vals = [(8, 2048), (4, 4096), (2, 8192)]
 causal_vals = [True]
-headdim_vals = [64, 128]
+headdim_vals = [64, 128, 256]
 dim = 2048
 dropout_p = 0.0
 
-methods = (["retnet_fused_chunk", "delta_chunk", "delta_fused_chunk", "delta_recurrent"])
 
+methods = (["chunk_delta_rule", "fused_chunk_delta_rule"])
 time_f = {}
 time_b = {}
 time_f_b = {}
@@ -43,40 +49,26 @@ for causal in causal_vals:
             config = (causal, headdim, B, seqlen)
             H = dim // headdim
             q = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-            k = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
+            k = torch.nn.functional.normalize(torch.randn(B, H, seqlen, headdim, device=device, dtype=dtype), p=2, dim=-1).requires_grad_(True)
             v = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-            fb = time_fwd_bwd(fused_chunk_retention, q, k, v,  verbose=False)
-            time_f_b[config, "retnet_fused_chunk"] = fb
-
-            q2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-            k2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-            v2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-
+            beta = torch.rand(B, H, seqlen, device=device, dtype=dtype).sigmoid().requires_grad_(True)
+            o1, _ = chunk_delta_rule(q, k, v, beta)
+            o1.sum().backward(retain_graph=True)
             f_b = time_fwd_bwd(
-                chunk_linear_attn_delta_rule, q, k, v, None, 32, False, verbose=False
+                chunk_delta_rule, q, k, v, beta, verbose=False
             )
-            time_f_b[config, "delta_fused_chunk"] = f_b
+            time_f_b[config, "chunk_delta_rule"] = f_b
 
-            q2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-            k2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-            v2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-
+            # q = torch.randn(B, seqlen, H, headdim, device=device, requires_grad=True, dtype=dtype)
+            # k = torch.randn(B, seqlen, H, headdim, device=device, requires_grad=True, dtype=dtype)
+            # v = torch.randn(B, seqlen, H, headdim, device=device, requires_grad=True, dtype=dtype)
             f_b = time_fwd_bwd(
-                chunk_linear_attn_delta_rule, q, k, v, None, 32, True, verbose=False
+                fused_chunk_delta_rule, q, k, v, beta, verbose=False
             )
-            time_f_b[config, "delta_chunk"] = f_b
+            time_f_b[config, "fused_chunk_delta_rule"] = f_b
 
-            q2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-            k2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-            v2 = torch.randn(B, H, seqlen, headdim, device=device, requires_grad=True, dtype=dtype)
-
-            f_b = time_fwd_bwd(
-                fused_recurrent_delta_rule, q, k, v, verbose=False
-            )
-            time_f_b[config, "delta_recurrent"] = f_b
 
             print(f"### causal={causal}, headdim={headdim}, B={B}, seqlen={seqlen} ###")
-
             for method in methods:
                 # time_f_b[config, method] = time_f[config, method] + time_b[config, method]
                 print(f"{method:>50} fwd + bwd:\t {time_f_b[config, method]*1000:>6.4f} ms ")

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from typing import Optional
+from typing import Dict, Optional
 
 from transformers.configuration_utils import PretrainedConfig
 
@@ -13,19 +13,19 @@ class HGRNConfig(PretrainedConfig):
     def __init__(
         self,
         attn_mode: str = "chunk",
-        vocab_size: int = 32000,
         hidden_size: int = 2048,
         num_hidden_layers: int = 24,
         expand_ratio: Optional[int] = 1,
         use_short_conv: bool = False,
         conv_size: int = 4,
         use_lower_bound: bool = True,
+        max_position_embeddings: int = 2048,
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
         hidden_act: str = "swish",
-        max_position_embeddings: int = 2048,
         elementwise_affine: Optional[bool] = True,
         norm_eps: float = 1e-6,
+        attn: Optional[Dict] = None,
         use_cache: bool = True,
         pad_token_id: int = None,
         bos_token_id: int = 1,
@@ -33,25 +33,37 @@ class HGRNConfig(PretrainedConfig):
         tie_word_embeddings: bool = False,
         initializer_range: float = 0.02,
         fuse_cross_entropy: bool = True,
+        vocab_size: int = 32000,
         **kwargs
     ):
         self.attn_mode = attn_mode
-        self.vocab_size = vocab_size
-        self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
         self.expand_ratio = expand_ratio
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
         self.use_lower_bound = use_lower_bound
+        self.max_position_embeddings = max_position_embeddings
         self.hidden_ratio = hidden_ratio
         self.intermediate_size = intermediate_size
-        self.hidden_act = hidden_act
         self.elementwise_affine = elementwise_affine
+        self.attn = attn
         self.norm_eps = norm_eps
+        self.hidden_act = hidden_act
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         self.fuse_cross_entropy = fuse_cross_entropy
+        self.vocab_size = vocab_size
+
+        if attn is not None:
+            if not isinstance(attn, Dict):
+                raise ValueError("attn must be a dictionary")
+            if 'layers' not in attn:
+                raise ValueError("Layer indices must be provided to initialize hybrid attention layers")
+            if 'num_heads' not in attn:
+                raise ValueError("Number of heads must be provided to initialize hybrid attention layers")
+            attn['num_kv_heads'] = attn.get('num_kv_heads', attn['num_heads'])
+            attn['window_size'] = attn.get('window_size', None)
 
         super().__init__(
             pad_token_id=pad_token_id,

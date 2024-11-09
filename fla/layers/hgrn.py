@@ -82,13 +82,25 @@ class HGRNAttention(nn.Module):
         lower_bound: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
+        if attention_mask is not None:
+            assert len(attention_mask.shape) == 2, (
+                "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
+                "for padding purposes (0 indicating padding). "
+                "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
+            )
+
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
-        last_state = past_key_values[self.layer_idx] if use_cache else None
+        last_state = None
+        if past_key_values is not None and len(past_key_values) > self.layer_idx:
+            last_state = past_key_values[self.layer_idx]
+
         if self.use_short_conv:
-            conv_state_i = last_state[0] if use_cache else None
-            conv_state_f = last_state[1] if use_cache else None
+            if last_state is not None:
+                conv_state_i, conv_state_f = last_state['conv_state']
+            else:
+                conv_state_i, conv_state_f = None, None
             i = self.i_conv1d(self.i_proj(hidden_states), attention_mask, conv_state_i)
             f = self.f_conv1d(self.f_proj(hidden_states), attention_mask, conv_state_f)
         else:
@@ -104,37 +116,38 @@ class HGRNAttention(nn.Module):
 
         # dealing with left-padding
         if attention_mask is not None:
-            i = i.mul_(attention_mask.unsqueeze(-1))
+            i = i.mul_(attention_mask[:, -i.shape[-2]:, None])
 
-        recurrent_state = last_state[-1] if use_cache else None
+        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'chunk':
-            o, recurrent_state = chunk_hgrn(i, f, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = chunk_hgrn(
+                i=i,
+                f=f,
+                initial_state=recurrent_state,
+                output_final_state=use_cache
+            )
         elif mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_hgrn(i, f, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_hgrn(
+                i=i,
+                f=f,
+                initial_state=recurrent_state,
+                output_final_state=use_cache
+            )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
-            if self.use_short_conv:
-                last_state = (conv_state_i, conv_state_f, recurrent_state)
-            else:
-                last_state = (recurrent_state,)
-            past_key_values.update(last_state, self.layer_idx, i.shape[2])
+            past_key_values.update(
+                recurrent_state=recurrent_state,
+                conv_state=(conv_state_i, conv_state_f) if self.use_short_conv else None,
+                layer_idx=self.layer_idx,
+                offset=i.shape[2]
+            )
 
         o = self.g_norm(o, self.g_proj(hidden_states))
         o = self.o_proj(o)
 
         return o, None, past_key_values
-
-    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
-        param = next(self.parameters())
-        state = tuple()
-        if self.use_short_conv:
-            state += (param.new_zeros(batch_size, self.hidden_size, self.conv_size),
-                      param.new_zeros(batch_size, self.hidden_size, self.conv_size),
-                      param.new_zeros(batch_size, self.hidden_size, self.conv_size))
-        state += (param.new_zeros(batch_size, self.hidden_size),)
-        return state
 
     def state_size(self, **kwargs) -> int:
         state_size = self.hidden_size

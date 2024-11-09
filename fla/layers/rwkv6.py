@@ -101,16 +101,25 @@ class RWKV6Attention(nn.Module):
         output_attentions: Optional[bool] = False,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
+        if attention_mask is not None:
+            assert len(attention_mask.shape) == 2, (
+                "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
+                "for padding purposes (0 indicating padding). "
+                "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
+            )
+
         batch_size, seq_len, hidden_size = hidden_states.shape
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
-        last_state = past_key_values[self.layer_idx] if use_cache else None
+        last_state = None
+        if past_key_values is not None and len(past_key_values) > self.layer_idx:
+            last_state = past_key_values[self.layer_idx]
 
         if attention_mask is not None:
-            hidden_states = hidden_states.mul_(attention_mask.unsqueeze(-1))
+            hidden_states = hidden_states.mul_(attention_mask[:, -hidden_states.shape[-2]:, None])
         if hidden_states.shape[1] == 1 and last_state is not None:
-            shifted = last_state[0].unsqueeze(1)
+            shifted = last_state['conv_state'].unsqueeze(1)
         else:
             shifted = self.time_shift(hidden_states)
             if last_state is not None:
@@ -118,7 +127,7 @@ class RWKV6Attention(nn.Module):
 
         delta = shifted - hidden_states
         x = self.x_proj[0](hidden_states, delta).view(batch_size, seq_len, -1, self.proj_low_rank_dim)
-        x = torch.einsum('b l n r, h n r-> b l n h', self.x_proj[1](x), self.x_proj[2].weight.view(hidden_size, 5, -1))
+        x = torch.einsum('b t n r, h n r-> b t n h', self.x_proj[1](x), self.x_proj[2].weight.view(hidden_size, 5, -1))
 
         r, w, k, v, g = x.add_(self.x_bias).unbind(-2)
         r = self.r_proj(hidden_states, r, delta)
@@ -129,12 +138,12 @@ class RWKV6Attention(nn.Module):
 
         # dealing with left-padding
         if attention_mask is not None:
-            v = v.mul_(attention_mask.unsqueeze(-1))
-        r, w, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (r, w, k, v))
+            v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
+        r, w, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (r, w, k, v))
         w = -torch.exp(self.bound_w * softsign(w / self.bound_w))
         u = self.bonus
 
-        recurrent_state = last_state[1] if use_cache else None
+        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_rwkv6(r, k, v, w, u,
                                                        scale=1.,
@@ -149,22 +158,17 @@ class RWKV6Attention(nn.Module):
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
-            past_key_values.update((hidden_states[:, -1], recurrent_state), self.layer_idx, r.shape[2])
+            past_key_values.update(
+                recurrent_state=recurrent_state,
+                conv_state=hidden_states[:, -1],
+                layer_idx=self.layer_idx,
+                offset=r.shape[2]
+            )
 
-        o = self.g_norm(rearrange(o, 'b h l d -> b l (h d)')) * self.gate_fn(g)
+        o = self.g_norm(rearrange(o, 'b h t d -> b t (h d)')) * self.gate_fn(g)
         o = self.o_proj(o)
 
         return o, None, past_key_values
-
-    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
-        param = next(self.parameters())
-        state = [param.new_zeros(batch_size, self.hidden_size),
-                 param.new_zeros(batch_size, self.num_heads, self.head_qk_dim, self.head_v_dim)]
-        return state
-
-    def state_size(self, **kwargs) -> int:
-        state_size = self.key_dim * self.head_v_dim
-        return state_size
 
 
 class LoRA(nn.Module):

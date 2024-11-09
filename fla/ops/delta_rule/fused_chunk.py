@@ -363,7 +363,6 @@ def fused_chunk_delta_rule(
     v: torch.Tensor,
     beta: torch.Tensor,
     scale: float = None,
-    BT: int = 16,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False
 ):
@@ -380,14 +379,12 @@ def fused_chunk_delta_rule(
         scale (Optional[int]):
             Scale factor for the RetNet attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
-        BT (int):
-            chunk size. Default: `16`.
         initial_state (Optional[torch.Tensor]):
             Initial state of shape `(B, H, K, V)`. Default: `None`.
         output_final_state (Optional[bool]):
             Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
     """
-    assert BT in [16, 32], "BT must be 16 or 32."
+    BT = 32 if q.shape[-1] <= 128 else 16
     assert q.dtype == k.dtype == v.dtype
     assert q.dtype != torch.float32, "ChunkDeltaRuleFunction does not support float32. Please use bfloat16."
     assert len(beta.shape) == 3, "beta must be of shape (batch size, num of head, seq len)."

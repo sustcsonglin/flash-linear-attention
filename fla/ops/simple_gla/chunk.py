@@ -113,8 +113,7 @@ def chunk_simple_gla_bwd_kernel_dqkg(
 
     p_g = tl.make_block_ptr(g + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
     b_g = tl.load(p_g, boundary_check=(0,))
-    last_idx = min(i_t * BT + BT, T) - 1
-    b_g_last = tl.load(g + i_bh * T + last_idx)
+    b_g_last = tl.load(g + i_bh * T + min(i_t * BT + BT, T) - 1)
 
     b_dq = tl.zeros([BT, BK], dtype=tl.float32)
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
@@ -264,10 +263,9 @@ def chunk_bwd_dv_kernel(
     NT: tl.constexpr
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    last_idx = min(i_t * BT + BT, T) - 1
 
     b_g = tl.load(g + i_bh * T + i_t * BT + tl.arange(0, BT))
-    b_g_last = tl.load(g + i_bh * T + last_idx)
+    b_g_last = tl.load(g + i_bh * T + min(i_t * BT + BT, T) - 1)
     b_dv = tl.zeros([BT, BV], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
         p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
@@ -313,7 +311,8 @@ def chunk_bwd_dv_fn(q, k, g, do, dh, BT, scale):
     return dv
 
 
-class SimpleGLAFunction(torch.autograd.Function):
+class ChunkSimpleGLAFunction(torch.autograd.Function):
+
     @staticmethod
     @contiguous
     @autocast_custom_fwd
@@ -374,7 +373,6 @@ class SimpleGLAFunction(torch.autograd.Function):
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, dh0, None
 
 
-
 def chunk_simple_gla(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -408,5 +406,5 @@ def chunk_simple_gla(
     assert q.dtype == k.dtype == v.dtype, "q, k, v must have the same dtype"
     if scale is None:
         scale = k.shape[-1] ** -0.5
-    o, final_state = SimpleGLAFunction.apply(q, k, v, g, scale, initial_state, output_final_state)
+    o, final_state = ChunkSimpleGLAFunction.apply(q, k, v, g, scale, initial_state, output_final_state)
     return o, final_state

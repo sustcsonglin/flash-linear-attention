@@ -14,6 +14,7 @@ from einops import rearrange
 
 from fla.modules import RMSNorm, ShortConvolution
 from fla.modules.activations import swish
+from fla.modules.layernorm import rms_norm_linear
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
 if TYPE_CHECKING:
@@ -98,20 +99,28 @@ class HGRN2Attention(nn.Module):
         lower_bound: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
+        if attention_mask is not None:
+            assert len(attention_mask.shape) == 2, (
+                "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
+                "for padding purposes (0 indicating padding). "
+                "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
+            )
+
         # launching the triton kernel for just one token will actually be slower
         mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
 
-        last_state = past_key_values[self.layer_idx] if use_cache else None
+        last_state = None
+        if past_key_values is not None and len(past_key_values) > self.layer_idx:
+            last_state = past_key_values[self.layer_idx]
+
         if self.use_short_conv:
-            conv_state_q = last_state[0] if use_cache else None
-            conv_state_f = last_state[1] if use_cache else None
-            conv_state_i = last_state[2] if use_cache else None
-            q = self.q_proj(hidden_states)
-            f = self.f_proj(hidden_states)
-            i = self.i_proj(hidden_states)
-            q = self.q_conv1d(q, attention_mask, conv_state_q)
-            f = self.f_conv1d(f, attention_mask, conv_state_f)
-            i = self.i_conv1d(i, attention_mask, conv_state_i)
+            if last_state is not None:
+                conv_state_q, conv_state_f, conv_state_i = last_state['conv_state']
+            else:
+                conv_state_q, conv_state_f, conv_state_i = None, None, None
+            q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
+            f = self.f_conv1d(self.f_proj(hidden_states), attention_mask, conv_state_f)
+            i = self.i_conv1d(self.i_proj(hidden_states), attention_mask, conv_state_i)
         else:
             q = self.q_proj(hidden_states)
             f = self.f_proj(hidden_states)
@@ -119,7 +128,7 @@ class HGRN2Attention(nn.Module):
 
         # dealing with left-padding
         if attention_mask is not None:
-            i = i.mul_(attention_mask.unsqueeze(-1))
+            i = i.mul_(attention_mask[:, -i.shape[-2]:, None])
 
         q = swish(q)
 
@@ -133,11 +142,18 @@ class HGRN2Attention(nn.Module):
             g = lower_bound + (1 - lower_bound) * f.sigmoid()
             k, g = 1 - g, g.log()
 
-        q, k, i, g = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.num_heads), (q, k.to(i), i, g))
+        q, k, i, g = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (q, k.to(i), i, g))
 
-        recurrent_state = last_state[-1] if use_cache else None
+        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_gla(q, k, i, g, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_gla(
+                q=q,
+                k=k,
+                v=i,
+                gk=g,
+                initial_state=recurrent_state,
+                output_final_state=use_cache
+            )
         elif mode == 'fused_chunk':
             o, recurrent_state = fused_chunk_gla(q, k, i, g, initial_state=recurrent_state, output_final_state=use_cache)
         elif mode == 'chunk':
@@ -146,26 +162,16 @@ class HGRN2Attention(nn.Module):
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
         if past_key_values is not None:
-            if self.use_short_conv:
-                last_state = (conv_state_q, conv_state_f, conv_state_i, recurrent_state)
-            else:
-                last_state = (recurrent_state,)
-            past_key_values.update(last_state, self.layer_idx, q.shape[2])
+            past_key_values.update(
+                recurrent_state=recurrent_state,
+                conv_state=(conv_state_q, conv_state_f, conv_state_i) if self.use_short_conv else None,
+                layer_idx=self.layer_idx,
+                offset=q.shape[2]
+            )
 
-        o = self.g_norm(rearrange(o, 'b h l d -> b l (h d)'))
-        o = self.o_proj(o)
-
+        o = rearrange(o, 'b h t d -> b t (h d)')
+        o = rms_norm_linear(o, self.g_norm.weight, self.g_norm.bias, self.o_proj.weight, self.o_proj.bias)
         return o, None, past_key_values
-
-    def init_state(self, batch_size: int) -> Tuple[torch.Tensor]:
-        param = next(self.parameters())
-        state = tuple()
-        if self.use_short_conv:
-            state += (param.new_zeros(batch_size, self.forget_dim, self.conv_size),
-                      param.new_zeros(batch_size, self.forget_dim, self.conv_size),
-                      param.new_zeros(batch_size, self.input_dim, self.conv_size))
-        state += (param.new_zeros(batch_size, self.num_heads, self.head_f_dim, self.head_i_dim),)
-        return state
 
     def state_size(self, **kwargs) -> int:
         state_size = self.forget_dim * self.head_i_dim
