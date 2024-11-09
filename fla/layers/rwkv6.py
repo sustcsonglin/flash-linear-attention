@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 
 from fla.modules import GroupNorm
@@ -123,7 +124,7 @@ class RWKV6Attention(nn.Module):
         else:
             shifted = self.time_shift(hidden_states)
             if last_state is not None:
-                shifted[:, 0] = last_state[0]
+                shifted[:, 0] = last_state['conv_state'][0]
 
         delta = shifted - hidden_states
         x = self.x_proj[0](hidden_states, delta).view(batch_size, seq_len, -1, self.proj_low_rank_dim)
@@ -140,7 +141,7 @@ class RWKV6Attention(nn.Module):
         if attention_mask is not None:
             v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
         r, w, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (r, w, k, v))
-        w = -torch.exp(self.bound_w * softsign(w / self.bound_w))
+        w = -torch.exp(self.bound_w * F.softsign(w / self.bound_w))
         u = self.bonus
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
