@@ -65,15 +65,15 @@ def parallel_simple_gla_fwd_kernel(
         b_v = tl.load(p_v, boundary_check=(0, 1))
         # [BS,]
         b_g = tl.load(p_g, boundary_check=(0,))
-        b_gn = tl.load(g + i_bh * T + (i_s // BT) * BT + BT - 1)
+        b_gn = tl.load(g + i_bh * T + i_s + BS - 1)
 
         b_kg = (b_k * tl.exp(b_gn - b_g)).to(b_k.dtype)
         # [BT, BS]
         b_s = tl.dot(b_q, b_kg, allow_tf32=False)
         # do this check to avoid some layout bugs
         # [[BT, BV]
-        if i_s > 0 and i_s % BT == 0:
-            b_o = b_o * tl.exp(b_gn)
+        if i_s > 0:
+            b_o = b_o * tl.exp(b_gn - tl.load(g + i_bh * T + i_s - 1))
         b_o += tl.dot(b_s.to(b_v.dtype), b_v, allow_tf32=False)
 
         if OUTPUT_ATTENTIONS:
@@ -165,12 +165,12 @@ def parallel_simple_gla_bwd_kernel_dq(
         # [BS]
         b_g = tl.load(p_g, boundary_check=(0,))
 
-        b_gn = tl.load(g + i_bh * T + (i_s // BT) * BT + BT - 1)
+        b_gn = tl.load(g + i_bh * T + i_s + BS - 1)
         # [BT, BS]
         b_ds = tl.dot(b_do, b_v, allow_tf32=False) * tl.exp(b_gn - b_g)[None, :]
         # [BT, BK]
-        if i_s > 0 and i_s % BT == 0:
-            b_dq *= tl.exp(b_gn)
+        if i_s > 0:
+            b_dq *= tl.exp(b_gn - tl.load(g + i_bh * T + i_s - 1))
         b_dq += tl.dot(b_ds.to(b_v.dtype), b_k, allow_tf32=False)
 
     p_gq = tl.make_block_ptr(g + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
@@ -249,7 +249,7 @@ def parallel_simple_gla_bwd_kernel_dkv(
     NTS = tl.cdiv(T, BS)
     # [BT, BK]
     b_kg = (b_k * tl.exp(tl.load(g + i_bh * T + min(i_t * BT + BT, T) - 1) - b_gk)[:, None]).to(b_k.dtype)
-    for i_s in range(NTS * BS - BS, min((i_t + 1) * BT, T) - BS, -BS):
+    for i_s in range(NTS * BS - BS, (i_t + 1) * BT - BS, -BS):
         p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_s, i_k * BK), (BS, BK), (1, 0))
         p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_s, i_v * BV), (BS, BV), (1, 0))
         p_gq = tl.make_block_ptr(g + i_bh * T, (T,), (1,), (i_s,), (BS,), (0,))
@@ -259,15 +259,14 @@ def parallel_simple_gla_bwd_kernel_dkv(
         b_gq = tl.load(p_gq, boundary_check=(0,))
         # [BS, BV]
         b_do = tl.load(p_do, boundary_check=(0, 1))
-        b_do = (b_do * tl.exp(b_gq)[:, None]).to(b_do.dtype)
+        b_do = (b_do * tl.exp(b_gq - tl.load(g + i_bh * T + min(i_s, T)))[:, None]).to(b_do.dtype)
 
-        if i_s % BT == 0:
-            # overall decay rate for an entire block
-            b_gn = tl.exp(tl.load(g + i_bh * T + min(i_s + BT, T) - 1))
-            # [BS, BK]
-            b_dk *= b_gn
-            # [BS, BV]
-            b_dv *= b_gn
+        # overall decay rate for an entire block
+        b_gn = tl.load(g + i_bh * T + min(i_s + BS, T) - 1) - tl.load(g + i_bh * T + min(i_s, T))
+        # [BS, BK]
+        b_dk *= tl.exp(b_gn)
+        # [BS, BV]
+        b_dv *= tl.exp(b_gn)
         # [BT, BS]
         b_ds = tl.dot(b_v, tl.trans(b_do), allow_tf32=False)
         b_s = tl.dot(b_kg, tl.trans(b_q), allow_tf32=False)
@@ -404,7 +403,7 @@ def parallel_simple_gla_fwd(
     g: torch.Tensor,
     scale: float,
     output_attentions: bool = False,
-    chunk_size: int = 64
+    chunk_size: int = 128
 ):
     B, H, T, K, V = *k.shape, v.shape[-1]
     BT, BS = chunk_size, 32
@@ -464,7 +463,7 @@ def parallel_simple_gla_bwd(
     g: torch.Tensor,
     do: torch.Tensor,
     scale: float,
-    chunk_size: int = 64
+    chunk_size: int = 128
 ):
     B, H, T, K, V = *k.shape, v.shape[-1]
     BT, BS = chunk_size, 32
