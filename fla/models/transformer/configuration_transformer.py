@@ -18,6 +18,7 @@ class TransformerConfig(PretrainedConfig):
         num_heads: int = 32,
         num_kv_heads: int = None,
         window_size: Optional[int] = None,
+        rope_theta: Optional[float] = 10000.,
         max_position_embeddings: int = 2048,
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
@@ -42,6 +43,7 @@ class TransformerConfig(PretrainedConfig):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
         self.window_size = window_size
+        self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
         self.hidden_ratio = hidden_ratio

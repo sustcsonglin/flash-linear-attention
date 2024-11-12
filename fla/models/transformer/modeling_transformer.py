@@ -82,12 +82,14 @@ class TransformerBlock(nn.Module):
             num_heads=config.num_heads,
             num_kv_heads=config.num_kv_heads,
             window_size=config.window_size,
+            rope_theta=config.rope_theta,
             max_position_embeddings=config.max_position_embeddings,
             norm_first=config.norm_first,
             norm_eps=config.norm_eps,
             layer_idx=layer_idx
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
+        if not config.norm_first:
+            self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = TransformerMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
@@ -148,7 +150,7 @@ class TransformerPreTrainedModel(PreTrainedModel):
     def _init_weights(
         self,
         module: nn.Module,
-        rescale_prenorm_residual: bool = True,
+        rescale_prenorm_residual: bool = False,
         num_residuals_per_layer: int = 2,
     ):
         if isinstance(module, (nn.Linear, nn.Conv1d)):
