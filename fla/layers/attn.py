@@ -77,7 +77,7 @@ class Attention(nn.Module):
         if getattr(module, "_is_hf_initialized", False):
             return
         if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         module._is_hf_initialized = True
