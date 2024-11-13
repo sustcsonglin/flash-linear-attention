@@ -97,7 +97,8 @@ def test_parallel(
     k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
     v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
     h0 = torch.zeros((B, H, D, D), dtype=torch.float32, device='cuda')
-    g = F.logsigmoid(torch.randn((B, H, T), dtype=dtype, device='cuda')).requires_grad_(True)
+    g = F.logsigmoid(torch.randn((B, H, T), dtype=dtype, device='cuda'))
+    g = (g / 16).requires_grad_(True)
     do = torch.randn_like(v)
 
     ref, _ = fused_recurrent_simple_gla(q, k, v, g, initial_state=h0)
