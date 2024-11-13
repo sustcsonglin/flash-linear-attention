@@ -128,11 +128,13 @@ def parallel_simple_gla_bwd_kernel_dq(
     i_t,
     i_k,
     i_v,
+    q,
     k,
     v,
     g,
     do,
     dq,
+    dg,
     s_k_h,
     s_k_t,
     s_v_h,
@@ -201,8 +203,14 @@ def parallel_simple_gla_bwd_kernel_dq(
         b_dq += tl.dot(b_ds.to(b_k.dtype), b_k, allow_tf32=False)
 
         o_k += BS
-    p_dq = tl.make_block_ptr(dq + (i_bh + B * H * i_v) * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dq = tl.make_block_ptr(dq + (i_v * B * H + i_bh) * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dg = tl.make_block_ptr(dg + (i_v * B * H + i_bh) * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
+
+    b_q = tl.load(p_q, boundary_check=(0, 1))
+    b_dg = tl.sum(b_dq * b_q, 1)
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
+    tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0,))
 
 
 @triton.jit
@@ -218,6 +226,7 @@ def parallel_simple_gla_bwd_kernel_dkv(
     do,
     dk,
     dv,
+    dg,
     s_k_h,
     s_k_t,
     s_v_h,
@@ -305,8 +314,13 @@ def parallel_simple_gla_bwd_kernel_dkv(
         o_q += BS
     p_dk = tl.make_block_ptr(dk + (i_v * B * H + i_bh) * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_dv = tl.make_block_ptr(dv + (i_k * B * H + i_bh) * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_dg = tl.make_block_ptr(dg + (i_v * B * H + i_bh) * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
+
+    b_dg = tl.load(p_dg, boundary_check=(0,))
+    b_dg -= tl.sum(b_dk * b_k, 1)
+    tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0,))
 
 
 @triton.heuristics({
@@ -322,6 +336,7 @@ def parallel_simple_gla_bwd_kernel(
     dq,
     dk,
     dv,
+    dg,
     s_k_h,
     s_k_t,
     s_v_h,
@@ -346,11 +361,13 @@ def parallel_simple_gla_bwd_kernel(
         i_t,
         i_k,
         i_v,
+        q,
         k,
         v,
         g,
         do,
         dq,
+        dg,
         s_k_h,
         s_k_t,
         s_v_h,
@@ -379,6 +396,7 @@ def parallel_simple_gla_bwd_kernel(
         do,
         dk,
         dv,
+        dg,
         s_k_h,
         s_k_t,
         s_v_h,
@@ -479,6 +497,7 @@ def parallel_simple_gla_bwd(
     dq = torch.empty(NV, B, H, T, K, dtype=q.dtype, device=q.device)
     dk = torch.empty(NV, B, H, T, K, dtype=q.dtype, device=q.device)
     dv = torch.empty(NK, B, H, T, V, dtype=q.dtype, device=q.device)
+    dg = torch.empty(NV, B, H, T, dtype=torch.float, device=q.device)
     grid = (NK * NV, triton.cdiv(T, BT), B * H)
     parallel_simple_gla_bwd_kernel[grid](
         q=q,
@@ -489,6 +508,7 @@ def parallel_simple_gla_bwd(
         dq=dq,
         dk=dk,
         dv=dv,
+        dg=dg,
         s_k_h=k.stride(1),
         s_k_t=k.stride(2),
         s_v_h=v.stride(1),
@@ -509,7 +529,8 @@ def parallel_simple_gla_bwd(
     dq = dq.sum(0)
     dk = dk.sum(0)
     dv = dv.sum(0)
-    dg = chunk_global_reversed_cumsum((dq * q.float() - dk * k.float()).sum(-1))
+    dg = dg.sum(0)
+    dg = chunk_global_reversed_cumsum(dg)
     return dq, dk, dv, dg
 
 
@@ -520,6 +541,7 @@ class ParallelSimpleGLAFunction(torch.autograd.Function):
     @autocast_custom_fwd
     def forward(ctx, q, k, v, g, scale, output_attentions):
         BT = 64
+        ctx.dtype = g.dtype
         o, g, attn = parallel_simple_gla_fwd(q, k, v, g, scale, output_attentions, BT)
         ctx.save_for_backward(q, k, v, g)
         ctx.scale = scale
@@ -532,7 +554,7 @@ class ParallelSimpleGLAFunction(torch.autograd.Function):
     def backward(ctx, do, da=None):
         q, k, v, g = ctx.saved_tensors
         dq, dk, dv, dg = parallel_simple_gla_bwd(q, k, v, g, do, ctx.scale, ctx.BT)
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, None
+        return dq.to(q), dk.to(k), dv.to(v), dg.to(ctx.dtype), None, None
 
 
 def parallel_simple_gla(

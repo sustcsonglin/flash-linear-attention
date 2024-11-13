@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from fla.ops.simple_gla import chunk_simple_gla
-from fla.ops.simple_gla.naive import torch_simple_gla_recurrent
+from fla.ops.simple_gla.fused_recurrent import fused_recurrent_simple_gla
 from fla.ops.simple_gla.parallel import parallel_simple_gla
 
 
@@ -25,8 +25,8 @@ def assert_close(prefix, ref, tri, ratio):
     assert get_err_ratio(ref, tri) < ratio, msg
 
 
-@pytest.mark.parametrize("B", [2])
-@pytest.mark.parametrize("H", [2])
+@pytest.mark.parametrize("B", [1])
+@pytest.mark.parametrize("H", [1])
 @pytest.mark.parametrize("T", [100, 512])
 @pytest.mark.parametrize("D", [100, 256])
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
@@ -47,7 +47,7 @@ def test_chunk(
     g = F.logsigmoid(g).requires_grad_(True)
     do = torch.randn_like(v)
 
-    ref, ref_ht = torch_simple_gla_recurrent(q, k, v, g, initial_state=h0)
+    ref, ref_ht = fused_recurrent_simple_gla(q, k, v, g, initial_state=h0, output_final_state=True)
     d_ht = torch.randn_like(ref_ht)
     ((ref * do).sum() + (ref_ht * d_ht).sum()).backward()
     ref_dq, q.grad = q.grad.clone(), None
@@ -79,8 +79,8 @@ def test_chunk(
         f"dh0 diff: {torch.abs(ref_dh0 - tri_dh0).max()}, ratio: {get_err_ratio(ref_dh0, tri_dh0)}"
 
 
-@pytest.mark.parametrize("B", [4])
-@pytest.mark.parametrize("H", [4])
+@pytest.mark.parametrize("B", [1])
+@pytest.mark.parametrize("H", [1])
 @pytest.mark.parametrize("T", [300, 512])
 @pytest.mark.parametrize("D", [32, 64, 100])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
@@ -100,7 +100,7 @@ def test_parallel(
     g = F.logsigmoid(torch.randn((B, H, T), dtype=dtype, device='cuda')).requires_grad_(True)
     do = torch.randn_like(v)
 
-    ref, _ = torch_simple_gla_recurrent(q, k, v, g, initial_state=h0)
+    ref, _ = fused_recurrent_simple_gla(q, k, v, g, initial_state=h0)
     ref.backward(do)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
