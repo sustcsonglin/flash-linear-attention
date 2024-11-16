@@ -2,9 +2,10 @@
 
 from datasets import load_from_disk
 from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
-                          DataCollatorForLanguageModeling, Trainer)
+                          Trainer)
 
 import fla  # noqa
+from flame.data import DataCollatorForLanguageModeling
 from flame.logging import LogCallback, get_logger
 from flame.parser import get_train_args
 
@@ -42,7 +43,7 @@ def main():
     logger.info(f"{dataset}")
     logger.info(f"Shuffling the dataset with seed {args.seed}")
     dataset = dataset.shuffle(seed=args.seed)
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer)
 
     if args.lr_scheduler_type == 'cosine_with_min_lr':
         args.lr_scheduler_kwargs = {'min_lr_rate': 0.1}
