@@ -203,12 +203,11 @@ class MultiScaleRetention(nn.Module):
                 max_seqlen = q.shape[1] + max(seqlen_offset)
 
         q, k = self.rotary(q, k, seqlen_offset, max_seqlen)
-        q = q.transpose(1, 2)
         if self.num_kv_groups > 1:
-            k = repeat(k, 'b t h d -> b (h g) t d', h=self.num_kv_heads, g=self.num_kv_groups)
-            v = repeat(v, 'b t (h d) -> b (h g) t d', h=self.num_kv_heads, g=self.num_kv_groups)
+            k = repeat(k, 'b t h d -> b t (h g) d', h=self.num_kv_heads, g=self.num_kv_groups)
+            v = repeat(v, 'b t (h d) -> b t (h g) d', h=self.num_kv_heads, g=self.num_kv_groups)
         else:
-            k, v = rearrange(k, 'b t h d -> b h t d'), rearrange(v, 'b t (h d) -> b h t d', h=self.num_kv_heads)
+            k, v = rearrange(k, 'b t h d -> b t h d'), rearrange(v, 'b t (h d) -> b t h d', h=self.num_kv_heads)
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'chunk':
@@ -217,7 +216,8 @@ class MultiScaleRetention(nn.Module):
                 k=k,
                 v=v,
                 initial_state=recurrent_state,
-                output_final_state=use_cache
+                output_final_state=use_cache,
+                head_first=False
             )
         elif mode == 'fused_chunk':
             o, recurrent_state = fused_chunk_retention(
@@ -225,17 +225,19 @@ class MultiScaleRetention(nn.Module):
                 k=k,
                 v=v,
                 initial_state=recurrent_state,
-                output_final_state=use_cache
+                output_final_state=use_cache,
+                head_first=False
             )
         elif mode == 'parallel':
-            o, recurrent_state = parallel_retention(q, k, v)
+            o, recurrent_state = parallel_retention(q, k, v, head_first=False)
         elif mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_retention(
                 q=q,
                 k=k,
                 v=v,
                 initial_state=recurrent_state,
-                output_final_state=use_cache
+                output_final_state=use_cache,
+                head_first=False
             )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
@@ -248,18 +250,17 @@ class MultiScaleRetention(nn.Module):
                 offset=q.shape[2]
             )
 
-        o = rearrange(o, 'b h l d -> b l h d')
         if self.use_output_gate:
             g = self.g_proj(hidden_states)
             if self.fuse_norm_and_gate:
-                g = rearrange(g, 'b l (h d) -> b l h d', h=self.num_heads)
+                g = rearrange(g, 'b t (h d) -> b t h d', h=self.num_heads)
                 o = self.g_norm_swish_gate(o, g)
-                o = rearrange(o, 'b l h d -> b l (h d)')
+                o = rearrange(o, 'b t h d -> b t (h d)')
             else:
-                o = rearrange(self.g_norm(o), 'b l h d -> b l (h d)')
+                o = rearrange(self.g_norm(o), 'b t h d -> b t (h d)')
                 o = o * self.gate_fn(g)
         else:
-            o = rearrange(self.g_norm(o), 'b l h d -> b l (h d)')
+            o = rearrange(self.g_norm(o), 'b t h d -> b t (h d)')
         o = self.o_proj(o)
 
         return o, None, past_key_values

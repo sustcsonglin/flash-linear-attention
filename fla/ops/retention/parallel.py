@@ -21,10 +21,6 @@ def parallel_retention_fwd_kernel(
     v,
     o,
     attn,
-    s_k_h,
-    s_k_t,
-    s_v_h,
-    s_v_t,
     scale,
     B: tl.constexpr,
     H: tl.constexpr,
@@ -48,9 +44,9 @@ def parallel_retention_fwd_kernel(
     o_k = tl.arange(0, BS)
     d_h = tl.math.exp2((BS - o_k) * b_b)
 
-    p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (1, s_k_t), (i_k * BK, 0), (BK, BS), (0, 1))
-    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, 1), (0, i_v * BV), (BS, BV), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * T*K, (K, T), (1, K), (i_k * BK, 0), (BK, BS), (0, 1))
+    p_v = tl.make_block_ptr(v + i_bh * T*V, (T, V), (V, 1), (0, i_v * BV), (BS, BV), (1, 0))
     if OUTPUT_ATTENTIONS:
         p_a = tl.make_block_ptr(attn + (i_k*B*H + i_bh) * T * T, (T, T), (T, 1), (i_t * BT, 0), (BT, BS), (1, 0))
 
@@ -87,8 +83,8 @@ def parallel_retention_fwd_kernel(
     # rescale interchunk output
     b_o *= d_q[:, None]
 
-    p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (1, s_k_t), (i_k * BK, i_t * BT), (BK, BS), (0, 1))
-    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BS, BV), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BS), (0, 1))
+    p_v = tl.make_block_ptr(v + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BS, BV), (1, 0))
     if OUTPUT_ATTENTIONS:
         p_a = tl.make_block_ptr(attn + (i_k*B*H + i_bh) * T * T, (T, T), (T, 1), (i_t * BT, i_t * BT), (BT, BS), (1, 0))
 
@@ -113,7 +109,7 @@ def parallel_retention_fwd_kernel(
         p_v = tl.advance(p_v, (BS, 0))
         o_k += BS
 
-    p_o = tl.make_block_ptr(o + (i_bh + B * H * i_k) * s_v_h, (T, V), (s_v_t, 1), (i_t*BT, i_v*BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + (i_bh + B * H * i_k) * T*V, (T, V), (V, 1), (i_t*BT, i_v*BV), (BT, BV), (1, 0))
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
@@ -128,10 +124,6 @@ def parallel_retention_bwd_kernel_dq(
     v,
     do,
     dq,
-    s_k_h,
-    s_k_t,
-    s_v_h,
-    s_v_t,
     scale,
     B: tl.constexpr,
     H: tl.constexpr,
@@ -143,9 +135,9 @@ def parallel_retention_bwd_kernel_dq(
     BK: tl.constexpr,
     BV: tl.constexpr,
 ):
-    p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, 1), (0, i_k * BK), (BS, BK), (1, 0))
-    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (V, T), (1, s_v_t), (i_v * BV, 0), (BV, BS), (0, 1))
-    p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * T*K, (T, K), (K, 1), (0, i_k * BK), (BS, BK), (1, 0))
+    p_v = tl.make_block_ptr(v + i_bh * T*V, (V, T), (1, V), (i_v * BV, 0), (BV, BS), (0, 1))
+    p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
 
     b_do = tl.load(p_do, boundary_check=(0, 1))
     b_dq = tl.zeros([BT, BK], dtype=tl.float32)
@@ -173,8 +165,8 @@ def parallel_retention_bwd_kernel_dq(
 
     o_q = tl.arange(0, BT)
     o_k = tl.arange(0, BS)
-    p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BS, BK), (1, 0))
-    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (V, T), (1, s_v_t), (i_v * BV, i_t * BT), (BV, BS), (0, 1))
+    p_k = tl.make_block_ptr(k + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BS, BK), (1, 0))
+    p_v = tl.make_block_ptr(v + i_bh * T*V, (V, T), (1, V), (i_v * BV, i_t * BT), (BV, BS), (0, 1))
     # Q block and K block have overlap. masks required
     for _ in range(i_t * BT, (i_t + 1) * BT, BS):
         # [BS, BK]
@@ -191,7 +183,7 @@ def parallel_retention_bwd_kernel_dq(
         p_k = tl.advance(p_k, (BS, 0))
         p_v = tl.advance(p_v, (0, BS))
         o_k += BS
-    p_dq = tl.make_block_ptr(dq + (i_bh + B * H * i_v) * s_k_h, (T, K), (s_k_t, 1), (i_t*BT, i_k*BK), (BT, BK), (1, 0))
+    p_dq = tl.make_block_ptr(dq + (i_bh + B * H * i_v) * T*K, (T, K), (K, 1), (i_t*BT, i_k*BK), (BT, BK), (1, 0))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
 
 
@@ -208,10 +200,6 @@ def parallel_retention_bwd_kernel_dkv(
     do,
     dk,
     dv,
-    s_k_h,
-    s_k_t,
-    s_v_h,
-    s_v_t,
     scale,
     B: tl.constexpr,
     H: tl.constexpr,
@@ -228,8 +216,8 @@ def parallel_retention_bwd_kernel_dkv(
     # overall decay rate for an entire block
     d_b = tl.math.exp2(b_b * BS)
     # compute dk dv
-    p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_v = tl.make_block_ptr(v + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     # [BT, BK]
     b_k = tl.load(p_k, boundary_check=(0, 1))
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
@@ -245,8 +233,8 @@ def parallel_retention_bwd_kernel_dkv(
     # [BS]
     d_q = tl.math.exp2(tl.arange(0, BS) * b_b)
     for i in range(NTS * BS - BS, (i_t + 1) * BT - BS, -BS):
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i, i_k * BK), (BS, BK), (1, 0))
-        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, 1), (i, i_v * BV), (BS, BV), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i, i_k * BK), (BS, BK), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i, i_v * BV), (BS, BV), (1, 0))
         # [BS, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         # [BS, BV]
@@ -268,8 +256,8 @@ def parallel_retention_bwd_kernel_dkv(
     tl.debug_barrier()
     o_q, o_k = tl.arange(0, BS), tl.arange(0, BT)
     for i in range(i_t * BT, (i_t + 1) * BT, BS):
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i, i_k * BK), (BS, BK), (1, 0))
-        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, 1), (i, i_v * BV), (BS, BV), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i, i_k * BK), (BS, BK), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i, i_v * BV), (BS, BV), (1, 0))
         # [BS, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         # [BS, BV]
@@ -284,8 +272,8 @@ def parallel_retention_bwd_kernel_dkv(
         b_dk += tl.dot(b_ds.to(b_q.dtype), b_q, allow_tf32=False)
         b_dv += tl.dot(b_s.to(b_q.dtype), b_do, allow_tf32=False)
         o_q += BS
-    p_dk = tl.make_block_ptr(dk + (i_v * B * H + i_bh) * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_dv = tl.make_block_ptr(dv + (i_k * B * H + i_bh) * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_dk = tl.make_block_ptr(dk + (i_v * B * H + i_bh) * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dv = tl.make_block_ptr(dv + (i_k * B * H + i_bh) * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
@@ -302,10 +290,6 @@ def parallel_retention_bwd_kernel(
     dq,
     dk,
     dv,
-    s_k_h,
-    s_k_t,
-    s_v_h,
-    s_v_t,
     scale,
     B: tl.constexpr,
     H: tl.constexpr,
@@ -331,10 +315,6 @@ def parallel_retention_bwd_kernel(
         v,
         do,
         dq,
-        s_k_h,
-        s_k_t,
-        s_v_h,
-        s_v_t,
         scale,
         B=B,
         H=H,
@@ -359,10 +339,6 @@ def parallel_retention_bwd_kernel(
         do,
         dk,
         dv,
-        s_k_h,
-        s_k_t,
-        s_v_h,
-        s_v_t,
         scale,
         B,
         H,
@@ -407,10 +383,6 @@ def parallel_retention_fwd(
         v=v,
         o=o,
         attn=attn,
-        s_k_h=k.stride(1),
-        s_k_t=k.stride(2),
-        s_v_h=v.stride(1),
-        s_v_t=v.stride(2),
         scale=scale,
         B=B,
         H=H,
@@ -460,10 +432,6 @@ def parallel_retention_bwd(
         dq=dq,
         dk=dk,
         dv=dv,
-        s_k_h=k.stride(1),
-        s_k_t=k.stride(2),
-        s_v_h=v.stride(1),
-        s_v_t=v.stride(2),
         scale=scale,
         B=B,
         H=H,
@@ -505,22 +473,37 @@ def parallel_retention(
     k: torch.Tensor,
     v: torch.Tensor,
     scale: float = None,
-    output_attentions: bool = False
+    output_attentions: bool = False,
+    head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
         q (torch.Tensor):
-            queries of shape `[B, H, T, K]`
+            queries of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`
         k (torch.Tensor):
-            keys of shape `[B, H, T, K]`
+            keys of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`
         v (torch.Tensor):
-            values of shape `[B, H, T, V]`
+            values of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`
         scale (Optional[int]):
-            Scale factor for attention scores.
+            Scale factor for the attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         output_attentions (bool):
             Whether to output the materialized attention scores of shape [B, H, T, T]. Default: `False`.
+        head_first (Optional[bool]):
+            Whether the inputs are in the head-first format.
+            Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`
+        attn (torch.Tensor):
+            Attention scores of shape `[B, H, T, T]` if `output_attentions=True` else `None`
     """
     if scale is None:
         scale = k.shape[-1] ** -0.5
-    return ParallelRetentionFunction.apply(q, k, v, scale, output_attentions)
+    if not head_first:
+        q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
+    o, attn = ParallelRetentionFunction.apply(q, k, v, scale, output_attentions)
+    if not head_first:
+        o = o.transpose(1, 2)
+    return o, attn
