@@ -164,10 +164,10 @@ class GatedSlotAttention(nn.Module):
             v = self.v_proj(hidden_states)
         f = self.f_proj(hidden_states)
 
-        q = rearrange(q, 'b t (h d) -> b h t d', h=self.num_heads)
-        k = rearrange(k, 'b t (h d) -> b h t d', h=self.num_kv_heads)
-        v = rearrange(v, 'b t (h d) -> b h t d', h=self.num_kv_heads)
-        f = rearrange(f, 'b t (h m) -> b h t m', h=self.num_kv_heads)
+        q = rearrange(q, 'b t (h d) -> b t h d', h=self.num_heads)
+        k = rearrange(k, 'b t (h d) -> b t h d', h=self.num_kv_heads)
+        v = rearrange(v, 'b t (h d) -> b t h d', h=self.num_kv_heads)
+        f = rearrange(f, 'b t (h m) -> b t h m', h=self.num_kv_heads)
 
         if self.feature_map is not None:
             q, k = map(lambda x: self.feature_map(x), (q, k))
@@ -190,7 +190,8 @@ class GatedSlotAttention(nn.Module):
                 g=f,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
-                scale=self.scale
+                scale=self.scale,
+                head_first=False
             )
         elif mode == 'chunk':
             o, recurrent_state = chunk_gsa(
@@ -201,7 +202,8 @@ class GatedSlotAttention(nn.Module):
                 g=f,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
-                scale=self.scale
+                scale=self.scale,
+                head_first=False
             )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
@@ -214,7 +216,7 @@ class GatedSlotAttention(nn.Module):
                 offset=q.shape[2]
             )
 
-        o = rearrange(o, 'b h t d -> b t (h d)')
+        o = rearrange(o, 'b t h d -> b t (h d)')
         o = rms_norm_linear(swish(o), self.g_norm.weight, self.g_norm.bias, self.o_proj.weight, self.o_proj.bias)
         return o, None, past_key_values
 

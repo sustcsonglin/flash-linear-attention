@@ -20,12 +20,12 @@ def fused_chunk_linear_attn_fwd_kernel(
     o,  # output [B, H, T, V]
     h0,
     ht,
-    s_qk_h,  # stride size: T * K
-    s_qk_t,  # stride size: K
-    s_qk_d,  # stride size: 1
-    s_vo_h,  # stride size: T * V
-    s_vo_t,  # stride size: V
-    s_vo_d,  # stride size: 1
+    s_k_h,  # stride size: T * K
+    s_k_t,  # stride size: K
+    s_k_d,  # stride size: 1
+    s_v_h,  # stride size: T * V
+    s_v_t,  # stride size: V
+    s_v_d,  # stride size: 1
     scale,
     B,  # batch size
     H,  # H
@@ -50,10 +50,10 @@ def fused_chunk_linear_attn_fwd_kernel(
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
 
     # make block pointers
-    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (0, i_k * BK), (BT, BK), (1, 0))
-    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, 0), (BK, BT), (0, 1))
-    p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o + (i_bh+i_k*B*H) * s_vo_h, (T, V), (s_vo_t, s_vo_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (0, i_k * BK), (BT, BK), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, 0), (BK, BT), (0, 1))
+    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (0, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + (i_bh+i_k*B*H) * s_v_h, (T, V), (s_v_t, s_v_d), (0, i_v * BV), (BT, BV), (1, 0))
 
     if USE_INITIAL_STATE:
         p_h0 = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
@@ -102,12 +102,12 @@ def fused_chunk_linear_attn_bwd_kernel(
 
     h0,  # initial state of the chunk [B, H, K, V]
 
-    s_qk_h,  # stride size: T * K
-    s_qk_t,  # stride size: K
-    s_qk_d,  # stride size: 1
-    s_vo_h,  # stride size: T * V
-    s_vo_t,  # stride size: V
-    s_vo_d,  # stride size: 1
+    s_k_h,  # stride size: T * K
+    s_k_t,  # stride size: K
+    s_k_d,  # stride size: 1
+    s_v_h,  # stride size: T * V
+    s_v_t,  # stride size: V
+    s_v_d,  # stride size: 1
     scale,  # K ** -0.5
     B,  # B
     H,  # H
@@ -131,10 +131,10 @@ def fused_chunk_linear_attn_bwd_kernel(
         b_h = tl.load(p_h, boundary_check=(0, 1)).to(tl.float32)
 
     for i in range(0, tl.cdiv(T, BT)):
-        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (V, T), (s_vo_d, s_vo_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
-        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dq = tl.make_block_ptr(dq + (i_bh + i_v*B*H) * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i*BT, i_k*BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bh * s_v_h, (V, T), (s_v_d, s_v_t), (i_v * BV, i * BT), (BV, BT), (0, 1))
+        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dq = tl.make_block_ptr(dq + (i_bh + i_v*B*H) * s_k_h, (T, K), (s_k_t, s_k_d), (i*BT, i_k*BK), (BT, BK), (1, 0))
 
         # [BT, BK]
         b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -165,12 +165,12 @@ def fused_chunk_linear_attn_bwd_kernel(
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
     m_s = o_i[:, None] <= o_i[None, :]
     for i in range(1, tl.cdiv(T, BT) + 1):
-        p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (K, T), (s_qk_d, s_qk_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
-        p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
-        p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_do = tl.make_block_ptr(do + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dk = tl.make_block_ptr(dk + (i_bh+i_v*B*H) * s_qk_h, (T, K), (s_qk_t, s_qk_d), (T - i*BT, i_k*BK), (BT, BK), (1, 0))
-        p_dv = tl.make_block_ptr(dv + (i_bh+i_k*B*H) * s_vo_h, (T, V), (s_vo_t, s_vo_d), (T - i*BT, i_v*BV), (BT, BV), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, T - i * BT), (BK, BT), (0, 1))
+        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (T - i * BT, i_k * BK), (BT, BK), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (T - i * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dk = tl.make_block_ptr(dk + (i_bh+i_v*B*H) * s_k_h, (T, K), (s_k_t, s_k_d), (T - i*BT, i_k*BK), (BT, BK), (1, 0))
+        p_dv = tl.make_block_ptr(dv + (i_bh+i_k*B*H) * s_v_h, (T, V), (s_v_t, s_v_d), (T - i*BT, i_v*BV), (BT, BV), (1, 0))
         # [BK, BT]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_q = (b_q * scale).to(b_q.dtype)
@@ -295,29 +295,42 @@ def fused_chunk_linear_attn(
     scale: Optional[float] = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
-    normalize: bool = True
+    normalize: bool = True,
+    head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
         q (torch.Tensor):
-            queries of shape `(B, H, T, K)`
+            queries of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`
         k (torch.Tensor):
-            keys of shape `(B, H, T, K)`
+            keys of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`
         v (torch.Tensor):
-            values of shape `(B, H, T, V)`
+            values of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`
         scale (Optional[int]):
             Scale factor for linear attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[torch.Tensor]):
-            Initial state of shape `(B, H, K, V)`. Default: `None`.
+            Initial state of shape `[B, H, K, V]`. Default: `None`.
         output_final_state (Optional[bool]):
-            Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
+            Whether to output the final state of shape `[B, H, K, V]`. Default: `False`.
         normalize (bool):
             Whether to normalize the output. Default: `True`.
+        head_first (Optional[bool]):
+            Whether the inputs are in the head-first format. Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`
+        final_state (torch.Tensor):
+            Final state of shape `[B, H, K, V]` if `output_final_state=True` else `None`
     """
     if scale is None:
         scale = q.shape[-1] ** -0.5
+    if not head_first:
+        q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
     o, final_state = FusedChunkLinearAttentionFunction.apply(q, k, v, scale, initial_state, output_final_state)
     if normalize:
         o = normalize_output(q * scale, k, o)
+    if not head_first:
+        o = o.transpose(1, 2)
     return o, final_state

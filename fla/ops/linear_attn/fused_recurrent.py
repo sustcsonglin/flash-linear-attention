@@ -20,8 +20,8 @@ def fused_recurrent_linear_attn_fwd_kernel(
     h0,
     ht,  # final hidden state [B, H, K, V]
 
-    s_qk_h,  # stride size: L * K
-    s_vo_h,  # stride size: L * V
+    s_k_h,  # stride size: L * K
+    s_v_h,  # stride size: L * V
 
     scale,
     B,  # batch size
@@ -37,10 +37,10 @@ def fused_recurrent_linear_attn_fwd_kernel(
     # indices
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
-    p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
-    p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
-    p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
-    p_o = o + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV)
+    p_q = q + i_bh * s_k_h + i_k * BK + tl.arange(0, BK)
+    p_k = k + i_bh * s_k_h + i_k * BK + tl.arange(0, BK)
+    p_v = v + i_bh * s_v_h + i_v * BV + tl.arange(0, BV)
+    p_o = o + (i_bh + i_k * B * H) * s_v_h + i_v * BV + tl.arange(0, BV)
 
     mask_bk = (i_k * BK + tl.arange(0, BK)) < K
     mask_bv = (i_v * BV + tl.arange(0, BV)) < V
@@ -85,8 +85,8 @@ def fused_recurrent_linear_attn_bwd_kernel(
     dv,  # gradient of value [NK, B, H, L, V]
     h0,  # initial hidden state initialization [B, H, K, V]
 
-    s_qk_h,  # stride size: L * K
-    s_vo_h,  # stride size: L * V
+    s_k_h,  # stride size: L * K
+    s_v_h,  # stride size: L * V
     scale,  # K ** -0.5
 
     B,  # B
@@ -100,12 +100,12 @@ def fused_recurrent_linear_attn_bwd_kernel(
 ):
     i_v, i_k, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
-    p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
-    p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK)
-    p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
-    p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV)
+    p_q = q + i_bh * s_k_h + i_k * BK + tl.arange(0, BK)
+    p_k = k + i_bh * s_k_h + i_k * BK + tl.arange(0, BK)
+    p_v = v + i_bh * s_v_h + i_v * BV + tl.arange(0, BV)
+    p_do = do + i_bh * s_v_h + i_v * BV + tl.arange(0, BV)
 
-    p_dq = dq + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK)
+    p_dq = dq + (i_bh + i_v * B * H) * s_k_h + i_k * BK + tl.arange(0, BK)
     mask_bk = i_k * BK + tl.arange(0, BK) < K
     mask_bv = i_v * BV + tl.arange(0, BV) < V
 
@@ -134,12 +134,12 @@ def fused_recurrent_linear_attn_bwd_kernel(
     # sync threads
     tl.debug_barrier()
 
-    p_q = q + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * K
-    p_k = k + i_bh * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * K
-    p_do = do + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * V
-    p_v = v + i_bh * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * V
-    p_dk = dk + (i_bh + i_v * B * H) * s_qk_h + i_k * BK + tl.arange(0, BK) + (T - 1) * K
-    p_dv = dv + (i_bh + i_k * B * H) * s_vo_h + i_v * BV + tl.arange(0, BV) + (T - 1) * V
+    p_q = q + i_bh * s_k_h + i_k * BK + tl.arange(0, BK) + (T - 1) * K
+    p_k = k + i_bh * s_k_h + i_k * BK + tl.arange(0, BK) + (T - 1) * K
+    p_do = do + i_bh * s_v_h + i_v * BV + tl.arange(0, BV) + (T - 1) * V
+    p_v = v + i_bh * s_v_h + i_v * BV + tl.arange(0, BV) + (T - 1) * V
+    p_dk = dk + (i_bh + i_v * B * H) * s_k_h + i_k * BK + tl.arange(0, BK) + (T - 1) * K
+    p_dv = dv + (i_bh + i_k * B * H) * s_v_h + i_v * BV + tl.arange(0, BV) + (T - 1) * V
     d_h = tl.zeros([BK, BV], dtype=tl.float32)
 
     for _ in range(T):
@@ -236,11 +236,16 @@ def fused_recurrent_linear_attn(
     scale: Optional[float] = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
-    normalize: bool = False
+    normalize: bool = False,
+    head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if scale is None:
         scale = q.shape[-1] ** -0.5
+    if not head_first:
+        q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
     o, final_state = FusedRecurrentLinearAttentionFunction.apply(q, k, v, scale, initial_state, output_final_state)
     if normalize:
         o = normalize_output(q * scale, k, o)
+    if not head_first:
+        o = o.transpose(1, 2)
     return o, final_state

@@ -142,7 +142,7 @@ class HGRN2Attention(nn.Module):
             g = lower_bound + (1 - lower_bound) * f.sigmoid()
             k, g = 1 - g, g.log()
 
-        q, k, i, g = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (q, k.to(i), i, g))
+        q, k, i, g = map(lambda x: rearrange(x, '... (h d) -> ... h d', h=self.num_heads), (q, k.to(i), i, g))
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
@@ -152,12 +152,29 @@ class HGRN2Attention(nn.Module):
                 v=i,
                 gk=g,
                 initial_state=recurrent_state,
-                output_final_state=use_cache
+                output_final_state=use_cache,
+                head_first=False
             )
         elif mode == 'fused_chunk':
-            o, recurrent_state = fused_chunk_gla(q, k, i, g, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = fused_chunk_gla(
+                q=q,
+                k=k,
+                v=i,
+                g=g,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                head_first=False
+            )
         elif mode == 'chunk':
-            o, recurrent_state = chunk_gla(q, k, i, g, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = chunk_gla(
+                q=q,
+                k=k,
+                v=i,
+                g=g,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                head_first=False
+            )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
@@ -169,7 +186,7 @@ class HGRN2Attention(nn.Module):
                 offset=q.shape[2]
             )
 
-        o = rearrange(o, 'b h t d -> b t (h d)')
+        o = rearrange(o, '... h d -> ... (h d)')
         o = rms_norm_linear(o, self.g_norm.weight, self.g_norm.bias, self.o_proj.weight, self.o_proj.bias)
         return o, None, past_key_values
 

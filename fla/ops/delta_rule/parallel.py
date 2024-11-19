@@ -33,12 +33,12 @@ def chunk_transform_qk_fwd_kernel(
     q_new,
     k_new,
     A_local,
-    s_qk_h,
-    s_qk_t,
-    s_qk_d,
-    s_vo_h,
-    s_vo_t,
-    s_vo_d,
+    s_k_h,
+    s_k_t,
+    s_k_d,
+    s_v_h,
+    s_v_t,
+    s_v_d,
     scale,
     T: tl.constexpr,
     K: tl.constexpr,
@@ -51,9 +51,9 @@ def chunk_transform_qk_fwd_kernel(
 ):
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
 
-    p_q = tl.make_block_ptr(q + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, 0), (BT, BK), (1, 0))
-    p_k = tl.make_block_ptr(k + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, 0), (BT, BK), (1, 0))
-    p_v = tl.make_block_ptr(v + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, 0), (BT, BV), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, 0), (BT, BK), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, 0), (BT, BK), (1, 0))
+    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, 0), (BT, BV), (1, 0))
     b_q = (tl.load(p_q, boundary_check=(0, 1)) * scale).to(p_q.dtype.element_ty)
     b_k = tl.load(p_k, boundary_check=(0, 1))
     b_v = tl.load(p_v, boundary_check=(0, 1))
@@ -78,13 +78,13 @@ def chunk_transform_qk_fwd_kernel(
         tl.store(p_a, b_qkT.to(p_a.dtype.element_ty), boundary_check=(0, 1))
 
     b_kkT = tl.dot(b_kk, b_T, allow_tf32=False).to(b_k.dtype)
-    p_o = tl.make_block_ptr(o + i_bh * s_vo_h, (T, V), (s_vo_t, s_vo_d), (i_t * BT, 0), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, 0), (BT, BV), (1, 0))
     tl.store(p_o, tl.dot(b_qkT, b_v).to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
-    p_q_new = tl.make_block_ptr(q_new + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, 0), (BT, BK), (1, 0))
+    p_q_new = tl.make_block_ptr(q_new + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, 0), (BT, BK), (1, 0))
     tl.store(p_q_new, (b_q - tl.dot(b_qkT, b_k_beta, allow_tf32=False)).to(p_q_new.dtype.element_ty), boundary_check=(0, 1))
 
-    p_k_new = tl.make_block_ptr(k_new + i_bh * s_qk_h, (T, K), (s_qk_t, s_qk_d), (i_t * BT, 0), (BT, BK), (1, 0))
+    p_k_new = tl.make_block_ptr(k_new + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, 0), (BT, BK), (1, 0))
     tl.store(p_k_new, (b_k - tl.dot(tl.trans(b_kkT), b_k_beta, allow_tf32=False)
                        ).to(p_k_new.dtype.element_ty), boundary_check=(0, 1))
 
@@ -294,25 +294,40 @@ def parallel_delta_rule(
     v: torch.Tensor,
     beta: torch.Tensor,
     scale: float = None,
-    output_attentions: bool = False
+    output_attentions: bool = False,
+    head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
         q (torch.Tensor):
-            queries of shape `[B, H, T, K]`
+            queries of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         k (torch.Tensor):
-            keys of shape `[B, H, T, K]`
+            keys of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         v (torch.Tensor):
-            values of shape `[B, H, T, V]`
+            values of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
         beta (torch.Tensor):
-            betas of shape `[B, H, T]`
+            betas of shape `[B, H, T]` if `head_first=True` else `[B, T, H]`.
         scale (Optional[int]):
             Scale factor for attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         output_attentions (bool):
             Whether to output the materialized attention scores of shape [B, H, T, T]. Default: `False`.
+        head_first (Optional[bool]):
+            Whether the inputs are in the head-first format.
+            Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        attn (torch.Tensor):
+            Attention scores of shape `[B, H, T, T]` if `output_attentions=True` else `None`.
     """
-    return ParallelDeltaRuleFunction.apply(q, k, v, beta, scale, output_attentions)
+    if not head_first:
+        q, k, v, beta = map(lambda x: x.transpose(1, 2), (q, k, v, beta))
+    o, attn = ParallelDeltaRuleFunction.apply(q, k, v, beta, scale, output_attentions)
+    if not head_first:
+        o = o.transpose(1, 2)
+    return o, attn
 
 
 def naive_delta_rule_parallel(q, k, v, beta, BM=128, BN=32):
@@ -373,9 +388,9 @@ if __name__ == "__main__":
     B, H, T, K, V = 2, 4, 512, 64, 64
     torch.set_default_dtype(torch.bfloat16)
 
-    q = torch.randn(B, H, T, K).cuda()
-    k = torch.nn.functional.normalize(torch.randn(B, H, T, K).cuda(), p=2, dim=-1)
-    v = torch.randn(B, H, T, V).cuda()
+    q = torch.randn[B, H, T, K].cuda()
+    k = torch.nn.functional.normalize(torch.randn[B, H, T, K].cuda(), p=2, dim=-1)
+    v = torch.randn[B, H, T, V].cuda()
     beta = torch.ones(B, H, T).cuda()
 
     output_attentions = True

@@ -356,6 +356,7 @@ def chunk_delta_rule_fwd_prepare_dv(q, k, do, BT, scale):
     dv = torch.empty_like(do)
     B, H, T, K, V = *k.shape, do.shape[-1]
     NT = triton.cdiv(T, BT)
+
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
     chunk_delta_rule_fwd_kernel_prepare_dv[(NT, B*H)](
@@ -367,7 +368,7 @@ def chunk_delta_rule_fwd_prepare_dv(q, k, do, BT, scale):
     return dv
 
 
-def chunk_delta_rule_fwd_h_fn(k, w, u, BT, initial_state, final_state):
+def chunk_delta_rule_fwd_h(k, w, u, BT, initial_state, final_state):
     B, H, T, K, V = *k.shape, u.shape[-1]
 
     BK = triton.next_power_of_2(K)
@@ -403,7 +404,7 @@ def chunk_delta_rule_fwd_h_fn(k, w, u, BT, initial_state, final_state):
     return h, v_new
 
 
-def chunk_delta_rule_bwd_dhu_fn(q, k, w, dht, dh0, do, dv, BT, scale):
+def chunk_delta_rule_bwd_dhu(q, k, w, dht, dh0, do, dv, BT, scale):
     B, H, T, K, V = *q.shape, do.shape[-1]
 
     BK = triton.next_power_of_2(K)
@@ -425,8 +426,8 @@ def chunk_delta_rule_bwd_dhu_fn(q, k, w, dht, dh0, do, dv, BT, scale):
     assert NK == 1, 'NK > 1 is not supported because it involves time-consuming synchronization'
 
     dh = q.new_empty(B, H, NT * K, V)
-    grid = (NK, NV, B * H)
     dv2 = torch.empty_like(dv)
+    grid = (NK, NV, B * H)
     chunk_delta_rule_bwd_kernel_dhu[grid](
         q,
         k,
@@ -458,11 +459,11 @@ def chunk_delta_rule_bwd_dhu_fn(q, k, w, dht, dh0, do, dv, BT, scale):
     return dh, dh0, dv2
 
 
-def chunk_delta_rule_fwd_o_fn(q, k, v_new, h, BT, scale):
+def chunk_delta_rule_fwd_o(q, k, v_new, h, BT, scale):
     B, H, T, K, V = *q.shape, v_new.shape[-1]
 
-    BK = triton.next_power_of_2(K)
     o = torch.empty_like(v_new)
+
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
     NV = triton.cdiv(V, BV)
@@ -487,17 +488,17 @@ def chunk_delta_rule_fwd_o_fn(q, k, v_new, h, BT, scale):
     return o
 
 
-def chunk_delta_rule_bwd_dqkw_fn(q, k, v_new, w, h, du, do, dh, BT, scale):
+def chunk_delta_rule_bwd_dqkw(q, k, v_new, w, h, du, do, dh, BT, scale):
     B, H, T, K, V = *q.shape, v_new.shape[-1]
-    BK = triton.next_power_of_2(K)
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
     NK = triton.cdiv(K, BK)
     NT = triton.cdiv(T, BT)
-    grid = (NK, NT, B * H)
+
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
     dw = torch.empty_like(w)
+    grid = (NK, NT, B * H)
     chunk_delta_rule_bwd_kernel_dqkw[grid](
         q, k, v_new, w, h, do, dh, dq, dk, du, dw,
         q.stride(1),
@@ -537,9 +538,9 @@ def chunk_delta_rule_fwd(
     final_state = None
     if output_final_state:
         final_state = q.new_empty(B, H, K, V, dtype=torch.float)
-    h, v_new = chunk_delta_rule_fwd_h_fn(k, w, u, BT, initial_state, final_state)
+    h, v_new = chunk_delta_rule_fwd_h(k, w, u, BT, initial_state, final_state)
     # obtain output
-    o = chunk_delta_rule_fwd_o_fn(q, k, v_new, h, BT, scale)
+    o = chunk_delta_rule_fwd_o(q, k, v_new, h, BT, scale)
     if checkpoint_level == 1:
         h, v_new = None, None
     return o, A, h, v_new, final_state
@@ -562,14 +563,14 @@ def chunk_delta_rule_bwd(
     BT = chunk_size
     w, u = fwd_recompute_w_u(k, v, beta, A, BT)
     if h is None:
-        h, v_new = chunk_delta_rule_fwd_h_fn(k, w, u, BT, initial_state, None)
+        h, v_new = chunk_delta_rule_fwd_h(k, w, u, BT, initial_state, None)
     if initial_state is not None and initial_state.requires_grad:
         dh0 = torch.empty_like(initial_state, dtype=torch.float32)
     else:
         dh0 = None
     dv = chunk_delta_rule_fwd_prepare_dv(q, k, do, BT, scale)
-    dh, dh0, dv = chunk_delta_rule_bwd_dhu_fn(q, k, w, dht, dh0, do, dv, BT, scale)
-    dq, dk, dw = chunk_delta_rule_bwd_dqkw_fn(q, k, v_new, w, h, dv, do, dh, BT, scale)
+    dh, dh0, dv = chunk_delta_rule_bwd_dhu(q, k, w, dht, dh0, do, dv, BT, scale)
+    dq, dk, dw = chunk_delta_rule_bwd_dqkw(q, k, v_new, w, h, dv, do, dh, BT, scale)
     dk2, dv, db = bwd_prepare_wy_repr(k, v, beta, A, dw, dv, BT)
     dk.add_(dk2)
     return dq, dk, dv, db, dh0
@@ -637,30 +638,44 @@ def chunk_delta_rule(
     beta: torch.Tensor,
     scale: float = None,
     initial_state: torch.Tensor = None,
-    output_final_state: bool = False
+    output_final_state: bool = False,
+    head_first: bool = True
 ):
     r"""
     Args:
         q (torch.Tensor):
-            queries of shape `(B, H, T, K)`
+            queries of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         k (torch.Tensor):
-            keys of shape `(B, H, T, K)`
+            keys of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         v (torch.Tensor):
-            values of shape `(B, H, T, V)`
+            values of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
         beta (torch.Tensor):
-             betas of shape `(B, H, T)`
+            betas of shape `(B, H, T)` if `head_first=True` else `[B, T, H]`.
         scale (Optional[int]):
             Scale factor for the RetNet attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[torch.Tensor]):
-            Initial state of shape `(B, H, K, V)`. Default: `None`.
+            Initial state of shape `[B, H, K, V]`. Default: `None`.
         output_final_state (Optional[bool]):
-            Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
+            Whether to output the final state of shape `[B, H, K, V]`. Default: `False`.
+        head_first (Optional[bool]):
+            Whether the inputs are in the head-first format.
+            Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        final_state (torch.Tensor):
+            Final state of shape `[B, H, K, V]` if `output_final_state=True` else `None`.
     """
     assert q.dtype == k.dtype == v.dtype
     assert q.dtype != torch.float32, "ChunkDeltaRuleFunction does not support float32. Please use bfloat16."
     assert len(beta.shape) == 3, "beta must be of shape (batch size, num of head, seq len)."
     if scale is None:
         scale = k.shape[-1] ** -0.5
+    if not head_first:
+        q, k, v, beta = map(lambda x: x.transpose(1, 2), (q, k, v, beta))
     o, final_state = ChunkDeltaRuleFunction.apply(q, k, v, beta, scale, initial_state, output_final_state)
+    if not head_first:
+        o = o.transpose(1, 2)
     return o, final_state

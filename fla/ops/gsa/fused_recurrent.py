@@ -454,26 +454,40 @@ def fused_recurrent_gsa(
     g: Optional[torch.Tensor] = None,
     scale: Optional[int] = None,
     initial_state: Optional[Tuple[torch.Tensor]] = None,
-    output_final_state: Optional[bool] = False
+    output_final_state: Optional[bool] = False,
+    head_first: Optional[bool] = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
         q (torch.Tensor):
-            queries of shape `(B, H, T, K)`
+            queries of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         k (torch.Tensor):
-            keys of shape `(B, H, T, K)`
+            keys of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         v (torch.Tensor):
-            values of shape `(B, H, T, V)`
+            values of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        s (torch.Tensor):
+            slot representations of shape `[B, H, T, M]` if `head_first=True` else `[B, T, H, M]`.
         g (torch.Tensor):
-            Forget gates of shape `(B, H, T, M)` applied to keys.
+            Forget gates of shape `[B, H, T, M]` applied to keys.
             If not provided, this function is equivalent to vanilla ABC.
         scale (Optional[int]):
             Scale factor for attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[Tuple[torch.Tensor]]):
-            Initial state tuple having tensors of shape `(B, H, K, V)`. Default: `None`.
+            Initial state tuple having tensors of shape `[B, H, K, M]` and `[B, H, M, V]`.
+            Default: `None`.
         output_final_state (Optional[bool]):
-            Whether to output the final state tuple, having tensors of shape `(B, H, K, V)`. Default: `False`.
+            Whether to output the final state tuple, having tensors of shape `[B, H, K, M]` and `[B, H, M, V]`.
+            Default: `False`.
+        head_first (Optional[bool]):
+            Whether the inputs are in the head-first format.
+            Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        final_state (Tuple[torch.Tensor]):
+            Final state tuple having tensors of shape `[B, H, K, M]` and `[B, H, M, V]`.
     """
     if g is None:
         # TODO: this 3 steps took huge amount of time, ought to be optimized
@@ -485,7 +499,11 @@ def fused_recurrent_gsa(
     if initial_state is None:
         initial_state = (None, None)
     inference_mode = q.shape[2] == 1 and not q.requires_grad
-    ov, final_state = FusedRecurrentGSAFunction.apply(
+    if not head_first:
+        q, k, v, s, g = map(lambda x: x.transpose(1, 2) if x is not None else None, (q, k, v, s, g))
+    o, final_state = FusedRecurrentGSAFunction.apply(
         q, k, v, s, g, scale, *initial_state, output_final_state, False, inference_mode
     )
-    return ov, final_state
+    if not head_first:
+        o = o.transpose(1, 2)
+    return o, final_state

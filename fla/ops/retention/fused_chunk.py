@@ -338,6 +338,12 @@ def fused_chunk_retention(
         head_first (Optional[bool]):
             Whether the inputs are in the head-first format.
             Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        final_state (torch.Tensor):
+            Final state of shape `[B, H, K, V]` if `output_final_state=True` else `None`.
     """
     assert q.dim() == k.dim() == v.dim() == 4, "q, k, v must have 4 dimensions"
     assert q.dtype == k.dtype == v.dtype, "q, k, v must have the same dtype"

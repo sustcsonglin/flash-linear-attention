@@ -128,11 +128,11 @@ class LinearAttention(nn.Module):
         k = self.k_proj(x)
         v = self.v_proj(x)
 
-        q = rearrange(q, 'b n (h d) -> b h n d', h=self.num_heads)
+        q = rearrange(q, '... (h d) -> ... h d', h=self.num_heads)
         if self.num_kv_groups > 1:
-            k, v = (repeat(x, 'b n (h d) -> b (h g) n d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v))
+            k, v = (repeat(x, '... (h d) -> ... (h g) d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v))
         else:
-            k, v = (rearrange(x, 'b n (h d) -> b h n d', h=self.num_kv_heads) for x in (k, v))
+            k, v = (rearrange(x, '... (h d) -> ... h d', h=self.num_kv_heads) for x in (k, v))
 
         q = self.feature_map_q(q)
         k = self.feature_map_k(k)
@@ -143,14 +143,29 @@ class LinearAttention(nn.Module):
             k = k / (k.sum(-1, True) + 1e-4)
 
         if mode == 'chunk':
-            o, final_state = chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
+            o, final_state = chunk_linear_attn(
+                q=q,
+                k=k,
+                v=v,
+                normalize=self.do_feature_map_norm,
+                head_first=False
+            )
         elif mode == 'fused_chunk':
-            o, final_state = fused_chunk_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
+            o, final_state = fused_chunk_linear_attn(
+                q=q,
+                k=k,
+                v=v,
+                normalize=self.do_feature_map_norm,
+            )
         elif mode == 'fused_recurrent':
-            o, final_state = fused_recurrent_linear_attn(q, k, v, normalize=self.do_feature_map_norm)
+            o, final_state = fused_recurrent_linear_attn(
+                q=q,
+                k=k,
+                v=v,
+                normalize=self.do_feature_map_norm,
+            )
         else:
             raise NotImplementedError
         o = self.norm(o)
-        o = rearrange(o, 'b h n d -> b n (h d)')
         o = self.o_proj(o)
         return o
