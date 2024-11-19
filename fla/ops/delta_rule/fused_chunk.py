@@ -375,7 +375,7 @@ def fused_chunk_delta_rule(
         v (torch.Tensor):
             values of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
         beta (torch.Tensor):
-             betas of shape `(B, H, T)` if `head_first=True` else `(B, T, H)`.
+             betas of shape `[B, H, T]` if `head_first=True` else `(B, T, H)`.
         scale (Optional[int]):
             Scale factor for the RetNet attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
