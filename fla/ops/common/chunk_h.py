@@ -52,7 +52,7 @@ def chunk_fwd_kernel_h(
     # [BK, BV]
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
     if USE_INITIAL_STATE:
-        p_h0 = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_h0 = tl.make_block_ptr(h0 + i_bh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_h = tl.load(p_h0, boundary_check=(0, 1)).to(tl.float32)
 
     for i_t in range(NT):
@@ -117,7 +117,7 @@ def chunk_fwd_kernel_h(
         b_h += tl.dot(b_k, b_v)
 
     if STORE_FINAL_STATE:
-        p_ht = tl.make_block_ptr(ht + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_ht = tl.make_block_ptr(ht + i_bh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
 
 
@@ -169,11 +169,11 @@ def chunk_bwd_kernel_dh(
     # [BK, BV]
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
     if USE_FINAL_STATE_GRADIENT:
-        p_dht = tl.make_block_ptr(dht + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_dht = tl.make_block_ptr(dht + i_bh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         b_dh += tl.load(p_dht, boundary_check=(0, 1)).to(tl.float32)
 
     for i_t in range(NT - 1, -1, -1):
-        p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V + i_t * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V + i_t * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
         last_idx = min(i_t * BT + BT, T) - 1
         # [BK, BT]
@@ -234,7 +234,7 @@ def chunk_bwd_kernel_dh(
         b_dh += tl.dot(b_q, b_do)
 
     if STORE_INITIAL_STATE_GRADIENT:
-        p_dh0 = tl.make_block_ptr(dh0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_dh0 = tl.make_block_ptr(dh0 + i_bh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
 
@@ -253,7 +253,7 @@ def chunk_fwd_h(
     if head_first:
         B, H, T, K, V = *k.shape, v.shape[-1]
     else:
-        B, T, H, V, K = *k.shape, v.shape[-1]
+        B, T, H, K, V = *k.shape, v.shape[-1]
     BT = chunk_size
     BK, BV = min(64, triton.next_power_of_2(K)), min(64, triton.next_power_of_2(V))
     NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
@@ -305,7 +305,7 @@ def chunk_bwd_dh(
         B, H, T, K, V = *k.shape, v.shape[-1]
         HQ = q.shape[1]
     else:
-        B, T, H, V, K = *k.shape, v.shape[-1]
+        B, T, H, K, V = *k.shape, v.shape[-1]
         HQ = q.shape[2]
     BT = chunk_size
     BK = min(triton.next_power_of_2(K), 64)
