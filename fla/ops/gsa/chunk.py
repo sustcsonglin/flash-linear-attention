@@ -9,7 +9,7 @@ import triton.language as tl
 from einops import reduce
 
 from fla.ops.common.chunk_h import chunk_bwd_dh, chunk_fwd_h
-from fla.ops.utils import (chunk_global_reversed_cumsum, chunk_local_cumsum,
+from fla.ops.utils import (chunk_global_cumsum, chunk_local_cumsum,
                            softmax_bwd_kernel, softmax_fwd_kernel)
 from fla.utils import contiguous
 
@@ -243,19 +243,17 @@ def chunk_gsa_fwd_kernel_intra_V(
             k,
             g,
             A,
-            T*K,
-            K,
             i_k,
             i_c,
             i_bh,
             scale,
-            T,
-            K,
-            BT,
-            BC,
-            BK,
-            NC,
-            NG,
+            T=T,
+            K=K,
+            BT=BT,
+            BC=BC,
+            BK=BK,
+            NC=NC,
+            NG=NG
         )
 
 
@@ -782,7 +780,7 @@ def chunk_gsa_bwd_kernel_intra_KV(
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0, 1))
 
 
-def fwd_v(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, output_final_state=False, scale=1.):
+def chunk_gsa_fwd_v(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, output_final_state=False, scale=1.):
     HQ = q.shape[1]
     NT = triton.cdiv(T, BT)
     NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
@@ -807,7 +805,14 @@ def fwd_v(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, output_final_state
     chunk_gsa_fwd_kernel_intra_V[grid](
         q, k, g, A,
         scale,
-        T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC, NK=NK, NG=NG,
+        T=T,
+        K=K,
+        BT=BT,
+        BC=BC,
+        BK=BK,
+        NC=NC,
+        NK=NK,
+        NG=NG,
         num_warps=num_warps,
         num_stages=num_stages
     )
@@ -830,7 +835,7 @@ def fwd_v(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, output_final_state
     return o, h, ht, A
 
 
-def fwd_k(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, output_final_state=False, scale=1.):
+def chunk_gsa_fwd_k(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, output_final_state=False, scale=1.):
     HQ = q.shape[1]
     NT = triton.cdiv(T, BT)
     NV = triton.cdiv(V, BV)
@@ -870,14 +875,20 @@ def fwd_k(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, output_final_state
     grid = (NV, NT * NC, B * HQ)
     chunk_gsa_fwd_kernel_intra_K[grid](
         v, g, o, A,
-        T=T, V=V, BT=BT, BC=BC, BV=BV, NC=NC, NG=NG,
+        T=T,
+        V=V,
+        BT=BT,
+        BC=BC,
+        BV=BV,
+        NC=NC,
+        NG=NG,
         num_warps=num_warps,
         num_stages=num_stages
     )
     return o, h, ht, A
 
 
-def bwd_v(q, k, v, g, h, h0, A, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
+def chunk_gsa_bwd_v(q, k, v, g, h, h0, A, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
     HQ = q.shape[1]
     NT = triton.cdiv(T, BT)
     NK = triton.cdiv(K, BK)
@@ -926,7 +937,13 @@ def bwd_v(q, k, v, g, h, h0, A, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
     grid = (NK, NT * NC, B * HQ)
     chunk_gsa_bwd_kernel_intra_V[grid](
         q, k, g, dA, dq, dk, dg,
-        T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC, NG=NG,
+        T=T,
+        K=K,
+        BT=BT,
+        BC=BC,
+        BK=BK,
+        NC=NC,
+        NG=NG,
         OVERWRITE_DG=overwrite_dg,
         num_warps=num_warps,
         num_stages=num_stages
@@ -934,7 +951,7 @@ def bwd_v(q, k, v, g, h, h0, A, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
     return dq, dk, dv, dg, dh0
 
 
-def bwd_k(q, k, v, g, h, h0, o, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
+def chunk_gsa_bwd_k(q, k, v, g, h, h0, o, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scale=1.):
     HQ = q.shape[1]
     NT = triton.cdiv(T, BT)
     NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
@@ -994,7 +1011,13 @@ def bwd_k(q, k, v, g, h, h0, o, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
     grid = (NV, NT * NC, B * HQ)
     chunk_gsa_bwd_kernel_intra_KV[grid](
         v, g, o, A, do, dv, dg,
-        T=T, V=V, BT=BT, BC=BC, BV=BV, NC=NC, NG=NG,
+        T=T,
+        V=V,
+        BT=BT,
+        BC=BC,
+        BV=BV,
+        NC=NC,
+        NG=NG,
         OVERWRITE_DG=overwrite_dg,
         num_warps=num_warps,
         num_stages=num_stages
@@ -1014,9 +1037,17 @@ class ChunkGSAFunction(torch.autograd.Function):
         BM = min(64, triton.next_power_of_2(M))
 
         g_org, g = g, chunk_local_cumsum(g, BT)
-        ok, hk, hkt, Ak = fwd_k(
+        ok, hk, hkt, Ak = chunk_gsa_fwd_k(
             q=q, k=k, v=s, g=g,
-            B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, BC=BC,
+            B=B,
+            T=T,
+            H=H,
+            K=K,
+            V=M,
+            BT=BT,
+            BK=BK,
+            BV=BM,
+            BC=BC,
             h0=hk0,
             output_final_state=output_final_state,
             scale=scale
@@ -1034,9 +1065,17 @@ class ChunkGSAFunction(torch.autograd.Function):
         )
         qv = p.to(q.dtype)
 
-        ov, hv, hvt, Av = fwd_v(
+        ov, hv, hvt, Av = chunk_gsa_fwd_v(
             q=qv, k=s, v=v, g=g,
-            B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, BC=BC,
+            B=B,
+            T=T,
+            H=H,
+            K=M,
+            V=V,
+            BT=BT,
+            BK=BM,
+            BV=BV,
+            BC=BC,
             h0=hv0,
             output_final_state=output_final_state,
             scale=1.
@@ -1097,9 +1136,26 @@ class ChunkGSAFunction(torch.autograd.Function):
                 chunk_size=BT
             )
 
-        dqv, dsv, dv, dg, dhv0 = bwd_v(
-            q=qv, k=s, v=v, g=g, h=hv, h0=hv0, A=Av, do=dov, dht=dhvt, dg=None,
-            B=B, H=H, T=T, K=M, V=V, BT=BT, BK=BM, BV=BV, BC=BC,
+        dqv, dsv, dv, dg, dhv0 = chunk_gsa_bwd_v(
+            q=qv,
+            k=s,
+            v=v,
+            g=g,
+            h=hv,
+            h0=hv0,
+            A=Av,
+            do=dov,
+            dht=dhvt,
+            dg=None,
+            B=B,
+            T=T,
+            H=H,
+            K=M,
+            V=V,
+            BT=BT,
+            BK=BM,
+            BV=BV,
+            BC=BC,
             scale=1.
         )
 
@@ -1115,9 +1171,26 @@ class ChunkGSAFunction(torch.autograd.Function):
             BT=BT
         )
 
-        dq, dk, dsk, dg, dhk0 = bwd_k(
-            q=q, k=k, v=s, g=g, h=hk, h0=hk0, o=ok, do=dok, dht=dhkt, dg=dg,
-            B=B, H=H, T=T, K=K, V=M, BT=BT, BK=BK, BV=BM, BC=BC,
+        dq, dk, dsk, dg, dhk0 = chunk_gsa_bwd_k(
+            q=q,
+            k=k,
+            v=s,
+            g=g,
+            h=hk,
+            h0=hk0,
+            o=ok,
+            do=dok,
+            dht=dhkt,
+            dg=dg,
+            B=B,
+            T=T,
+            H=H,
+            K=K,
+            V=M,
+            BT=BT,
+            BK=BK,
+            BV=BM,
+            BC=BC,
             scale=ctx.scale
         )
 
@@ -1127,7 +1200,7 @@ class ChunkGSAFunction(torch.autograd.Function):
         # def reversed_cumsum(x, dim=-1):
         #     c = x.cumsum(dim)
         #     return x + c.index_select(dim, x.new_tensor([c.shape[dim]-1], dtype=torch.long)) - c
-        dg = chunk_global_reversed_cumsum(dg)
+        dg = chunk_global_cumsum(dg, reverse=True)
         if q.shape[1] != H:
             dk, dv, ds, dg = map(lambda x: reduce(x, 'b (h g) ... -> b h ...', 'sum', h=H), (dk, dv, ds, dg))
         dg = dg.to(s.dtype)

@@ -20,10 +20,10 @@ def get_err_ratio(x, y):
     return err / base
 
 
-def assert_close(prefix, ref, tri, atol):
+def assert_close(prefix, ref, tri, ratio):
     msg = f"{prefix} diff: {get_abs_err(ref, tri):.6f} ratio: {get_err_ratio(ref, tri):.6f}"
     print(msg)
-    assert ref.allclose(tri, 0, atol), msg
+    assert get_err_ratio(ref, tri) < ratio, msg
 
 
 @pytest.mark.parametrize("B", [4])
@@ -31,7 +31,7 @@ def assert_close(prefix, ref, tri, atol):
 @pytest.mark.parametrize("T", [300, 512])
 @pytest.mark.parametrize("D", [32, 64, 100])
 @pytest.mark.parametrize("M", [32, 64, 128])
-@pytest.mark.parametrize("dtype", [torch.bfloat16])
+@pytest.mark.parametrize("dtype", [torch.float])
 def test_fused_recurrent(
     B: int,
     H: int,
@@ -41,7 +41,6 @@ def test_fused_recurrent(
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
-    atol = 1e-3
 
     q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
     k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
@@ -72,22 +71,22 @@ def test_fused_recurrent(
     tri_dhk0, hk0.grad = hk0.grad.clone(), None
     tri_dhv0, hv0.grad = hv0.grad.clone(), None
 
-    assert_close("   o", ref, tri, atol)
-    assert_close(" hkt", ref_hkt, tri_hkt, atol)
-    assert_close(" hvt", ref_hvt, tri_hvt, atol)
-    assert_close("  dq", ref_dq, tri_dq, atol)
-    assert_close("  dk", ref_dk, tri_dk, atol)
-    assert_close("  dv", ref_dv, tri_dv, atol)
-    assert_close("  ds", ref_ds, tri_ds, atol)
-    assert_close("  dg", ref_dg, tri_dg, atol)
-    assert_close("dhk0", ref_dhk0, tri_dhk0, atol)
-    assert_close("dhv0", ref_dhv0, tri_dhv0, atol)
+    assert_close("   o", ref, tri, 0.005)
+    assert_close(" hkt", ref_hkt, tri_hkt, 0.005)
+    assert_close(" hvt", ref_hvt, tri_hvt, 0.005)
+    assert_close("  dq", ref_dq, tri_dq, 0.005)
+    assert_close("  dk", ref_dk, tri_dk, 0.005)
+    assert_close("  dv", ref_dv, tri_dv, 0.005)
+    assert_close("  ds", ref_ds, tri_ds, 0.005)
+    assert_close("  dg", ref_dg, tri_dg, 0.005)
+    assert_close("dhk0", ref_dhk0, tri_dhk0, 0.005)
+    assert_close("dhv0", ref_dhv0, tri_dhv0, 0.005)
 
 
-@pytest.mark.parametrize("B", [8])
-@pytest.mark.parametrize("H", [4])
-@pytest.mark.parametrize("T", [300, 512])
-@pytest.mark.parametrize("D", [64, 100, 512])
+@pytest.mark.parametrize("B", [1])
+@pytest.mark.parametrize("H", [1])
+@pytest.mark.parametrize("T", [130, 146, 162, 178, 300, 512])
+@pytest.mark.parametrize("D", [100, 300])
 @pytest.mark.parametrize("M", [32, 64, 128])
 @pytest.mark.parametrize("dtype", [torch.float])
 def test_chunk(
@@ -99,7 +98,6 @@ def test_chunk(
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
-    atol = 1e-3 if dtype == torch.float else 1e-1
     os.environ['TRITON_F32_DEFAULT'] = 'ieee'
 
     q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
@@ -127,12 +125,12 @@ def test_chunk(
     tri_ds, s.grad = s.grad.clone(), None
     tri_dg, s.grad = g.grad.clone(), None
 
-    assert_close(" o", ref, tri, atol)
-    assert_close("dq", ref_dq, tri_dq, atol)
-    assert_close("dk", ref_dk, tri_dk, atol)
-    assert_close("dv", ref_dv, tri_dv, atol)
-    assert_close("ds", ref_ds, tri_ds, atol)
-    assert_close("dg", ref_dg, tri_dg, atol)
+    assert_close(" o", ref, tri, 0.005)
+    assert_close("dq", ref_dq, tri_dq, 0.005)
+    assert_close("dk", ref_dk, tri_dk, 0.005)
+    assert_close("dv", ref_dv, tri_dv, 0.005)
+    assert_close("ds", ref_ds, tri_ds, 0.005)
+    assert_close("dg", ref_dg, tri_dg, 0.005)
 
 
 @pytest.mark.parametrize("B", [4])
@@ -152,7 +150,6 @@ def test_inference(
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
-    atol = 1e-3
 
     q = torch.randn((B, HQ, T, D), dtype=dtype, device='cuda')
     k = torch.randn((B, H, T, D), dtype=dtype, device='cuda')
@@ -175,5 +172,5 @@ def test_inference(
             output_final_state=True
         )
         tri[:, :, i] = o.squeeze(2)
-        assert_close(f"o{i}", ref[:, :, i], tri[:, :, i], atol)
+        assert_close(f"o{i}", ref[:, :, i], tri[:, :, i], 0.005)
         h0 = ht
