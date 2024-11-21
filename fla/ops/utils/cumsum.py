@@ -503,26 +503,6 @@ def chunk_global_cumsum_vector(
 
 
 @contiguous
-def chunk_global_cumsum(
-    s: torch.Tensor,
-    dtype: Optional[torch.dtype] = None,
-    offsets: Optional[torch.Tensor] = None,
-    head_first: bool = True
-) -> torch.Tensor:
-    if offsets is not None:
-        assert not head_first, "Sequences with variable lengths are not supported for head-first mode"
-        assert s.shape[0] == 1, "Only batch size 1 is supported when offsets are provided"
-    if len(s.shape) == 3:
-        return chunk_global_cumsum_scalar(s, dtype, offsets, head_first)
-    elif len(s.shape) == 4:
-        return chunk_global_cumsum_vector(s, dtype, offsets, head_first)
-    else:
-        raise ValueError(f"Unsupported input shape {s.shape}. "
-                         f"which should be [B, H, T]/[B, H, T, D] if `head_first=True` "
-                         f"or [B, T, H]/[B, T, H, D] otherwise")
-
-
-@contiguous
 def chunk_global_reversed_cumsum(
     s: torch.Tensor,
     dtype: Optional[torch.dtype] = None,
@@ -536,6 +516,27 @@ def chunk_global_reversed_cumsum(
         return chunk_global_reversed_cumsum_scalar(s, dtype, offsets, head_first)
     elif len(s.shape) == 4:
         return chunk_global_reversed_cumsum_vector(s, dtype, offsets, head_first)
+    else:
+        raise ValueError(f"Unsupported input shape {s.shape}. "
+                         f"which should be [B, H, T]/[B, H, T, D] if `head_first=True` "
+                         f"or [B, T, H]/[B, T, H, D] otherwise")
+
+
+@contiguous
+def chunk_global_cumsum(
+    s: torch.Tensor,
+    dtype: Optional[torch.dtype] = None,
+    reverse: bool = False,
+    offsets: Optional[torch.Tensor] = None,
+    head_first: bool = True
+) -> torch.Tensor:
+    if offsets is not None:
+        assert not head_first, "Sequences with variable lengths are not supported for head-first mode"
+        assert s.shape[0] == 1, "Only batch size 1 is supported when offsets are provided"
+    if len(s.shape) == 3:
+        return (chunk_global_reversed_cumsum_scalar if reverse else chunk_global_cumsum_scalar)(s, dtype, offsets, head_first)
+    elif len(s.shape) == 4:
+        return (chunk_global_reversed_cumsum_vector if reverse else chunk_global_cumsum_vector)(s, dtype, offsets, head_first)
     else:
         raise ValueError(f"Unsupported input shape {s.shape}. "
                          f"which should be [B, H, T]/[B, H, T, D] if `head_first=True` "
