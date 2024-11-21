@@ -61,7 +61,9 @@ def chunk_rwkv6_fwd_cumsum(g, BT):
     chunk_rwkv6_fwd_cumsum_kernel[grid](
         g, gi, ge,
         g.stride(1), g.stride(2), g.stride(3),
-        T=T, S=K, BT=BT
+        T=T,
+        S=K,
+        BT=BT
     )
     return gi, ge
 
@@ -812,10 +814,10 @@ class ChunkRWKV6Function(torch.autograd.Function):
             g=None,
             gk=g_cumsum_inclusive,
             gv=None,
-            BT=BT,
             h0=initial_state,
             output_final_state=output_final_state,
-            states_in_fp32=False
+            states_in_fp32=False,
+            chunk_size=BT
         )
         A = chunk_rwkv6_fwd_intra_A_gated(q, k, g_cumsum_inclusive, g_cumsum_exclusive, u, scale, BT)
         o = chunk_rwkv6_fwd_o_gated_gk(q, v, g_cumsum_exclusive, A, h, BT, scale)
@@ -836,10 +838,10 @@ class ChunkRWKV6Function(torch.autograd.Function):
             g=None,
             gk=g_cumsum_inclusive,
             gv=None,
-            BT=BT,
             h0=initial_state,
             output_final_state=False,
-            states_in_fp32=True
+            states_in_fp32=True,
+            chunk_size=BT
         )
         dh, dh0 = chunk_rwkv6_bwd_dh(
             q=q,
@@ -855,8 +857,8 @@ class ChunkRWKV6Function(torch.autograd.Function):
             states_in_fp32=True
         )
         # dq dk in fp32
-        dA = chunk_gla_bwd_dA(v=v, do=do, BT=BT, scale=scale)
-        dv = chunk_gla_bwd_dv(k=k, g_cumsum=g_cumsum_inclusive, A=A, do=do, dh=dh, BT=BT, scale=scale)
+        dA = chunk_gla_bwd_dA(v=v, do=do, scale=scale, chunk_size=BT)
+        dv = chunk_gla_bwd_dv(k=k, g_cumsum=g_cumsum_inclusive, A=A, do=do, dh=dh, scale=scale, chunk_size=BT)
         dq, dk = chunk_rwkv6_bwd_dqk_intra(
             q=q,
             k=k,

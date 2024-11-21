@@ -8,7 +8,7 @@ import triton
 import triton.language as tl
 from einops import reduce
 
-from fla.ops.common.chunk_h import chunk_bwd_dh_fn, chunk_fwd_h_fn
+from fla.ops.common.chunk_h import chunk_bwd_dh, chunk_fwd_h
 from fla.ops.utils import (chunk_global_reversed_cumsum, chunk_local_cumsum,
                            softmax_bwd_kernel, softmax_fwd_kernel)
 from fla.utils import contiguous
@@ -20,8 +20,6 @@ def chunk_gsa_fwd_kernel_intra_K(
     g,
     o,
     A,
-    s_v_h,
-    s_v_t,
     T: tl.constexpr,
     V: tl.constexpr,
     BT: tl.constexpr,
@@ -39,16 +37,16 @@ def chunk_gsa_fwd_kernel_intra_K(
     if i_t * BT + i_i * BC > T:
         return
 
-    p_g = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
-    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * s_v_h + min(i_t * BT + i_i * BC, T) * V + o_v, BV), BV)
+    p_g = tl.make_block_ptr(g + i_bg * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * T*V + min(i_t * BT + i_i * BC, T) * V + o_v, BV), BV)
     # [BV,]
     b_gn = tl.load(p_gn, mask=m_v, other=0)
     # [BC, BV]
     b_o = tl.zeros([BC, BV], dtype=tl.float32)
     for i_j in range(0, i_i):
         p_A = tl.make_block_ptr(A + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
-        p_v = tl.make_block_ptr(v + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
-        p_gv = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bg * T*V, (T, V), (V, 1), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
+        p_gv = tl.make_block_ptr(g + i_bg * T*V, (T, V), (V, 1), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
         # [BC, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_gv = tl.load(p_gv, boundary_check=(0, 1))
@@ -64,8 +62,8 @@ def chunk_gsa_fwd_kernel_intra_K(
     o_A = i_bh * T * BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_i * BC
     m_A = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
     for j in range(0, min(BC, T - i_t * BT - i_i * BC)):
-        p_v = tl.max_contiguous(tl.multiple_of(v + i_bg * s_v_h + (i_t * BT + i_i * BC + j) * V + o_v, BV), BV)
-        p_gv = tl.max_contiguous(tl.multiple_of(g + i_bg * s_v_h + (i_t * BT + i_i * BC + j) * V + o_v, BV), BV)
+        p_v = tl.max_contiguous(tl.multiple_of(v + i_bg * T*V + (i_t * BT + i_i * BC + j) * V + o_v, BV), BV)
+        p_gv = tl.max_contiguous(tl.multiple_of(g + i_bg * T*V + (i_t * BT + i_i * BC + j) * V + o_v, BV), BV)
         # [BC,]
         b_A = tl.load(A + o_A + j, mask=m_A, other=0)
         # [BV,]
@@ -75,7 +73,7 @@ def chunk_gsa_fwd_kernel_intra_K(
         b_vg = b_v[None, :] * tl.exp(b_g - b_gv[None, :])
         # avoid 0 * inf = inf
         b_o += tl.where(o_i[:, None] >= j, b_A[:, None] * b_vg, 0.)
-    p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + i_bh * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
 
     b_o += tl.load(p_o, boundary_check=(0, 1))
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
@@ -89,12 +87,6 @@ def chunk_gsa_fwd_kernel_K(
     g,
     o,
     A,
-    s_k_h,
-    s_k_t,
-    s_v_h,
-    s_v_t,
-    s_h_h,
-    s_h_t,
     scale,
     T: tl.constexpr,
     K: tl.constexpr,
@@ -102,7 +94,8 @@ def chunk_gsa_fwd_kernel_K(
     BT: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    NG: tl.constexpr
+    NG: tl.constexpr,
+    NT: tl.constexpr
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_bg = i_bh // NG
@@ -113,9 +106,9 @@ def chunk_gsa_fwd_kernel_K(
     b_o = tl.zeros([BT, BV], dtype=tl.float32)
     b_A = tl.zeros([BT, BT], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_k = tl.make_block_ptr(k + i_bg * s_k_h, (K, T), (1, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_h = tl.make_block_ptr(h + i_bg * s_h_h + i_t * K * V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bg * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+        p_h = tl.make_block_ptr(h + i_bg * NT*K*V + i_t * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
 
         # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
@@ -128,8 +121,8 @@ def chunk_gsa_fwd_kernel_K(
         b_o += tl.dot(b_q, b_h)
         # [BT, BT]
         b_A += tl.dot(b_q, b_k)
-    p_g = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_g = tl.make_block_ptr(g + i_bg * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     # [BT, BV]
     b_g = tl.load(p_g, boundary_check=(0, 1))
     b_o = b_o * tl.exp(b_g)
@@ -148,8 +141,6 @@ def chunk_gsa_fwd_kernel_intra_Vk(
     k,
     g,
     A,
-    s_k_h,
-    s_k_t,
     i_k,
     i_c,
     i_bh,
@@ -173,11 +164,11 @@ def chunk_gsa_fwd_kernel_intra_Vk(
 
     b_A = tl.zeros([BC, BC], tl.float32)
     if i_i > i_j:
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_k = tl.make_block_ptr(k + i_bg * s_k_h, (K, T), (1, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
-        p_gk = tl.make_block_ptr(g + i_bg * s_k_h, (K, T), (1, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
-        p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * s_k_h + min(i_t * BT + i_i * BC, T) * K + o_k, BK), BK)
+        p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bg * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bg * T*K, (K, T), (1, K), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
+        p_gk = tl.make_block_ptr(g + i_bg * T*K, (K, T), (1, K), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
+        p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * T*K + min(i_t * BT + i_i * BC, T) * K + o_k, BK), BK)
 
         # [BK,]
         b_gn = tl.load(p_gn, mask=(o_k < K), other=0.)
@@ -195,10 +186,10 @@ def chunk_gsa_fwd_kernel_intra_Vk(
             b_A += tl.load(p_A, boundary_check=(0, 1))
         tl.store(p_A, b_A.to(A.dtype.element_ty), boundary_check=(0, 1))
     elif i_i == i_j:
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_k = tl.max_contiguous(tl.multiple_of(k + i_bg * s_k_h + (i_t * BT + i_j * BC) * K + o_k, BK), BK)
-        p_gk = tl.max_contiguous(tl.multiple_of(g + i_bg * s_k_h + (i_t * BT + i_j * BC) * K + o_k, BK), BK)
+        p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bg * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_k = tl.max_contiguous(tl.multiple_of(k + i_bg * T*K + (i_t * BT + i_j * BC) * K + o_k, BK), BK)
+        p_gk = tl.max_contiguous(tl.multiple_of(g + i_bg * T*K + (i_t * BT + i_j * BC) * K + o_k, BK), BK)
         m_k = o_k < K
 
         # [BC, BK]
@@ -234,8 +225,6 @@ def chunk_gsa_fwd_kernel_intra_V(
     k,
     g,
     A,
-    s_k_h,
-    s_k_t,
     scale,
     T: tl.constexpr,
     K: tl.constexpr,
@@ -254,8 +243,8 @@ def chunk_gsa_fwd_kernel_intra_V(
             k,
             g,
             A,
-            s_k_h,
-            s_k_t,
+            T*K,
+            K,
             i_k,
             i_c,
             i_bh,
@@ -278,12 +267,6 @@ def chunk_gsa_fwd_kernel_V(
     h,
     o,
     A,
-    s_k_h,
-    s_k_t,
-    s_v_h,
-    s_v_t,
-    s_h_h,
-    s_h_t,
     scale,
     T: tl.constexpr,
     K: tl.constexpr,
@@ -291,16 +274,17 @@ def chunk_gsa_fwd_kernel_V(
     BT: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    NG: tl.constexpr
+    NG: tl.constexpr,
+    NT: tl.constexpr
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_bg = i_bh // NG
 
     b_o = tl.zeros([BT, BV], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_h = tl.make_block_ptr(h + i_bg * s_h_h + i_t * K * V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bg * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_h = tl.make_block_ptr(h + i_bg * NT*K*V + i_t * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
 
         # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
@@ -315,8 +299,8 @@ def chunk_gsa_fwd_kernel_V(
         # [BT, BV]
         if i_k >= 0:
             b_o += tl.dot(b_qg, b_h)
-    p_v = tl.make_block_ptr(v + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_v = tl.make_block_ptr(v + i_bg * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     p_A = tl.make_block_ptr(A + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
     # [BT, BV]
     b_v = tl.load(p_v, boundary_check=(0, 1))
@@ -339,12 +323,6 @@ def chunk_gsa_bwd_kernel_V(
     dk,
     dv,
     dA,
-    s_k_h,
-    s_k_t,
-    s_v_h,
-    s_v_t,
-    s_h_h,
-    s_h_t,
     scale,
     T: tl.constexpr,
     K: tl.constexpr,
@@ -352,7 +330,8 @@ def chunk_gsa_bwd_kernel_V(
     BT: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    NG: tl.constexpr
+    NG: tl.constexpr,
+    NT: tl.constexpr
 ):
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_bg = i_bh // NG
@@ -360,9 +339,9 @@ def chunk_gsa_bwd_kernel_V(
     o_t = min(i_t * BT + BT, T)
     o_k = i_k * BK + tl.arange(0, BK)
 
-    p_k = tl.make_block_ptr(k + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_gk = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * s_k_h + (o_t - 1) * K + o_k, BK), BK)
+    p_k = tl.make_block_ptr(k + i_bg * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_gk = tl.make_block_ptr(g + i_bg * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * T*K + (o_t - 1) * K + o_k, BK), BK)
     p_A = tl.make_block_ptr(A + i_bh * T * BT, (BT, T), (1, BT), (0, i_t * BT), (BT, BT), (0, 1))
     m_k = o_k < K
 
@@ -379,11 +358,11 @@ def chunk_gsa_bwd_kernel_V(
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
     b_dA = tl.zeros([BT, BT], dtype=tl.float32)
     for i_v in range(tl.cdiv(V, BV)):
-        p_v = tl.make_block_ptr(v + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_h = tl.make_block_ptr(h + i_bg * s_h_h + i_t * V * K, (V, K), (1, s_h_t), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
-        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dh = tl.make_block_ptr(dh + i_bh * s_h_h + i_t * K*V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        p_dv = tl.make_block_ptr(dv + (i_k*n_bh+i_bh) * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bg * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_h = tl.make_block_ptr(h + i_bg * NT*K*V + i_t * V * K, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
+        p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V + i_t * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_dv = tl.make_block_ptr(dv + (i_k*n_bh+i_bh) * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
 
         # [BT, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
@@ -410,8 +389,8 @@ def chunk_gsa_bwd_kernel_V(
     b_dq = b_dq * tl.exp(b_gk)
     b_dk = b_dk * b_gn
 
-    p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_dk = tl.make_block_ptr(dk + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dq = tl.make_block_ptr(dq + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dk = tl.make_block_ptr(dk + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT, ), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
@@ -433,8 +412,6 @@ def chunk_gsa_bwd_kernel_intra_V(
     dq,
     dk,
     dg,
-    s_k_h,
-    s_k_t,
     T: tl.constexpr,
     K: tl.constexpr,
     BT: tl.constexpr,
@@ -452,8 +429,8 @@ def chunk_gsa_bwd_kernel_intra_V(
     if i_t * BT + i_i * BC > T:
         return
 
-    p_g = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
+    p_g = tl.make_block_ptr(g + i_bg * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
     m_k = o_k < K
     # [BK,]
     b_gn = tl.load(p_gn, mask=m_k, other=0.)
@@ -461,8 +438,8 @@ def chunk_gsa_bwd_kernel_intra_V(
     b_g = tl.load(p_g, boundary_check=(0, 1))
     b_dq = tl.zeros([BC, BK], dtype=tl.float32)
     for i_j in range(0, i_i):
-        p_k = tl.make_block_ptr(k + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-        p_gk = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bg * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+        p_gk = tl.make_block_ptr(g + i_bg * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
         p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
         # [BC, BK]
         b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -474,8 +451,8 @@ def chunk_gsa_bwd_kernel_intra_V(
         b_dq += tl.dot(b_dA, b_kg)
     b_dq *= tl.exp(b_g - b_gn[None, :])
 
-    p_kj = tl.max_contiguous(tl.multiple_of(k + i_bg * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
-    p_gkj = tl.max_contiguous(tl.multiple_of(g + i_bg * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
+    p_kj = tl.max_contiguous(tl.multiple_of(k + i_bg * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
+    p_gkj = tl.max_contiguous(tl.multiple_of(g + i_bg * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
 
     o_i = tl.arange(0, BC)
     o_dA = i_bh * T * BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_i * BC
@@ -493,25 +470,25 @@ def chunk_gsa_bwd_kernel_intra_V(
 
         p_kj += K
         p_gkj += K
-    p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+    p_dq = tl.make_block_ptr(dq + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
 
     b_dq = b_dq + tl.load(p_dq, boundary_check=(0, 1))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
 
     tl.debug_barrier()
-    p_k = tl.make_block_ptr(k + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-    p_gk = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bg * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+    p_gk = tl.make_block_ptr(g + i_bg * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     # [BC, BK]
     b_k = tl.load(p_k, boundary_check=(0, 1))
     b_gk = tl.load(p_gk, boundary_check=(0, 1))
     b_dk = tl.zeros([BC, BK], dtype=tl.float32)
 
-    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * s_k_h + min(i_t * BT + i_i * BC + BC, T) * K - K + o_k, BK), BK)
+    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * T*K + min(i_t * BT + i_i * BC + BC, T) * K - K + o_k, BK), BK)
     # [BK,]
     b_gn = tl.load(p_gn, mask=m_k, other=0)
     for i_j in range(i_i + 1, min(NC, tl.cdiv(T - i_t * BT, BC))):
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bg * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
         p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (BT, T), (1, BT), (i_i * BC, i_t * BT + i_j * BC), (BC, BC), (0, 1))
         # [BC, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
@@ -523,8 +500,8 @@ def chunk_gsa_bwd_kernel_intra_V(
         b_dk += tl.dot(b_dA.to(b_qg.dtype), b_qg)
     b_dk *= tl.exp(b_gn[None, :] - b_gk)
 
-    p_qj = tl.max_contiguous(tl.multiple_of(q + i_bh * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
-    p_gqj = tl.max_contiguous(tl.multiple_of(g + i_bg * s_k_h + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
+    p_qj = tl.max_contiguous(tl.multiple_of(q + i_bh * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
+    p_gqj = tl.max_contiguous(tl.multiple_of(g + i_bg * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
     m_k = o_k < K
 
     o_dA = i_bh * T * BT + (i_t * BT + i_i * BC) * BT + i_i * BC + tl.arange(0, BC)
@@ -540,9 +517,9 @@ def chunk_gsa_bwd_kernel_intra_V(
 
         p_qj += K
         p_gqj += K
-    p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-    p_dk = tl.make_block_ptr(dk + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-    p_dg = tl.make_block_ptr(dg + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+    p_dk = tl.make_block_ptr(dk + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+    p_dg = tl.make_block_ptr(dg + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
 
     b_q = tl.load(p_q, boundary_check=(0, 1)).to(tl.float32)
     b_dk = b_dk + tl.load(p_dk, boundary_check=(0, 1)).to(tl.float32)
@@ -560,8 +537,6 @@ def chunk_gsa_bwd_kernel_intra_K(
     g,
     do,
     dA,
-    s_v_h,
-    s_v_t,
     scale,
     T: tl.constexpr,
     V: tl.constexpr,
@@ -586,11 +561,11 @@ def chunk_gsa_bwd_kernel_intra_K(
     # [BC, BC]
     b_dA = tl.zeros([BC, BC], dtype=tl.float32)
     if i_i > i_j:
-        p_v = tl.make_block_ptr(v + i_bg * s_v_h, (V, T), (1, s_v_t), (i_v * BV, i_t * BT + i_j * BC), (BV, BC), (0, 1))
-        p_gv = tl.make_block_ptr(g + i_bg * s_v_h, (V, T), (1, s_v_t), (i_v * BV, i_t * BT + i_j * BC), (BV, BC), (0, 1))
-        p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * s_v_h + (i_t * BT + i_i * BC) * V + o_v, BV), BV)
-        p_g = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
-        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bg * T*V, (V, T), (1, V), (i_v * BV, i_t * BT + i_j * BC), (BV, BC), (0, 1))
+        p_gv = tl.make_block_ptr(g + i_bg * T*V, (V, T), (1, V), (i_v * BV, i_t * BT + i_j * BC), (BV, BC), (0, 1))
+        p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * T*V + (i_t * BT + i_i * BC) * V + o_v, BV), BV)
+        p_g = tl.make_block_ptr(g + i_bg * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
         # [BV,]
         b_gn = tl.load(p_gn, mask=m_v, other=0.)
         # [BC, BV]
@@ -604,10 +579,10 @@ def chunk_gsa_bwd_kernel_intra_K(
         # [BC, BC]
         b_dA = tl.dot(b_do, b_vg)
     elif i_i == i_j:
-        p_g = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
-        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
-        p_v = tl.max_contiguous(tl.multiple_of(v + i_bg * s_v_h + (i_t * BT + i_j * BC) * V + o_v, BV), BV)
-        p_gv = tl.max_contiguous(tl.multiple_of(g + i_bg * s_v_h + (i_t * BT + i_j * BC) * V + o_v, BV), BV)
+        p_g = tl.make_block_ptr(g + i_bg * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+        p_v = tl.max_contiguous(tl.multiple_of(v + i_bg * T*V + (i_t * BT + i_j * BC) * V + o_v, BV), BV)
+        p_gv = tl.max_contiguous(tl.multiple_of(g + i_bg * T*V + (i_t * BT + i_j * BC) * V + o_v, BV), BV)
         # [BC, BV]
         b_g = tl.load(p_g, boundary_check=(0, 1))
         b_do = tl.load(p_do, boundary_check=(0, 1)) * scale
@@ -644,12 +619,6 @@ def chunk_gsa_bwd_kernel_K(
     dk,
     dv,
     dA,
-    s_k_h,
-    s_k_t,
-    s_v_h,
-    s_v_t,
-    s_h_h,
-    s_h_t,
     scale,
     T: tl.constexpr,
     K: tl.constexpr,
@@ -657,7 +626,8 @@ def chunk_gsa_bwd_kernel_K(
     BT: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    NG: tl.constexpr
+    NG: tl.constexpr,
+    NT: tl.constexpr
 ):
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_bg = i_bh // NG
@@ -667,8 +637,8 @@ def chunk_gsa_bwd_kernel_K(
     o_t = min(i_t * BT + BT, T)
     m_s = o_i[:, None] >= o_i[None, :]
 
-    p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_k = tl.make_block_ptr(k + i_bg * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_k = tl.make_block_ptr(k + i_bg * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_A = tl.make_block_ptr(A + (i_k*n_bh+i_bh) * T * BT, (T, BT, ), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
 
     # [BT, BK]
@@ -683,15 +653,15 @@ def chunk_gsa_bwd_kernel_K(
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
     for i_v in range(tl.cdiv(V, BV)):
         o_v = i_v * BV + tl.arange(0, BV)
-        p_v = tl.make_block_ptr(v + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_h = tl.make_block_ptr(h + i_bg * s_h_h + i_t * K*V, (V, K), (1, s_h_t), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
-        p_g = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * s_v_h + (o_t - 1) * V + o_v, BV), BV)
+        p_v = tl.make_block_ptr(v + i_bg * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_h = tl.make_block_ptr(h + i_bg * NT*K*V + i_t * K*V, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
+        p_g = tl.make_block_ptr(g + i_bg * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * T*V + (o_t - 1) * V + o_v, BV), BV)
         m_v = o_v < V
 
-        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dh = tl.make_block_ptr(dh + i_bh * s_h_h + i_t * K*V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        p_dv = tl.make_block_ptr(dv + (i_k*n_bh+i_bh) * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V + i_t * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_dv = tl.make_block_ptr(dv + (i_k*n_bh+i_bh) * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
 
         # [BV,]
         b_gn = tl.load(p_gn, mask=m_v, other=0)
@@ -722,8 +692,8 @@ def chunk_gsa_bwd_kernel_K(
     b_dq += tl.dot(b_dA, b_k)
     b_dk += tl.dot(tl.trans(b_dA).to(b_k.dtype), b_q)
 
-    p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_dk = tl.make_block_ptr(dk + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dq = tl.make_block_ptr(dq + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dk = tl.make_block_ptr(dk + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
 
@@ -737,8 +707,6 @@ def chunk_gsa_bwd_kernel_intra_KV(
     do,
     dv,
     dg,
-    s_v_h,
-    s_v_t,
     T: tl.constexpr,
     V: tl.constexpr,
     BT: tl.constexpr,
@@ -757,17 +725,17 @@ def chunk_gsa_bwd_kernel_intra_KV(
     if i_t * BT + i_i * BC > T:
         return
 
-    p_gv = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
-    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * s_v_h + min(i_t * BT + i_i * BC + BC, T) * V - V + o_v, BV), BV)
+    p_gv = tl.make_block_ptr(g + i_bg * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_gn = tl.max_contiguous(tl.multiple_of(g + i_bg * T*V + min(i_t * BT + i_i * BC + BC, T) * V - V + o_v, BV), BV)
     # [BV,]
     b_gn = tl.load(p_gn, mask=m_v, other=0)
     # [BC, BV]
     b_gv = tl.load(p_gv, boundary_check=(0, 1))
     b_dv = tl.zeros([BC, BV], dtype=tl.float32)
     for i_j in range(i_i + 1, NC):
-        p_g = tl.make_block_ptr(g + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
+        p_g = tl.make_block_ptr(g + i_bg * T*V, (T, V), (V, 1), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
         p_A = tl.make_block_ptr(A + i_bh * T * BT, (BT, T), (1, BT), (i_i * BC, i_t * BT + i_j * BC), (BC, BC), (0, 1))
-        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
+        p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT + i_j * BC, i_v * BV), (BC, BV), (1, 0))
         # [BC, BV]
         b_g = tl.load(p_g, boundary_check=(0, 1))
         b_do = tl.load(p_do, boundary_check=(0, 1))
@@ -780,9 +748,9 @@ def chunk_gsa_bwd_kernel_intra_KV(
     o_i = tl.arange(0, BC)
     o_c = i_i * BC + tl.arange(0, BC)
 
-    p_g = tl.max_contiguous(tl.multiple_of(g + i_bg * s_v_h + (i_t * BT + i_i * BC) * V + o_v, BV), BV)
+    p_g = tl.max_contiguous(tl.multiple_of(g + i_bg * T*V + (i_t * BT + i_i * BC) * V + o_v, BV), BV)
     p_A = tl.max_contiguous(tl.multiple_of(A + i_bh * T * BT + (i_t * BT + i_i * BC) * BT + o_c, BC), BC)
-    p_do = tl.max_contiguous(tl.multiple_of(do + i_bh * s_v_h + (i_t * BT + i_i * BC) * V + o_v, BV), BV)
+    p_do = tl.max_contiguous(tl.multiple_of(do + i_bh * T*V + (i_t * BT + i_i * BC) * V + o_v, BV), BV)
 
     for j in range(0, min(BC, T - i_t * BT - i_i * BC)):
         # [BC,]
@@ -797,11 +765,11 @@ def chunk_gsa_bwd_kernel_intra_KV(
         p_g += V
         p_A += BT
         p_do += V
-    p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
-    p_v = tl.make_block_ptr(v + i_bg * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
-    p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
-    p_dv = tl.make_block_ptr(dv + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
-    p_dg = tl.make_block_ptr(dg + i_bh * s_v_h, (T, V), (s_v_t, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + i_bh * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_v = tl.make_block_ptr(v + i_bg * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_dv = tl.make_block_ptr(dv + i_bh * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
+    p_dg = tl.make_block_ptr(dg + i_bh * T*V, (T, V), (V, 1), (i_t * BT + i_i * BC, i_v * BV), (BC, BV), (1, 0))
 
     b_o = tl.load(p_o, boundary_check=(0, 1)).to(tl.float32)
     b_v = tl.load(p_v, boundary_check=(0, 1)).to(tl.float32)
@@ -823,22 +791,21 @@ def fwd_v(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, output_final_state
     num_warps = 4 if BK == 64 else 2
     num_stages = 1
 
-    h, ht = chunk_fwd_h_fn(
+    h, ht = chunk_fwd_h(
         k=k,
         v=v,
         g=None,
         gk=g,
         gv=None,
-        BT=BT,
         h0=h0,
         output_final_state=output_final_state,
-        states_in_fp32=False
+        states_in_fp32=False,
+        chunk_size=BT
     )
     A = q.new_empty(B, HQ, T, BT)
     grid = (NT * NC * NC, B * HQ)
     chunk_gsa_fwd_kernel_intra_V[grid](
         q, k, g, A,
-        k.stride(1), k.stride(2),
         scale,
         T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC, NK=NK, NG=NG,
         num_warps=num_warps,
@@ -848,11 +815,15 @@ def fwd_v(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, output_final_state
     grid = (NV, NT, B * HQ)
     chunk_gsa_fwd_kernel_V[grid](
         q, v, g, h, o, A,
-        k.stride(1), k.stride(2),
-        v.stride(1), v.stride(2),
-        h.stride(1), h.stride(2),
         scale,
-        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NG=NG,
+        T=T,
+        K=K,
+        V=V,
+        BT=BT,
+        BK=BK,
+        BV=BV,
+        NG=NG,
+        NT=NT,
         num_warps=num_warps,
         num_stages=num_stages
     )
@@ -868,34 +839,37 @@ def fwd_k(q, k, v, g, B, H, T, K, V, BT, BK, BV, BC, h0=None, output_final_state
     num_warps = 4 if BK == 64 else 2
     num_stages = 1
 
-    h, ht = chunk_fwd_h_fn(
+    h, ht = chunk_fwd_h(
         k=k,
         v=v,
         g=None,
         gk=None,
         gv=g,
-        BT=BT,
         h0=h0,
         output_final_state=output_final_state,
-        states_in_fp32=False
+        states_in_fp32=False,
+        chunk_size=BT
     )
     o = v.new_empty(B, HQ, T, V)
     A = q.new_empty(B, HQ, T, BT)
     grid = (NV, NT, B * HQ)
     chunk_gsa_fwd_kernel_K[grid](
         q, k, h, g, o, A,
-        k.stride(1), k.stride(2),
-        v.stride(1), v.stride(2),
-        h.stride(1), h.stride(2),
         scale,
-        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NG=NG,
+        T=T,
+        K=K,
+        V=V,
+        BT=BT,
+        BK=BK,
+        BV=BV,
+        NG=NG,
+        NT=NT,
         num_warps=num_warps,
         num_stages=num_stages
     )
     grid = (NV, NT * NC, B * HQ)
     chunk_gsa_fwd_kernel_intra_K[grid](
         v, g, o, A,
-        v.stride(1), v.stride(2),
         T=T, V=V, BT=BT, BC=BC, BV=BV, NC=NC, NG=NG,
         num_warps=num_warps,
         num_stages=num_stages
@@ -913,7 +887,7 @@ def bwd_v(q, k, v, g, h, h0, A, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
     num_stages = 1
 
     overwrite_dg = dg is None
-    dh, dh0 = chunk_bwd_dh_fn(
+    dh, dh0 = chunk_bwd_dh(
         q=q,
         k=k,
         v=v,
@@ -923,9 +897,9 @@ def bwd_v(q, k, v, g, h, h0, A, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
         do=do,
         h0=h0,
         dht=dht,
-        BT=BT,
         scale=scale,
-        states_in_fp32=True
+        states_in_fp32=True,
+        chunk_size=BT
     )
     dq = torch.empty_like(q, dtype=torch.float)
     dk = k.new_empty(B, HQ, T, K, dtype=torch.float)
@@ -936,11 +910,15 @@ def bwd_v(q, k, v, g, h, h0, A, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
     grid = (NK, NT, B * HQ)
     chunk_gsa_bwd_kernel_V[grid](
         k, v, h, g, A, do, dh, dq, dk, dv, dA,
-        k.stride(1), k.stride(2),
-        v.stride(1), v.stride(2),
-        h.stride(1), h.stride(2),
         scale,
-        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NG=NG,
+        T=T,
+        K=K,
+        V=V,
+        BT=BT,
+        BK=BK,
+        BV=BV,
+        NG=NG,
+        NT=NT,
         num_warps=num_warps,
         num_stages=num_stages
     )
@@ -948,7 +926,6 @@ def bwd_v(q, k, v, g, h, h0, A, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
     grid = (NK, NT * NC, B * HQ)
     chunk_gsa_bwd_kernel_intra_V[grid](
         q, k, g, dA, dq, dk, dg,
-        k.stride(1), k.stride(2),
         T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC, NG=NG,
         OVERWRITE_DG=overwrite_dg,
         num_warps=num_warps,
@@ -967,7 +944,7 @@ def bwd_k(q, k, v, g, h, h0, o, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
     num_stages = 1
 
     overwrite_dg = dg is None
-    dh, dh0 = chunk_bwd_dh_fn(
+    dh, dh0 = chunk_bwd_dh(
         q=q,
         k=k,
         v=v,
@@ -977,15 +954,14 @@ def bwd_k(q, k, v, g, h, h0, o, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
         do=do,
         h0=h0,
         dht=dht,
-        BT=BT,
         scale=scale,
-        states_in_fp32=True
+        states_in_fp32=True,
+        chunk_size=BT
     )
     dA = q.new_empty(NV, B, HQ, T, BT)
     grid = (NV, NT * NC * NC, B * HQ)
     chunk_gsa_bwd_kernel_intra_K[grid](
         v, g, do, dA,
-        v.stride(1), v.stride(2),
         scale,
         T=T, V=V, BT=BT, BC=BC, BV=BV, NC=NC, NG=NG,
         num_warps=num_warps,
@@ -1001,11 +977,15 @@ def bwd_k(q, k, v, g, h, h0, o, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
     grid = (NK, NT, B * HQ)
     chunk_gsa_bwd_kernel_K[grid](
         q, k, v, h, g, A, do, dh, dq, dk, dv, dA,
-        q.stride(1), q.stride(2),
-        v.stride(1), v.stride(2),
-        h.stride(1), h.stride(2),
         scale,
-        T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NG=NG,
+        T=T,
+        K=K,
+        V=V,
+        BT=BT,
+        BK=BK,
+        BV=BV,
+        NG=NG,
+        NT=NT,
         num_warps=num_warps,
         num_stages=num_stages
     )
@@ -1014,7 +994,6 @@ def bwd_k(q, k, v, g, h, h0, o, do, dht, dg, B, H, T, K, V, BT, BK, BV, BC, scal
     grid = (NV, NT * NC, B * HQ)
     chunk_gsa_bwd_kernel_intra_KV[grid](
         v, g, o, A, do, dv, dg,
-        v.stride(1), v.stride(2),
         T=T, V=V, BT=BT, BC=BC, BV=BV, NC=NC, NG=NG,
         OVERWRITE_DG=overwrite_dg,
         num_warps=num_warps,
@@ -1095,27 +1074,27 @@ class ChunkGSAFunction(torch.autograd.Function):
 
         # rerun the forward pass to get h if checkpoint_level >= 1
         if ctx.checkpoint_level > 1:
-            hk, _ = chunk_fwd_h_fn(
+            hk, _ = chunk_fwd_h(
                 k=k,
                 v=s,
                 g=None,
                 gk=None,
                 gv=g,
-                BT=BT,
                 h0=hk0,
                 output_final_state=False,
-                states_in_fp32=False
+                states_in_fp32=False,
+                chunk_size=BT
             )
-            hv, _ = chunk_fwd_h_fn(
+            hv, _ = chunk_fwd_h(
                 k=s,
                 v=v,
                 g=None,
                 gk=g,
                 gv=None,
-                BT=BT,
                 h0=hv0,
                 output_final_state=False,
-                states_in_fp32=False
+                states_in_fp32=False,
+                chunk_size=BT
             )
 
         dqv, dsv, dv, dg, dhv0 = bwd_v(
@@ -1131,7 +1110,9 @@ class ChunkGSAFunction(torch.autograd.Function):
         softmax_bwd_kernel[grid](
             p, dqv, dok,
             s.stride(1), s.stride(2), s.stride(3),
-            T=T, S=M, BT=BT
+            T=T,
+            S=M,
+            BT=BT
         )
 
         dq, dk, dsk, dg, dhk0 = bwd_k(
@@ -1146,9 +1127,10 @@ class ChunkGSAFunction(torch.autograd.Function):
         # def reversed_cumsum(x, dim=-1):
         #     c = x.cumsum(dim)
         #     return x + c.index_select(dim, x.new_tensor([c.shape[dim]-1], dtype=torch.long)) - c
-        dg = chunk_global_reversed_cumsum(dg).to(s.dtype)
+        dg = chunk_global_reversed_cumsum(dg)
         if q.shape[1] != H:
             dk, dv, ds, dg = map(lambda x: reduce(x, 'b (h g) ... -> b h ...', 'sum', h=H), (dk, dv, ds, dg))
+        dg = dg.to(s.dtype)
         return dq, dk, dv, ds, dg, None, dhk0, dhv0, None, None
 
 
