@@ -626,7 +626,7 @@ def chunk_rwkv6_fwd_intra_A_gated_fn(q, k, gi, ge, u, scale, BT):
     else:
         BK = 128
         NK = triton.cdiv(K, BK)
-        A_intra = q.new_empty(NK, B, H, BT, BC, dtype=torch.float32)
+        A_intra = q.new_empty(NK, B, H, T, BC, dtype=torch.float32)
         grid = (NK, NT * NC, B * H)
         chunk_rwkv6_fwd_A_kernel_intra_sub_intra_split[grid](
             q, k, gi, ge, u, A_intra,
