@@ -12,11 +12,13 @@ from .linear_attn import LinearAttention
 from .multiscale_retention import MultiScaleRetention
 from .rebased import ReBasedLinearAttention
 from .rwkv6 import RWKV6Attention
+from .bitattn import BitAttention
 
 __all__ = [
     'ABCAttention',
     'Attention',
     'BasedLinearAttention',
+    'BitAttention',
     'DeltaNet',
     'GatedLinearAttention',
     'GatedSlotAttention',
@@ -25,5 +27,5 @@ __all__ = [
     'LinearAttention',
     'MultiScaleRetention',
     'ReBasedLinearAttention',
-    'RWKV6Attention'
+    'RWKV6Attention',
 ]
