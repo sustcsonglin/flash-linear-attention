@@ -196,11 +196,11 @@ class GatedLinearAttention(nn.Module):
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
-        q = rearrange(q, 'b t (h d) -> b h t d', h=self.num_heads)
+        q = rearrange(q, 'b t (h d) -> b t h d', h=self.num_heads)
         if self.num_kv_groups > 1:
-            k, v, gk = (repeat(x, 'b t (h d) -> b (h g) t d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v, gk))
+            k, v, gk = (repeat(x, 'b t (h d) -> b t (h g) d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v, gk))
         else:
-            k, v, gk = (rearrange(x, 'b t (h d) -> b h t d', h=self.num_kv_heads) for x in (k, v, gk))
+            k, v, gk = (rearrange(x, 'b t (h d) -> b t h d', h=self.num_kv_heads) for x in (k, v, gk))
         gk = F.logsigmoid(gk) / self.gate_logit_normalizer
 
         if self.clamp_min is not None:
@@ -208,11 +208,35 @@ class GatedLinearAttention(nn.Module):
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_gla(
+                q=q,
+                k=k,
+                v=v,
+                gk=gk,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                head_first=False
+            )
         elif mode == 'fused_chunk':
-            o, recurrent_state = fused_chunk_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = fused_chunk_gla(
+                q=q,
+                k=k,
+                v=v,
+                g=gk,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                head_first=False
+            )
         elif mode == 'chunk':
-            o, recurrent_state = chunk_gla(q, k, v, gk, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = chunk_gla(
+                q=q,
+                k=k,
+                v=v,
+                g=gk,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                head_first=False
+            )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
@@ -224,7 +248,6 @@ class GatedLinearAttention(nn.Module):
                 offset=q.shape[2]
             )
 
-        o = rearrange(o, 'b h t d -> b t h d')
         if self.use_output_gate:
             g = self.g_proj(hidden_states)
             if self.fuse_norm_and_gate:

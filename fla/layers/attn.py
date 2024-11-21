@@ -13,7 +13,7 @@ import torch.utils.checkpoint
 from einops import rearrange
 from transformers.utils import logging
 
-from fla.modules import RotaryEmbedding
+from fla.modules import RMSNorm, RotaryEmbedding
 
 if TYPE_CHECKING:
     from fla.models.utils import Cache
@@ -40,7 +40,10 @@ class Attention(nn.Module):
         num_heads: int = 32,
         num_kv_heads: Optional[int] = None,
         window_size: Optional[int] = None,
+        rope_theta: Optional[float] = 10000.,
         max_position_embeddings: Optional[int] = None,
+        norm_first: bool = False,
+        norm_eps: float = 1e-5,
         layer_idx: int = None
     ):
         super().__init__()
@@ -56,26 +59,19 @@ class Attention(nn.Module):
         self.kv_dim = self.num_kv_heads * self.head_dim
         self.kv_dim = self.num_kv_heads * self.head_dim
         self.window_size = window_size
+        self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
+        self.norm_first = norm_first
         self.layer_idx = layer_idx
 
+        if norm_first:
+            self.norm = RMSNorm(self.hidden_size, eps=norm_eps)
         self.q_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         self.k_proj = nn.Linear(self.hidden_size, self.kv_dim, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.kv_dim, bias=False)
         self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
 
-        self.rotary = RotaryEmbedding(self.head_dim)
-
-        self.apply(self._initialize_weights)
-
-    def _initialize_weights(self, module: nn.Module):
-        if getattr(module, "_is_hf_initialized", False):
-            return
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
-        module._is_hf_initialized = True
+        self.rotary = RotaryEmbedding(dim=self.head_dim, base=self.rope_theta)
 
     def forward(
         self,
@@ -94,6 +90,10 @@ class Attention(nn.Module):
             )
 
         batch_size, q_len, _ = hidden_states.size()
+
+        if self.norm_first:
+            hidden_states = self.norm(hidden_states)
+
         q = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
         k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_kv_heads)
         v = rearrange(self.v_proj(hidden_states), '... (h d) -> ... h d', h=self.num_kv_heads)

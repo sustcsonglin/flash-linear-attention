@@ -22,6 +22,7 @@ from fla.models.utils import Cache
 from fla.modules import (FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss,
                          RMSNorm)
 from fla.modules.activations import swiglu_linear
+from fla.modules.layernorm import rms_norm_linear
 
 logger = logging.get_logger(__name__)
 
@@ -33,7 +34,9 @@ class TransformerMLP(nn.Module):
         hidden_size: int,
         hidden_ratio: Optional[int] = None,
         intermediate_size: Optional[int] = None,
-        hidden_act: str = 'swish'
+        hidden_act: str = 'swish',
+        norm_first: bool = True,
+        norm_eps: float = 1e-5
     ) -> TransformerMLP:
         super().__init__()
 
@@ -47,14 +50,21 @@ class TransformerMLP(nn.Module):
             intermediate_size = 256 * ((intermediate_size + 256 - 1) // 256)
         self.hidden_ratio = hidden_ratio
         self.intermediate_size = intermediate_size
+        self.norm_first = norm_first
+
+        if norm_first:
+            self.norm = RMSNorm(hidden_size=hidden_size, eps=norm_eps)
 
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
     def forward(self, x):
-        y = self.gate_proj(x)
-        gate, y = y.chunk(2, -1)
+        if self.norm_first:
+            x = rms_norm_linear(x, self.norm.weight, self.norm.bias, self.gate_proj.weight, self.gate_proj.bias)
+        else:
+            x = self.gate_proj(x)
+        gate, y = x.chunk(2, -1)
         return swiglu_linear(gate, y, self.down_proj.weight, self.down_proj.bias)
 
 
@@ -65,21 +75,28 @@ class TransformerBlock(nn.Module):
 
         self.hidden_size = config.hidden_size
 
-        self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
+        if not config.norm_first:
+            self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.attn = Attention(
             hidden_size=config.hidden_size,
             num_heads=config.num_heads,
             num_kv_heads=config.num_kv_heads,
             window_size=config.window_size,
+            rope_theta=config.rope_theta,
             max_position_embeddings=config.max_position_embeddings,
+            norm_first=config.norm_first,
+            norm_eps=config.norm_eps,
             layer_idx=layer_idx
         )
-        self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
+        if not config.norm_first:
+            self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
         self.mlp = TransformerMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
             intermediate_size=config.intermediate_size,
-            hidden_act=config.hidden_act
+            hidden_act=config.hidden_act,
+            norm_first=config.norm_first,
+            norm_eps=config.norm_eps
         )
 
     def forward(
@@ -93,7 +110,8 @@ class TransformerBlock(nn.Module):
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
         residual = hidden_states
-        hidden_states = self.attn_norm(hidden_states)
+        if hasattr(self, 'attn_norm'):
+            hidden_states = self.attn_norm(hidden_states)
         hidden_states, attentions, past_key_values = self.attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -101,7 +119,11 @@ class TransformerBlock(nn.Module):
             use_cache=use_cache,
             output_attentions=output_attentions
         )
-        hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
+        if hasattr(self, 'mlp_norm'):
+            hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
+        else:
+            hidden_states = residual + hidden_states
+            residual = hidden_states
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -128,7 +150,7 @@ class TransformerPreTrainedModel(PreTrainedModel):
     def _init_weights(
         self,
         module: nn.Module,
-        rescale_prenorm_residual: bool = True,
+        rescale_prenorm_residual: bool = False,
         num_residuals_per_layer: int = 2,
     ):
         if isinstance(module, (nn.Linear, nn.Conv1d)):

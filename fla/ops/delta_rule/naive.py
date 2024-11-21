@@ -62,7 +62,7 @@ def delta_rule_chunkwise(q, k, v, beta, chunk_size=32):
         o[:, :, i] = o_inter + attn @ u_i
         S = S + k_i.transpose(-1, -2) @ u_i
 
-    return rearrange(o, 'b h n c d -> b h (n c) d')
+    return rearrange(o, 'b h n c d -> b h (n c) d'), S
 
 
 def delta_rule_parallel(q, k, v, beta, BM=128, BN=32):
@@ -71,7 +71,6 @@ def delta_rule_parallel(q, k, v, beta, BM=128, BN=32):
     q = q * (d_k ** -0.5)
     v = v * beta[..., None]
     k_beta = k * beta[..., None]
-
     # compute (I - tri(diag(beta) KK^T))^{-1} 
     q, k, v, k_beta = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c=BN), [q, k, v, k_beta])
     mask = torch.triu(torch.ones(BN, BN, dtype=torch.bool, device=q.device), diagonal=0)
@@ -94,7 +93,7 @@ def delta_rule_parallel(q, k, v, beta, BM=128, BN=32):
 
     q, k, v, k_beta, o_intra = map(lambda x: rearrange(x, 'b h n c d -> b h (n c) d'), [q, k, v, k_beta, o_intra])
     o = torch.empty_like(v)
-    for i in range(0, L, BM):
+    for i in range(0, l, BM):
         q_i = q[:, :, i:i+BM]
         o_i = o_intra[:, :, i:i+BM]
         # intra block
@@ -115,8 +114,10 @@ def delta_rule_parallel(q, k, v, beta, BM=128, BN=32):
           o_i += A_ij @ v[:, :, j:j+BN]
         o[:, :, i:i+BM] = o_i
     
-    # (Optional) also return the attention matrix A
-    return o
+    for i in range(0, l//BN):
+        A[:, :, i*BN:i*BN+BN, i*BN:i*BN+BN] = A_local[:, :, i]
+
+    return o, A
 
 
 if __name__ == '__main__':
@@ -139,7 +140,7 @@ if __name__ == '__main__':
     v_grad, v.grad = v.grad, None
     beta_grad, beta.grad = beta.grad, None
 
-    o2 = delta_rule_chunkwise(q, k, v, beta)
+    o2, _ = delta_rule_chunkwise(q, k, v, beta)
     o2.backward(do)
     assert torch.allclose(o, o2, atol=1e-4), breakpoint()
     assert torch.allclose(q.grad, q_grad, atol=1e-4), breakpoint()
@@ -152,7 +153,7 @@ if __name__ == '__main__':
     v_grad, v.grad = v.grad, None
     beta_grad, beta.grad = beta.grad, None
 
-    o3 = delta_rule_parallel(q, k, v, beta)
+    o3, _ = delta_rule_parallel(q, k, v, beta)
     o3.backward(do)
     assert torch.allclose(o, o3, atol=1e-4), breakpoint()
     assert torch.allclose(q.grad, q_grad, atol=1e-4), breakpoint()

@@ -1161,32 +1161,46 @@ def chunk_gsa(
     scale: Optional[int] = None,
     initial_state: Optional[Tuple[torch.Tensor]] = None,
     output_final_state: Optional[bool] = False,
-    checkpoint_level: Optional[int] = 2
+    checkpoint_level: Optional[int] = 2,
+    head_first: Optional[bool] = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
         q (torch.Tensor):
-            queries of shape `(B, HQ, T, K)`.
+            queries of shape `[B, HQ, T, K]` if `head_first=True` else `[B, T, HQ, K]`.
         k (torch.Tensor):
-            keys of shape `(B, H, T, K)`. GQA is performed if `H` is not equal to `HQ`.
+            keys of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
+            GQA is performed if `H` is not equal to `HQ`.
         v (torch.Tensor):
-            values of shape `(B, H, T, V)`.
+            values of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        s (torch.Tensor):
+            slot representations of shape `[B, H, T, M]` if `head_first=True` else `[B, T, H, M]`.
         g (torch.Tensor):
-            Forget gates of shape `(B, H, T, M)` applied to keys.
+            Forget gates of shape `[B, H, T, M]` applied to keys.
             If not provided, this function is equivalent to vanilla ABC.
         scale (Optional[int]):
             Scale factor for attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[Tuple[torch.Tensor]]):
-            Initial state tuple having tensors of shape `(B, H, K, V)`. Default: `None`.
+            Initial state tuple having tensors of shape `[B, H, K, M]` and `[B, H, M, V]`. Default: `None`.
         output_final_state (Optional[bool]):
-            Whether to output the final state tuple, having tensors of shape `(B, H, K, V)`. Default: `False`.
+            Whether to output the final state tuple, having tensors of shape `[B, H, K, M]` and `[B, H, M, V]`.
+            Default: `False`.
         checkpoint_level (Optional[int]):
             Checkpointing level; higher values will save more memories and do more recomputations during backward.
             Default: `2`:
             - Level `0`: no memory saved, no recomputation.
             - Level `1`: recompute the fp32 cumulative values during backward.
             - Level `2`: recompute the fp32 cumulative values and forward hidden states during backward.
+        head_first (Optional[bool]):
+            Whether the inputs are in the head-first format.
+            Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        final_state (Tuple[torch.Tensor]):
+            Final state tuple having tensors of shape `[B, H, K, M]` and `[B, H, M, V]`.
     """
     assert checkpoint_level in [0, 1, 2]
     if g is None:
@@ -1200,5 +1214,9 @@ def chunk_gsa(
     hk0, hv0 = None, None
     if initial_state is not None:
         hk0, hv0 = initial_state
-    ov, *final_state = ChunkGSAFunction.apply(q, k, v, s, g, scale, hk0, hv0, output_final_state, checkpoint_level)
-    return ov, final_state
+    if not head_first:
+        q, k, v, s, g = map(lambda x: x.transpose(1, 2), (q, k, v, s, g))
+    o, *final_state = ChunkGSAFunction.apply(q, k, v, s, g, scale, hk0, hv0, output_final_state, checkpoint_level)
+    if not head_first:
+        o = o.transpose(1, 2)
+    return o, final_state

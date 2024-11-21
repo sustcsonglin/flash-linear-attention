@@ -132,7 +132,7 @@ class ABCAttention(nn.Module):
                 "for padding purposes (0 indicating padding). "
                 "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
             )
-              
+
         last_state = None
         if past_key_values is not None and len(past_key_values) > self.layer_idx:
             last_state = past_key_values[self.layer_idx]
@@ -156,26 +156,26 @@ class ABCAttention(nn.Module):
         if attention_mask is not None:
             v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
 
+        q, k, v = map(lambda x: rearrange(x, '... (h d) -> ... h d', h=self.num_heads), (q, k, v))
         if self.use_rope:
-            q = rearrange(q, '... (h d) -> ... h d', h=self.num_heads)
-            k = rearrange(k, '... (h d) -> ... h d', h=self.num_heads)
             seqlen_offset = 0
             if past_key_values is not None:
                 seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
             q, k = self.rotary(q, k, seqlen_offset)
-            q = rearrange(q, 'b t h d -> b h t d', h=self.num_heads)
-            k = rearrange(k, 'b t h d -> b h t d', h=self.num_heads)
-        else:
-            q = rearrange(q, 'b t (h d) -> b h t d', h=self.num_heads)
-            k = rearrange(k, 'b t (h d) -> b h t d', h=self.num_heads)
-        v = rearrange(v, 'b t (h d) -> b h t d', h=self.num_heads)
 
-        # [batch_size, n_heads, seq_len, num_slots]
-        s = rearrange(self.s_proj(hidden_states), 'b t (h m) -> b h t m', h=self.num_heads)
+        s = rearrange(self.s_proj(hidden_states), '... (h m) -> ... h m', h=self.num_heads)
         s = s.clamp_(self.clamp_min, self.clamp_max)
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
-        o, recurrent_state = chunk_abc(q, k, v, s, initial_state=recurrent_state, output_final_state=use_cache)
+        o, recurrent_state = chunk_abc(
+            q=q,
+            k=k,
+            v=v,
+            s=s,
+            initial_state=recurrent_state,
+            output_final_state=use_cache,
+            head_first=False
+        )
         if past_key_values is not None:
             past_key_values.update(
                 recurrent_state=recurrent_state,
@@ -184,16 +184,15 @@ class ABCAttention(nn.Module):
                 offset=q.shape[2]
             )
 
-        o = rearrange(o, 'b h t d -> b t h d')
         if self.use_norm and not self.use_output_gate:
             o = self.g_norm(o)
         elif self.use_output_gate:
-            g = rearrange(self.g_proj(hidden_states), 'b t (h d) -> b t h d', h=self.num_heads)
+            g = rearrange(self.g_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
             o = self.g_norm(o, g) if self.use_norm else swiglu(g, o)
-        o = rearrange(o, 'b t h d -> b t (h d)')
+        o = rearrange(o, '... h d -> ... (h d)')
         o = self.o_proj(o)
 
         return o, None, past_key_values
 
-    def state_size(self, sequence_length: int = 2048):
+    def state_size(self, seq_len: int = 2048):
         return self.num_heads * self.key_dim * self.head_v_dim

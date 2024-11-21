@@ -120,19 +120,9 @@ class HGRNAttention(nn.Module):
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'chunk':
-            o, recurrent_state = chunk_hgrn(
-                i=i,
-                f=f,
-                initial_state=recurrent_state,
-                output_final_state=use_cache
-            )
+            o, recurrent_state = chunk_hgrn(i, f, recurrent_state, use_cache)
         elif mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_hgrn(
-                i=i,
-                f=f,
-                initial_state=recurrent_state,
-                output_final_state=use_cache
-            )
+            o, recurrent_state = fused_recurrent_hgrn(i, f, recurrent_state, use_cache)
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 

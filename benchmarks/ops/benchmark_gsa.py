@@ -4,8 +4,8 @@ import torch
 import triton
 from torch.nn import functional as F
 
-from fla.ops.abc import chunk_gated_abc, fused_recurrent_gated_abc
 from fla.ops.gla import chunk_gla
+from fla.ops.gsa import chunk_gsa, fused_recurrent_gsa
 from fla.ops.retention import chunk_retention
 
 try:
@@ -61,15 +61,15 @@ def benchmark(T, provider):
 
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'gsa_recurrent':
-        return triton.testing.do_bench(lambda: fused_recurrent_gated_abc(q, k, v, s, f), quantiles=quantiles)
+        return triton.testing.do_bench(lambda: fused_recurrent_gsa(q, k, v, s, f), quantiles=quantiles)
     if provider == 'gsa_chunk':
-        return triton.testing.do_bench(lambda: chunk_gated_abc(q, k, v, s, f), quantiles=quantiles)
+        return triton.testing.do_bench(lambda: chunk_gsa(q, k, v, s, f), quantiles=quantiles)
     elif provider == 'gla':
         return triton.testing.do_bench(lambda: chunk_gla(q, k, v, g), quantiles=quantiles)
     elif provider == 'gsa_recurrent_bwd':
-        return triton.testing.do_bench(lambda: fused_recurrent_gated_abc(q, k, v, s, f)[0].backward(do), quantiles=quantiles)
+        return triton.testing.do_bench(lambda: fused_recurrent_gsa(q, k, v, s, f)[0].backward(do), quantiles=quantiles)
     elif provider == 'gsa_chunk_bwd':
-        return triton.testing.do_bench(lambda: chunk_gated_abc(q, k, v, s, f)[0].backward(do), quantiles=quantiles)
+        return triton.testing.do_bench(lambda: chunk_gsa(q, k, v, s, f)[0].backward(do), quantiles=quantiles)
     elif provider == 'gla_bwd':
         return triton.testing.do_bench(lambda: chunk_gla(q, k, v, g)[0].backward(do), quantiles=quantiles)
     elif provider == 'retention_bwd':

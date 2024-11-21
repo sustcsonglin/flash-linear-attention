@@ -2,7 +2,8 @@
 
 # Flash Linear Attention
 
-[![hf_model](https://img.shields.io/badge/🤗-Models-blue.svg)](https://huggingface.co/fla-hub)  [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](https://discord.gg/vDaJTmKNcS)
+[![hf_model](https://img.shields.io/badge/-Models-gray.svg?logo=huggingface&style=flat-square)](https://huggingface.co/fla-hub)  [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white&style=flat-square)](https://discord.gg/vDaJTmKNcS)
+
 </div>
 
 This repo aims at providing a collection of efficient Triton-based implementations for state-of-the-art linear attention models. **Any pull requests are welcome!**
@@ -17,6 +18,7 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 - [Installation](#installation)
 - [Usage](#usage)
   - [Token Mixing](#token-mixing)
+  - [Fused Modules](#fused-modules)
   - [Generation](#generation)
   - [Hybrid Models](#hybrid-models)
 - [Evaluations](#evaluations)
@@ -172,6 +174,19 @@ GLAForCausalLM(
 )
 
 ```
+
+## Fused Modules
+
+We offer a collection of fused modules in `fla.modules` to facilitate faster training:
+
+* [`Rotary Embedding`](fla/modules/rotary.py): rotary positional embeddings as adopted by the Llama architecture, a.k.a., Transformer++.
+* [`Norm Layers`](fla/modules/layernorm.py): 
+  * `RMSNorm`, `LayerNorm` and `GroupNorm`
+  * `RMSNormLinear`, `LayerNormLinear` and `GroupNormLinear` to reduce memory usage of intermediate tensors for improved memory efficiency.
+* [`Norm Layers with Gating`](fla/modules/fused_norm_gate.py): combine norm layers with element-wise gating, as used by RetNet/GLA.
+* [`Cross Entropy`](fla/modules/fused_cross_entropy.py): faster Triton implementation of cross entropy loss.
+* [`Linear Cross Entropy`](fla/modules/fused_linear_cross_entropy.py): fused linear layer and cross entropy loss to avoid the materialization of large logits tensors. Also refer to implementations by [mgmalek](https://github.com/mgmalek/efficient_cross_entropy) and [Liger-Kernel](https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/ops/fused_linear_cross_entropy.py).
+* [`Linear KL Divergence`](fla/modules/fused_kl_div.py): fused linear layer and KL divergence loss in a similar vein as CE loss.
 
 ## Generation
 
@@ -374,13 +389,11 @@ Performance:
 # Citation
 If you find this repo useful, please consider citing our works:
 ```bib
-
-@inproceedings{
-yang2024gated,
-title={Gated Linear Attention Transformers with Hardware-Efficient Training},
-author={Songlin Yang and Bailin Wang and Yikang Shen and Rameswar Panda and Yoon Kim},
-booktitle={Forty-first International Conference on Machine Learning},
-year={2024}
+@inproceedings{yang2024gla,
+  title     = {Gated Linear Attention Transformers with Hardware-Efficient Training},
+  author    = {Yang, Songlin and Wang, Bailin and Shen, Yikang and Panda, Rameswar and Kim, Yoon},
+  booktitle = {Proceedings of ICML},
+  year      = {2024}
 }
 
 @software{yang2024fla,
@@ -391,19 +404,17 @@ year={2024}
   year   = {2024}
 }
 
-@inproceedings{
-yang2024parallelizing,
-title={Parallelizing Linear Transformers with the Delta Rule over Sequence Length},
-author={Songlin Yang and Bailin Wang and Yu Zhang and Yikang Shen and Yoon Kim},
-booktitle={The Thirty-eighth Annual Conference on Neural Information Processing Systems},
-year={2024}
+@inproceedings{yang2024parallelizing,
+  title     = {Parallelizing Linear Transformers with the Delta Rule over Sequence Length},
+  author    = {Yang, Songlin and Wang, Bailin and Zhang, Yu and Shen, Yikang and Kim, Yoon},
+  booktitle = {Proceedings of NeurIPS},
+  year      = {2024}
 }
 
-@inproceedings{
-zhang2024gated,
-title={Gated Slot Attention for Efficient Linear-Time Sequence Modeling},
-author={Yu Zhang and Songlin Yang and Rui-Jie Zhu and Yue Zhang and Leyang Cui and Yiqiao Wang and Bolun Wang and Freda Shi and Bailin Wang and Wei Bi and Peng Zhou and Guohong Fu},
-booktitle={The Thirty-eighth Annual Conference on Neural Information Processing Systems},
-year={2024}
+@inproceedings{zhang2024gsa,
+  title     = {Gated Slot Attention for Efficient Linear-Time Sequence Modeling},
+  author    = {Zhang, Yu and Yang, Songlin and Zhu, Ruijie and Zhang, Yue and Cui, Leyang and Wang, Yiqiao and Wang, Bolun and Shi, Freda and Wang, Bailin and Bi, Wei and Zhou, Peng and Fu, Guohong},
+  booktitle = {Proceedings of NeurIPS},
+  year      = {2024}
 }
 ```

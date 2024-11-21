@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+import os
+
 import torch
 import triton
 
@@ -41,7 +43,8 @@ def benchmark(T, provider):
     device = 'cuda'
     dtype = torch.bfloat16
     requires_grad = True
-    B, H, D = 8, 32, 128
+    B, H, D = 4, 8, 256
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
     if provider == 'flash' or provider == 'flash_bwd':
         q = torch.randn(B, T, H, D, device=device, requires_grad=requires_grad, dtype=dtype)
@@ -74,7 +77,7 @@ def benchmark(T, provider):
     elif provider == 'chunk_bwd':
         results = triton.testing.do_bench(lambda: chunk_retention(q, k, v)[0].backward(do), quantiles=quantiles)
     elif provider == 'parallel_bwd':
-        results = triton.testing.do_bench(lambda: parallel_retention(q, k, v).backward(do), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: parallel_retention(q, k, v)[0].backward(do), quantiles=quantiles)
     elif provider == 'flash':
         results = triton.testing.do_bench(lambda: flash_attn_func(q, k, v, causal=True), quantiles=quantiles)
     elif provider == 'flash_bwd':

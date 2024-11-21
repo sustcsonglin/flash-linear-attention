@@ -19,7 +19,7 @@ def rotate_half(x, interleaved=False):
         return rearrange(torch.stack((-x2, x1), dim=-1), "... d two -> ... (d two)", two=2)
 
 
-def apply_rotary_emb_torch(x, cos, sin, interleaved=False):
+def rotary_embedding_torch(x, cos, sin, interleaved=False):
     """
     x: (batch_size, seqlen, nheads, headdim)
     cos, sin: (seqlen, rotary_dim / 2) or (batch_size, seqlen, rotary_dim / 2)
@@ -37,7 +37,8 @@ def apply_rotary_emb_torch(x, cos, sin, interleaved=False):
     )
 
 
-class ApplyRotaryEmb(torch.autograd.Function):
+class RotaryEmbeddingFunction(torch.autograd.Function):
+
     @staticmethod
     def forward(
         ctx,
@@ -97,7 +98,7 @@ class ApplyRotaryEmb(torch.autograd.Function):
         return dx, None, None, None, None, None, None, None
 
 
-def apply_rotary_emb(
+def rotary_embedding(
     x,
     cos,
     sin,
@@ -125,13 +126,9 @@ def apply_rotary_emb(
     rotary_dim must be <= headdim
     Apply rotary embedding to the first rotary_dim of x.
     """
-    return ApplyRotaryEmb.apply(
+    return RotaryEmbeddingFunction.apply(
         x, cos, sin, interleaved, inplace, seqlen_offsets, cu_seqlens, max_seqlen
     )
-
-
-# For backward compatibility
-apply_rotary_emb_func = apply_rotary_emb
 
 
 class RotaryEmbedding(torch.nn.Module):
@@ -230,8 +227,7 @@ class RotaryEmbedding(torch.nn.Module):
                 else:
                     inv_freq = self.inv_freq
             else:
-                t = torch.arange(seqlen, device=device,
-                                 dtype=self.inv_freq.dtype)
+                t = torch.arange(seqlen, device=device, dtype=self.inv_freq.dtype)
                 inv_freq = self.inv_freq
             # Don't do einsum, it converts fp32 to fp16 under AMP
             # freqs = torch.einsum("i,j->ij", t, self.inv_freq)
@@ -241,12 +237,10 @@ class RotaryEmbedding(torch.nn.Module):
                 self._sin_cached = torch.sin(freqs).to(dtype)
             else:
                 power = (
-                    torch.arange(seqlen, dtype=self.scale.dtype,
-                                 device=self.scale.device)
+                    torch.arange(seqlen, dtype=self.scale.dtype, device=self.scale.device)
                     - seqlen // 2
                 ) / self.scale_base
-                scale = self.scale.to(
-                    device=power.device) ** rearrange(power, "s -> s 1")
+                scale = self.scale.to(device=power.device) ** rearrange(power, "s -> s 1")
                 # We want the multiplication by scale to happen in fp32
                 self._cos_cached = (torch.cos(freqs) * scale).to(dtype)
                 self._sin_cached = (torch.sin(freqs) * scale).to(dtype)
@@ -261,14 +255,14 @@ class RotaryEmbedding(torch.nn.Module):
         max_seqlen: Optional[int] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
-        qkv: (batch, seqlen, 3, nheads, headdim) if kv is none,
-             else it's just q of shape (batch, seqlen, nheads, headdim)
-        kv: (batch, seqlen, 2, nheads, headdim)
-        seqlen_offset: (batch_size,) or int. Each sequence in x is shifted by this amount.
+        q: (batch, seqlen, nheads, headdim)
+        k: (batch, seqlen, nheads, headdim)
+        seqlen_offset:
+            (batch_size,) or int. Each sequence in x is shifted by this amount.
             Most commonly used in inference when we have KV cache.
             If it's a tensor of shape (batch_size,), then to update the cos / sin cache, one
             should pass in max_seqlen, which will update the cos / sin cache up to that length.
-        Apply rotary embedding *inplace* to qkv and / or kv.
+        max_seqlen: int
         """
         seqlen = q.shape[1]
         if max_seqlen is not None:
@@ -276,35 +270,35 @@ class RotaryEmbedding(torch.nn.Module):
         elif isinstance(seqlen_offset, int):
             self._update_cos_sin_cache(seqlen + seqlen_offset, device=q.device, dtype=q.dtype)
         if self.scale is None:
-            q = apply_rotary_emb_func(
+            q = rotary_embedding(
                 q,
                 self._cos_cached,
                 self._sin_cached,
                 interleaved=self.interleaved,
-                seqlen_offsets=seqlen_offset,
+                seqlen_offsets=seqlen_offset
             )
-            k = apply_rotary_emb_func(
+            k = rotary_embedding(
                 k,
                 self._cos_cached,
                 self._sin_cached,
                 interleaved=self.interleaved,
-                seqlen_offsets=seqlen_offset,
+                seqlen_offsets=seqlen_offset
             )
 
         else:
-            q = apply_rotary_emb_func(
+            q = rotary_embedding(
                 q,
                 self._cos_cached,
                 self._sin_cached,
                 interleaved=self.interleaved,
-                seqlen_offsets=seqlen_offset,
+                seqlen_offsets=seqlen_offset
             )
-            k = apply_rotary_emb_func(
+            k = rotary_embedding(
                 k,
                 self._cos_k_cached,
                 self._sin_k_cached,
                 interleaved=self.interleaved,
-                seqlen_offsets=seqlen_offset,
+                seqlen_offsets=seqlen_offset
             )
 
         return q, k

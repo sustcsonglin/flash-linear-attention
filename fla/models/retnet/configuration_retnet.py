@@ -21,7 +21,7 @@ class RetNetConfig(PretrainedConfig):
         hidden_ratio: Optional[int] = 2,
         intermediate_size: Optional[int] = None,
         num_hidden_layers: int = 24,
-        num_heads: int = 4,
+        num_heads: int = 8,
         num_kv_heads: Optional[int] = None,
         feature_map: Optional[str] = None,
         hidden_act: str = "swish",

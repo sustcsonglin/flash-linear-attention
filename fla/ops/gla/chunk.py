@@ -822,27 +822,41 @@ def chunk_gla(
     g: torch.Tensor,
     scale: Optional[int] = None,
     initial_state: torch.Tensor = None,
-    output_final_state: bool = False
+    output_final_state: bool = False,
+    head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
         q (torch.Tensor):
-            queries of shape `(B, H, T, K)`
+            queries of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         k (torch.Tensor):
-            keys of shape `(B, H, T, K)`
+            keys of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         v (torch.Tensor):
-            values of shape `(B, H, T, V)`
+            values of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
         g (torch.Tensor):
-            Forget gates of shape `(B, H, T, K)` applied to keys.
+            Forget gates of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]` applied to keys.
         scale (Optional[int]):
             Scale factor for the GLA attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[torch.Tensor]):
-            Initial state of shape `(B, H, K, V)`. Default: `None`.
+            Initial state of shape `[B, H, K, V]`. Default: `None`.
         output_final_state (Optional[bool]):
-            Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
+            Whether to output the final state of shape `[B, H, K, V]`. Default: `False`.
+        head_first (Optional[bool]):
+            Whether the inputs are in the head-first format.
+            Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        final_state (torch.Tensor):
+            Final state of shape `[B, H, K, V]` if `output_final_state=True` else `None`.
     """
     if scale is None:
         scale = q.shape[-1] ** -0.5
+    if not head_first:
+        q, k, v, g = map(lambda x: x.transpose(1, 2), (q, k, v, g))
     o, final_state = ChunkGLAFunction.apply(q, k, v, g, scale, initial_state, output_final_state)
+    if not head_first:
+        o = o.transpose(1, 2)
     return o, final_state
