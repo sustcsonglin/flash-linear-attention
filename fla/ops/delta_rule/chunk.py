@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2024, Songlin Yang, Yu Zhang
 
+from typing import Optional, Tuple
+
 import torch
 import triton
 import triton.language as tl
@@ -110,9 +112,10 @@ def chunk_delta_rule_fwd_kernel_h(
     for i_t in range(NT):
         p_h = tl.make_block_ptr(h + i_bh * NT*K*V + i_t * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_h, b_h.to(p_h.dtype.element_ty), boundary_check=(0, 1))
-        b_h_cumsum = tl.zeros([BK, BV], dtype=tl.float32)
+
+        b_hc = tl.zeros([BK, BV], dtype=tl.float32)
         # since we need to make all DK in the SRAM. we face serve SRAM memory burden. By subchunking we allievate such burden
-        for i_c in range(tl.cdiv(BT, BC)):
+        for i_c in range(tl.cdiv(min(BT, T - i_t * BT), BC)):
             if HEAD_FIRST:
                 p_k = tl.make_block_ptr(k + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT + i_c * BC), (BK, BC), (0, 1))
                 p_d = tl.make_block_ptr(d + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_c * BC, i_k * BK), (BC, BK), (1, 0))
@@ -134,8 +137,8 @@ def chunk_delta_rule_fwd_kernel_h(
             b_v -= tl.dot(b_d, b_h.to(b_k.dtype))
             # [BK, BV]
             tl.store(p_v_new, b_v.to(p_v_new.dtype.element_ty), boundary_check=(0, 1))
-            b_h_cumsum += tl.dot(b_k, b_v.to(b_k.dtype), allow_tf32=False)
-        b_h += b_h_cumsum
+            b_hc += tl.dot(b_k, b_v.to(b_k.dtype), allow_tf32=False)
+        b_h += b_hc
 
     if STORE_FINAL_STATE:
         p_ht = tl.make_block_ptr(ht + i_bh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
@@ -392,7 +395,14 @@ def chunk_delta_rule_bwd_kernel_dqkw(
     tl.store(p_dw, -b_dw.to(p_dw.dtype.element_ty), boundary_check=(0, 1))
 
 
-def chunk_delta_rule_fwd_prepare_dv(q, k, do, scale, head_first: bool = True, chunk_size: int = 64):
+def chunk_delta_rule_fwd_prepare_dv(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    do: torch.Tensor,
+    scale: float,
+    head_first: bool = True,
+    chunk_size: int = 64
+) -> torch.Tensor:
     if head_first:
         B, H, T, K, V = *k.shape, do.shape[-1]
     else:
@@ -418,7 +428,15 @@ def chunk_delta_rule_fwd_prepare_dv(q, k, do, scale, head_first: bool = True, ch
     return dv
 
 
-def chunk_delta_rule_fwd_h(k, w, u, initial_state, final_state, head_first: bool = True, chunk_size: int = 64):
+def chunk_delta_rule_fwd_h(
+    k: torch.Tensor,
+    w: torch.Tensor,
+    u: torch.Tensor,
+    initial_state: Optional[torch.Tensor],
+    final_state: Optional[torch.Tensor],
+    head_first: bool = True,
+    chunk_size: int = 64
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if head_first:
         B, H, T, K, V = *k.shape, u.shape[-1]
     else:
@@ -439,7 +457,9 @@ def chunk_delta_rule_fwd_h(k, w, u, initial_state, final_state, head_first: bool
 
     BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     BC = min(BT, BC)
-    NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
+    NT = triton.cdiv(T, BT)
+    NK = triton.cdiv(K, BK)
+    NV = triton.cdiv(V, BV)
     assert NK == 1, 'NK > 1 is not supported because it involves time-consuming synchronization'
 
     h = k.new_empty(B, H, NT * K, V)
@@ -469,7 +489,18 @@ def chunk_delta_rule_fwd_h(k, w, u, initial_state, final_state, head_first: bool
     return h, v_new
 
 
-def chunk_delta_rule_bwd_dhu(q, k, w, dht, dh0, do, dv, scale, head_first: bool = True, chunk_size: int = 64):
+def chunk_delta_rule_bwd_dhu(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    w: torch.Tensor,
+    dht: Optional[torch.Tensor],
+    dh0: Optional[torch.Tensor],
+    do: torch.Tensor,
+    dv: torch.Tensor,
+    scale: float,
+    head_first: bool = True,
+    chunk_size: int = 64
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if head_first:
         B, H, T, K, V = *q.shape, do.shape[-1]
     else:
@@ -524,7 +555,15 @@ def chunk_delta_rule_bwd_dhu(q, k, w, dht, dh0, do, dv, scale, head_first: bool 
     return dh, dh0, dv2
 
 
-def chunk_delta_rule_fwd_o(q, k, v_new, h, scale, head_first: bool = True, chunk_size: int = 64):
+def chunk_delta_rule_fwd_o(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v_new: torch.Tensor,
+    h: torch.Tensor,
+    scale: float,
+    head_first: bool = True,
+    chunk_size: int = 64
+) -> torch.Tensor:
     if head_first:
         B, H, T, K, V = *q.shape, v_new.shape[-1]
     else:
@@ -558,7 +597,19 @@ def chunk_delta_rule_fwd_o(q, k, v_new, h, scale, head_first: bool = True, chunk
     return o
 
 
-def chunk_delta_rule_bwd_dqkw(q, k, v_new, w, h, du, do, dh, scale, head_first: bool = True, chunk_size: int = 64):
+def chunk_delta_rule_bwd_dqkw(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v_new: torch.Tensor,
+    w: torch.Tensor,
+    h: torch.Tensor,
+    du: torch.Tensor,
+    do: torch.Tensor,
+    dh: torch.Tensor,
+    scale: float,
+    head_first: bool = True,
+    chunk_size: int = 64
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if head_first:
         B, H, T, K, V = *q.shape, v_new.shape[-1]
     else:
