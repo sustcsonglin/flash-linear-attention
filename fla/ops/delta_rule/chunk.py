@@ -397,10 +397,10 @@ def chunk_delta_rule_fwd_prepare_dv(q, k, do, scale, head_first: bool = True, ch
         B, H, T, K, V = *k.shape, do.shape[-1]
     else:
         B, T, H, K, V = *k.shape, do.shape[-1]
-    BT = chunk_size
-    NT = triton.cdiv(T, BT)
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
+    NT = triton.cdiv(T, BT)
 
     dv = torch.empty_like(do)
     chunk_delta_rule_fwd_kernel_prepare_dv[(NT, B*H)](
@@ -437,7 +437,7 @@ def chunk_delta_rule_fwd_h(k, w, u, initial_state, final_state, head_first: bool
         BV = 32
         BC = 64 if K <= 128 else 32
 
-    BT = chunk_size
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     BC = min(BT, BC)
     NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
     assert NK == 1, 'NK > 1 is not supported because it involves time-consuming synchronization'
@@ -489,7 +489,7 @@ def chunk_delta_rule_bwd_dhu(q, k, w, dht, dh0, do, dv, scale, head_first: bool 
         BV = 32
         BC = 64 if K <= 128 else 32
 
-    BT = chunk_size
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     BC = min(BT, BC)
     NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
     assert NK == 1, 'NK > 1 is not supported because it involves time-consuming synchronization'
@@ -529,11 +529,11 @@ def chunk_delta_rule_fwd_o(q, k, v_new, h, scale, head_first: bool = True, chunk
         B, H, T, K, V = *q.shape, v_new.shape[-1]
     else:
         B, T, H, K, V = *q.shape, v_new.shape[-1]
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
-    NV = triton.cdiv(V, BV)
-    BT = chunk_size
     NT = triton.cdiv(T, BT)
+    NV = triton.cdiv(V, BV)
 
     o = torch.empty_like(v_new)
     grid = (NV, NT, B * H)
@@ -563,11 +563,11 @@ def chunk_delta_rule_bwd_dqkw(q, k, v_new, w, h, du, do, dh, scale, head_first: 
         B, H, T, K, V = *q.shape, v_new.shape[-1]
     else:
         B, T, H, K, V = *q.shape, v_new.shape[-1]
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
-    NK = triton.cdiv(K, BK)
-    BT = chunk_size
     NT = triton.cdiv(T, BT)
+    NK = triton.cdiv(K, BK)
 
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
@@ -612,10 +612,10 @@ def chunk_delta_rule_fwd(
     chunk_size: int = 64
 ):
     if head_first:
-        B, H, K, V = k.shape[0], k.shape[1], k.shape[-1], v.shape[-1]
+        B, H, T, K, V = *k.shape, v.shape[-1]
     else:
-        B, K, H, V = k.shape[0], k.shape[-1], k.shape[2], v.shape[-1]
-    BT = chunk_size
+        B, T, H, K, V = *k.shape, v.shape[-1]
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     # obtain WY representation. u is actually the new v.
     w, u, A = fwd_prepare_wy_repr(k, v, beta, head_first, BT)
 
@@ -646,7 +646,8 @@ def chunk_delta_rule_bwd(
     head_first: bool,
     chunk_size: int
 ):
-    BT = chunk_size
+    T = q.shape[2] if head_first else q.shape[1]
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     w, u = fwd_recompute_w_u(k, v, beta, A, head_first, BT)
     if h is None:
         h, v_new = chunk_delta_rule_fwd_h(k, w, u, initial_state, None, head_first, BT)
