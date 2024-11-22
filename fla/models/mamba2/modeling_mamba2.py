@@ -552,7 +552,7 @@ class Mamba2Mixer(nn.Module):
             M = M_intermediate.sum(dim=-1)
 
             # Compute Y_diag (apply to values)
-            Y_diag = (M[..., None] * hidden_states[:, :, None]).sum(3)
+            Y_diag = (M[..., None] * hidden_states[:, :, None]).sum(dim=3)
 
             # 2. Compute the state for each intra-chunk
             # (right term of low-rank factorization of off-diagonal blocks; B terms)
