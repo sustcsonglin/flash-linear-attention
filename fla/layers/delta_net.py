@@ -166,13 +166,22 @@ class DeltaNet(nn.Module):
             last_state = past_key_values[self.layer_idx]
 
         if self.use_short_conv:
+            conv_state_q, conv_state_k, conv_state_v = None, None, None
             if last_state is not None:
                 conv_state_q, conv_state_k, conv_state_v = last_state['conv_state']
-            else:
-                conv_state_q, conv_state_k, conv_state_v = None, None, None
-            q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
-            k = self.k_conv1d(self.k_proj(hidden_states), attention_mask, conv_state_k)
-            v = self.v_conv1d(self.v_proj(hidden_states), attention_mask, conv_state_v)
+            conv_mask = attention_mask[:, -hidden_states.shape[1]:] if attention_mask is not None else None
+            q, conv_state_q = self.q_conv1d(x=self.q_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_q,
+                                            output_final_state=use_cache)
+            k, conv_state_k = self.k_conv1d(x=self.k_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_k,
+                                            output_final_state=use_cache)
+            v, conv_state_v = self.v_conv1d(x=self.v_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_v,
+                                            output_final_state=use_cache)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
@@ -204,7 +213,7 @@ class DeltaNet(nn.Module):
 
         # dealing with padding
         if attention_mask is not None:
-            beta = (torch.mul if self.training else torch.mul_)(beta, attention_mask[:, None, -beta.shape[-1]:])
+            beta = beta.mul(attention_mask[:, -beta.shape[-2]:, None])
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_delta_rule(
