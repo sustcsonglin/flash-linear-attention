@@ -139,7 +139,7 @@ def fwd_prepare_wy_repr_kernel_chunk64(
     # i.e., [A11, 0; A21, A22]^-1 = [A11^-1, 0; -A22^-1 A21 A11^-1, A22^-1]
     b_A += tl.arange(0, BC)[:, None] == tl.arange(0, BC)[None, :]
     b_A2 += tl.arange(0, BC)[:, None] == tl.arange(0, BC)[None, :]
-    b_A3 = -tl.dot(tl.dot(b_A2, b_A3), b_A)
+    b_A3 = -tl.dot(tl.dot(b_A2, b_A3, allow_tf32=False), b_A, allow_tf32=False)
 
     if HEAD_FIRST:
         p_A1 = tl.make_block_ptr(A + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT, 0), (BC, BC), (1, 0))
