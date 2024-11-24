@@ -31,6 +31,7 @@ def assert_close(prefix, ref, tri, ratio):
 @pytest.mark.parametrize("T", [300, 512])
 @pytest.mark.parametrize("D", [32, 64, 100])
 @pytest.mark.parametrize("M", [32, 64, 128])
+@pytest.mark.parametrize("head_first", [True, False])
 @pytest.mark.parametrize("dtype", [torch.float])
 def test_fused_recurrent(
     B: int,
@@ -38,6 +39,7 @@ def test_fused_recurrent(
     T: int,
     D: int,
     M: int,
+    head_first: bool,
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
@@ -61,8 +63,17 @@ def test_fused_recurrent(
     ref_dhk0, hk0.grad = hk0.grad.clone(), None
     ref_dhv0, hv0.grad = hv0.grad.clone(), None
 
-    tri, (tri_hkt, tri_hvt) = fused_recurrent_gsa(q, k, v, s, g, initial_state=(hk0, hv0), output_final_state=True)
-    tri.backward(do)
+    tri, (tri_hkt, tri_hvt) = fused_recurrent_gsa(
+        q=q if head_first else q.transpose(1, 2).contiguous(),
+        k=k if head_first else k.transpose(1, 2).contiguous(),
+        v=v if head_first else v.transpose(1, 2).contiguous(),
+        s=s if head_first else s.transpose(1, 2).contiguous(),
+        g=g if head_first else g.transpose(1, 2).contiguous(),
+        initial_state=(hk0, hv0),
+        output_final_state=True,
+        head_first=head_first
+    )
+    tri.backward(do if head_first else do.transpose(1, 2).contiguous())
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
     tri_dv, v.grad = v.grad.clone(), None
@@ -70,6 +81,8 @@ def test_fused_recurrent(
     tri_dg, s.grad = g.grad.clone(), None
     tri_dhk0, hk0.grad = hk0.grad.clone(), None
     tri_dhv0, hv0.grad = hv0.grad.clone(), None
+    if not head_first:
+        tri = tri.transpose(1, 2).contiguous()
 
     assert_close("   o", ref, tri, 0.005)
     assert_close(" hkt", ref_hkt, tri_hkt, 0.005)
