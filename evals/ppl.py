@@ -46,77 +46,49 @@ class PerplexityEvaluator:
         }
     
     def batchify(self, dataset: Dataset, tokens_per_batch: int) -> Iterator[List[torch.Tensor]]:
-        """Split dataset into batches of fixed size"""
-        current_batches = []  # List[List[torch.Tensor]]
-        current_batch = []    # List[torch.Tensor]
-        current_length = 0
-        
-        def yield_batch(batch):
-            if len(batch) > 0:
-                current_batches.append(batch)
-            if len(current_batches) >= self.batch_size:
-                concatenated = [item for batch in current_batches for item in batch]
-                yield concatenated
-                current_batches.clear()
+        """Split dataset into batches of exactly block_size length"""
+        current_tokens = []  # Buffer to store all tokens
         
         for sentence in dataset:
-            # Convert input_ids to list
+            # Convert input_ids to list and add to buffer
             tokens = sentence['input_ids'].tolist() if torch.is_tensor(sentence['input_ids']) else list(sentence['input_ids'])
             if not tokens:
                 continue
-                
-            while tokens:
-                space_left = tokens_per_batch - current_length
-                if space_left <= 0:
-                    # Current sequence is full, add to batches
-                    for _ in yield_batch(current_batch):
-                        yield _
-                    current_batch = []
-                    current_length = 0
-                    space_left = tokens_per_batch
-                
-                batch_portion = tokens[:space_left]
-                tokens = tokens[space_left:]
-                
-                current_batch.append(torch.tensor(batch_portion, dtype=torch.long))
-                current_length += len(batch_portion)
-                
-                if current_length >= tokens_per_batch:
-                    # Current sequence is full, add to batches
-                    for _ in yield_batch(current_batch):
-                        yield _
-                    current_batch = []
-                    current_length = 0
+            current_tokens.extend(tokens)
+            
+            # When we have enough tokens, yield batches
+            while len(current_tokens) >= self.block_size * self.batch_size:
+                batch = []
+                for _ in range(self.batch_size):
+                    # Extract exactly block_size tokens
+                    batch.append(torch.tensor(current_tokens[:self.block_size], dtype=torch.long))
+                    current_tokens = current_tokens[self.block_size:]
+                yield batch
         
-        # Handle remaining batches
-        if current_batch:
-            for _ in yield_batch(current_batch):
-                yield _
-        if current_batches:
-            concatenated = [item for batch in current_batches for item in batch]
-            yield concatenated
-    
+        # Handle remaining tokens if they form complete blocks
+        if len(current_tokens) >= self.block_size:
+            remaining_batches = len(current_tokens) // self.block_size
+            remaining_batches = min(remaining_batches, self.batch_size)
+            if remaining_batches > 0:
+                batch = []
+                for _ in range(remaining_batches):
+                    batch.append(torch.tensor(current_tokens[:self.block_size], dtype=torch.long))
+                    current_tokens = current_tokens[self.block_size:]
+                yield batch
+
     def process_batch(self, batch: List[torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Process a single batch of data"""
-        # Pad sequences to same length
-        input_ids = pad_sequence(
-            batch,
-            batch_first=True,
-            padding_value=self.tokenizer.eos_token_id
-        )[:, :self.block_size].to(self.device)
+        # Stack the tensors - no need for padding since all sequences are block_size
+        input_ids = torch.stack(batch).to(self.device)
         
         # Calculate number of blocks for each sequence
         blocks = [
-            min(length//self.bucket_size, (self.block_size-1)//self.bucket_size)
-            for length in input_ids.ne(self.tokenizer.eos_token_id).sum(-1).tolist()
+            (self.block_size-1)//self.bucket_size
+            for _ in range(input_ids.shape[0])
         ]
         
         # Prepare labels
-        labels = torch.where(
-            input_ids.eq(self.tokenizer.eos_token_id),
-            self.loss_fct.ignore_index,
-            input_ids
-        )
+        labels = input_ids.clone()
         
         # Forward pass
         outputs = self.model(input_ids, labels=labels)
@@ -130,14 +102,6 @@ class PerplexityEvaluator:
         # Calculate negative log likelihood
         nlls = (-outputs['logits'].log_softmax(-1)).gather(-1, next_token_labels.unsqueeze(-1)).squeeze(-1)
         
-        # Handle padding
-        next_token_labels = torch.where(
-            next_token_labels.eq(self.tokenizer.eos_token_id),
-            self.loss_fct.ignore_index,
-            next_token_labels
-        )
-        nlls = torch.where(next_token_labels.eq(self.loss_fct.ignore_index), 0., nlls)
-        
         return {
             'input_ids': input_ids,
             'loss': outputs['loss'],
@@ -145,7 +109,8 @@ class PerplexityEvaluator:
             'labels': next_token_labels,
             'blocks': blocks
         }
-    
+
+
     def evaluate(self, dataset: Dataset) -> Dict[str, Any]:
         """Evaluate perplexity on the entire dataset"""
         total_loss = 0
@@ -164,6 +129,7 @@ class PerplexityEvaluator:
         for batch in bar:
             batch_outputs = self.process_batch(batch)
             input_ids = batch_outputs['input_ids']
+            
             nlls = batch_outputs['nlls']
             labels = batch_outputs['labels']
             blocks = batch_outputs['blocks']
@@ -171,6 +137,8 @@ class PerplexityEvaluator:
             # Update statistics
             total_tokens += input_ids.ne(self.loss_fct.ignore_index).sum()
             total_sentences += input_ids.shape[0]
+            print(input_ids.shape[1])
+
             for i in blocks:
                 bucket_sizes[i] += 1
                 
@@ -196,6 +164,8 @@ class PerplexityEvaluator:
             'total_tokens': total_tokens,
             'total_sentences': total_sentences
         }
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate perplexity")
