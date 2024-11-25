@@ -11,7 +11,7 @@ from fla.utils import contiguous
 
 
 @triton.jit
-def fused_recurrent_fwd_kernel(
+def fused_recurrent_delta_rule_fwd_kernel(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
     q,  # query [B, H, T, K]
     k,  # key [B, H, T, V]
@@ -99,30 +99,31 @@ def fused_recurrent_fwd_kernel(
 
 
 @triton.jit
-def fused_recurrent_bwd_kernel(
+def fused_recurrent_delta_rule_bwd_kernel(
     # B: batch_size, H: n_heads, T: seq_len, D: d_head
-    # NV: number of split in the V dimension. NK: number of split in the K dimension
+    # NK: number of split in the K dimension
+    # NV: number of split in the V dimension
     q,  # query [B, H, T, K]
     k,  # key [B, H, T, V]
     v,  # value [B, H, T, V]
     beta,  # beta [B, H, T, (V)]
-    dht,  # gradient of final state [B, H, K, V]
+    h0,  # initial state [B, H, K, V]
     dh0,  # gradient of initial state [B, H, K, V]
+    dht,  # gradient of final state [B, H, K, V]
     do,  # gradient of output [B, H, T, V]
     dq,  # gradient of query [NV, B, H, T, K]
     dk,  # gradient of key [NV, B, H, T, K]
     dv,  # gradient of value [NK, B, H, T, V]
     db,  # gradient of beta [NV, (NK), B, H, T]
-    h0,  # initial state [B, H, K, V]
     scale,  # K ** -0.5
-    NK,  # NK block size
-    B,  # batch_size
-    T,  # seq_len
-    H,  # n_heads
+    B: tl.constexpr,  # batch_size
+    T: tl.constexpr,  # seq_len
+    H: tl.constexpr,  # n_heads
     K: tl.constexpr,  # K
     V: tl.constexpr,  # V
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
+    NK: tl.constexpr,  # NK block size
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state h0
     IS_BETA_HEADWISE: tl.constexpr,  # whether beta is headwise vector or scalar
     USE_DH0: tl.constexpr,  # whether to use dh0
@@ -296,7 +297,7 @@ def fused_recurrent_delta_rule_fwd(
 
     grid = (NV, NK, B*H)
     u = torch.empty_like(v)
-    fused_recurrent_fwd_kernel[grid](
+    fused_recurrent_delta_rule_fwd_kernel[grid](
         q,
         k,
         v,
@@ -361,19 +362,19 @@ def fused_recurrent_delta_rule_bwd(
     else:
         dh0 = None
 
-    fused_recurrent_bwd_kernel[grid](
+    fused_recurrent_delta_rule_bwd_kernel[grid](
         q,
         k,
         v,
         beta,
-        dht,
+        initial_state,
         dh0,
+        dht,
         do,
         dq,
         dk,
         dv,
         db,
-        initial_state,
         scale,
         B=B,
         T=T,
