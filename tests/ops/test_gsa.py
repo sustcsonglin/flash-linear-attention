@@ -73,6 +73,16 @@ def test_fused_recurrent(
         output_final_state=True,
         head_first=head_first
     )
+    tri, _ = fused_recurrent_gsa(
+        q=q if head_first else q.transpose(1, 2).contiguous(),
+        k=k if head_first else k.transpose(1, 2).contiguous(),
+        v=v if head_first else v.transpose(1, 2).contiguous(),
+        s=s if head_first else s.transpose(1, 2).contiguous(),
+        g=g if head_first else g.transpose(1, 2).contiguous(),
+        initial_state=(hk0, hv0),
+        output_final_state=False,
+        head_first=head_first
+    )
     tri.backward(do if head_first else do.transpose(1, 2).contiguous())
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
