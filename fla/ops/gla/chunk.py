@@ -542,7 +542,6 @@ def chunk_gla_bwd_kernel_dv(
     do,
     dh,
     dv,
-    scale,
     T: tl.constexpr,
     H: tl.constexpr,
     K: tl.constexpr,
@@ -695,19 +694,19 @@ def chunk_gla_bwd_kernel_inter(
     # m_s = tl.where(tl.arange(0, BT)[:, None] <= tl.arange(0, BT)[None, :], 1., 0.)
     # b_dg = tl.dot(m_s, b_dg, allow_tf32=False) + b_dgk[None, :]
     if HEAD_FIRST:
-        p_dg = tl.make_block_ptr(dg + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dq = tl.make_block_ptr(dq2 + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dk = tl.make_block_ptr(dk2 + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_dg = tl.make_block_ptr(dg + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     else:
-        p_dg = tl.make_block_ptr(dg + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dq = tl.make_block_ptr(dq2 + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dk = tl.make_block_ptr(dk2 + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_dg = tl.make_block_ptr(dg + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0, 1))
 
 
-def chunk_fwd_intra_gk(
+def chunk_gla_fwd_intra_gk(
     q: torch.Tensor,
     k: torch.Tensor,
     g: torch.Tensor,
@@ -900,7 +899,6 @@ def chunk_gla_bwd_dv(
         do,
         dh,
         dv,
-        scale,
         T=T,
         H=H,
         K=K,
@@ -1025,7 +1023,7 @@ def chunk_gla_fwd(
     T = q.shape[2] if head_first else q.shape[1]
     BT = min(chunk_size, triton.next_power_of_2(T))
     if g_cumsum is None:
-        g_cumsum = chunk_local_cumsum(g, chunk_size=BT, head_first=head_first)
+        g_cumsum = chunk_local_cumsum(g, BT, head_first=head_first)
     h, ht = chunk_fwd_h(
         k=k,
         v=v,
@@ -1040,7 +1038,7 @@ def chunk_gla_fwd(
     )
     # the intra A is kept in fp32
     # the computation has very marginal effect on the entire throughput
-    A = chunk_fwd_intra_gk(
+    A = chunk_gla_fwd_intra_gk(
         q=q,
         k=k,
         g=g_cumsum,
@@ -1078,7 +1076,7 @@ def chunk_gla_bwd(
     T = q.shape[2] if head_first else q.shape[1]
     BT = min(chunk_size, triton.next_power_of_2(T))
     if g_cumsum is None:
-        g_cumsum = chunk_local_cumsum(g, chunk_size=BT, head_first=head_first)
+        g_cumsum = chunk_local_cumsum(g, BT, head_first=head_first)
 
     h, _ = chunk_fwd_h(
         k=k,
