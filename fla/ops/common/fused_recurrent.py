@@ -217,8 +217,8 @@ def fused_recurrent_bwd_kernel(
             b_h = b_h * tl.exp(b_g)
         b_h += b_k[:, None] * b_v[None, :]
         b_dq = b_h * b_do[None, :]
-        d_q = tl.sum(b_dq, axis=1) * scale
-        tl.store(p_dq, d_q.to(p_dq.dtype.element_ty), mask=mask_k)
+        b_dq = tl.sum(b_dq, axis=1) * scale
+        tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), mask=mask_k)
 
         p_q += (-1 if REVERSE else 1) * (1 if HEAD_FIRST else H) * K
         p_k += (-1 if REVERSE else 1) * (1 if HEAD_FIRST else H) * K
@@ -273,8 +273,8 @@ def fused_recurrent_bwd_kernel(
         b_v = tl.load(p_v, mask=mask_v, other=0).to(tl.float32)
         b_do = tl.load(p_do, mask=mask_v, other=0).to(tl.float32)
         b_dh += b_q[:, None] * b_do[None, :]
-        d_k = tl.sum(b_dh * b_v[None, :], axis=1)
-        d_v = tl.sum(b_dh * b_k[:, None], axis=0)
+        b_dk = tl.sum(b_dh * b_v[None, :], axis=1)
+        b_dv = tl.sum(b_dh * b_k[:, None], axis=0)
         if USE_GK:
             b_gk = tl.load(p_gk, mask=mask_k, other=0).to(tl.float32)
             b_dh *= tl.exp(b_gk)[:, None]
@@ -284,8 +284,8 @@ def fused_recurrent_bwd_kernel(
         if USE_G:
             b_g = tl.load(p_g).to(tl.float32)
             b_dh *= tl.exp(b_g)
-        tl.store(p_dk, d_k.to(p_dk.dtype.element_ty), mask=mask_k)
-        tl.store(p_dv, d_v.to(p_dv.dtype.element_ty), mask=mask_v)
+        tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), mask=mask_k)
+        tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), mask=mask_v)
 
         p_q += (1 if REVERSE else -1) * (1 if HEAD_FIRST else H) * K
         p_k += (1 if REVERSE else -1) * (1 if HEAD_FIRST else H) * K
