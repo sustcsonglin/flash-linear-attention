@@ -7,7 +7,7 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.utils import chunk_global_reversed_cumsum
+from fla.ops.utils import chunk_global_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
@@ -325,7 +325,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
 
         dw = (dq_aux * q * scale)[:, :, 1:] - (dk_aux * k)[:, :, 0:-1]
         dw = torch.nn.functional.pad(dw, (0, 0, 0, 1, 0, 0, 0, 0), value=0)
-        dw = chunk_global_reversed_cumsum(dw).to(w)
+        dw = chunk_global_cumsum(dw, reverse=True).to(w)
 
         du = ((do * v).sum(-1)[..., None] * k * q * scale).sum([0, -2]).to(u)
         return dq, dk, dv, dw, du, None, dh0, None, None

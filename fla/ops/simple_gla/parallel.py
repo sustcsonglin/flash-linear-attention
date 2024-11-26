@@ -7,7 +7,7 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.utils import chunk_global_reversed_cumsum, chunk_local_cumsum
+from fla.ops.utils import chunk_global_cumsum, chunk_local_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
@@ -536,7 +536,7 @@ def parallel_simple_gla_bwd(
     dk = dk.sum(0)
     dv = dv.sum(0)
     dg = dg.sum(0)
-    dg = chunk_global_reversed_cumsum(dg)
+    dg = chunk_global_cumsum(dg, reverse=True)
     return dq, dk, dv, dg
 
 
