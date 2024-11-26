@@ -636,10 +636,10 @@ def chunk_gla_bwd_kernel_inter(
 
     if HEAD_FIRST:
         p_gk = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * T*K + min(T, i_t * BT + BT) * K - K + o_k, BK), BK)
+        p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * T*K + (min(T, i_t * BT + BT)-1) * K + o_k, BK), BK)
     else:
         p_gk = tl.make_block_ptr(g + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_gn = tl.max_contiguous(tl.multiple_of(g + i_b * T*H*K + (min(T, i_t * BT + BT) - 1)*H*K + i_h * K + o_k, BK), BK)
+        p_gn = tl.max_contiguous(tl.multiple_of(g + i_b * T*H*K + (min(T, i_t * BT + BT)-1) * H*K + i_h * K + o_k, BK), BK)
     b_gn = tl.load(p_gn, mask=m_k, other=0)
     b_dq = tl.zeros([BT, BK], dtype=tl.float32)
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
@@ -668,9 +668,8 @@ def chunk_gla_bwd_kernel_inter(
     b_dgk *= tl.exp(b_gn)
     b_dq *= scale
     b_gk = tl.load(p_gk, boundary_check=(0, 1))
-    b_gn = tl.exp(b_gn[None, :] - b_gk)
     b_dq = b_dq * tl.exp(b_gk)
-    b_dk = b_dk * b_gn
+    b_dk = b_dk * tl.exp(b_gn[None, :] - b_gk)
 
     if HEAD_FIRST:
         p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
@@ -1056,7 +1055,7 @@ def chunk_gla_fwd(
         head_first=head_first,
         chunk_size=BT
     )
-    return g_cumsum, A, o, ht
+    return g_cumsum, A, h, ht, o
 
 
 def chunk_gla_bwd(
@@ -1065,9 +1064,10 @@ def chunk_gla_bwd(
     v: torch.Tensor,
     g: torch.Tensor,
     g_cumsum: Optional[torch.Tensor],
-    A: torch.Tensor,
     scale: float,
     initial_state: torch.Tensor,
+    h: torch.Tensor,
+    A: torch.Tensor,
     do: torch.Tensor,
     dht: torch.Tensor,
     head_first: bool = True,
@@ -1078,18 +1078,19 @@ def chunk_gla_bwd(
     if g_cumsum is None:
         g_cumsum = chunk_local_cumsum(g, BT, head_first=head_first)
 
-    h, _ = chunk_fwd_h(
-        k=k,
-        v=v,
-        g=None,
-        gk=g_cumsum,
-        gv=None,
-        h0=initial_state,
-        output_final_state=False,
-        states_in_fp32=True,
-        head_first=head_first,
-        chunk_size=BT
-    )
+    if h is None:
+        h, _ = chunk_fwd_h(
+            k=k,
+            v=v,
+            g=None,
+            gk=g_cumsum,
+            gv=None,
+            h0=initial_state,
+            output_final_state=False,
+            states_in_fp32=True,
+            head_first=head_first,
+            chunk_size=BT
+        )
     dh, dh0 = chunk_bwd_dh(
         q=q,
         k=k,
@@ -1154,7 +1155,7 @@ class ChunkGLAFunction(torch.autograd.Function):
     @contiguous
     def forward(ctx, q, k, v, g, scale, initial_state, output_final_state, head_first):
         BT = 64
-        g_cumsum, A, o, ht = chunk_gla_fwd(
+        g_cumsum, A, h, ht, o = chunk_gla_fwd(
             q=q,
             k=k,
             v=v,
@@ -1188,8 +1189,9 @@ class ChunkGLAFunction(torch.autograd.Function):
             v=v,
             g=g,
             g_cumsum=g_cumsum,
-            A=A,
             scale=scale,
+            h=None,
+            A=A,
             initial_state=initial_state,
             do=do,
             dht=dht,
