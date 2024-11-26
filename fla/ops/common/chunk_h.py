@@ -164,8 +164,8 @@ def chunk_bwd_kernel_dh(
 ):
     i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_bg = i_bh // NG
-    i_b, i_h = i_bh // H, i_bh % H
-    i_hg = i_h // NG
+    i_b, i_hq = i_bh // HQ, i_bh % HQ
+    i_h = i_hq // NG
     # [BK, BV]
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
     if USE_FINAL_STATE_GRADIENT:
@@ -181,8 +181,8 @@ def chunk_bwd_kernel_dh(
             p_q = tl.make_block_ptr(q + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
             p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         else:
-            p_q = tl.make_block_ptr(q + i_b * T*HQ*K + i_h * K, (K, T), (1, HQ*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-            p_do = tl.make_block_ptr(do + i_b * T*HQ*V + i_h * V, (T, V), (HQ*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+            p_q = tl.make_block_ptr(q + i_b * T*HQ*K + i_hq * K, (K, T), (1, HQ*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+            p_do = tl.make_block_ptr(do + i_b * T*HQ*V + i_hq * V, (T, V), (HQ*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_q = (b_q * scale).to(b_q.dtype)
         # [BT, BV]
@@ -194,8 +194,8 @@ def chunk_bwd_kernel_dh(
                 p_g = tl.max_contiguous(tl.multiple_of(p_g, BT), BT)
                 b_g_last = tl.load(g + i_bg * T + last_idx)
             else:
-                p_g = g + i_b * T*H + (i_t * BT + tl.arange(0, BT)) * H + i_hg
-                b_g_last = tl.load(g + i_b * T * H + last_idx * H + i_hg)
+                p_g = g + i_b * T*H + (i_t * BT + tl.arange(0, BT)) * H + i_h
+                b_g_last = tl.load(g + i_b * T * H + last_idx * H + i_h)
             b_g = tl.load(p_g, mask=(i_t * BT + tl.arange(0, BT) < T), other=0.)
             b_q = (b_q * tl.exp(b_g)[None, :]).to(b_q.dtype)
 
@@ -207,8 +207,8 @@ def chunk_bwd_kernel_dh(
                 p_gk_last = gk + i_bg * T*K + last_idx * K + i_k * BK + tl.arange(0, BK)
 
             else:
-                p_gk = tl.make_block_ptr(gk + i_b * T*H*K + i_hg * K, (K, T), (1, H*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-                p_gk_last = gk + i_b * T*H*K + last_idx * H*K + i_hg * K + i_k * BK + tl.arange(0, BK)
+                p_gk = tl.make_block_ptr(gk + i_b * T*H*K + i_h * K, (K, T), (1, H*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+                p_gk_last = gk + i_b * T*H*K + last_idx * H*K + i_h * K + i_k * BK + tl.arange(0, BK)
             p_gk_last = tl.max_contiguous(tl.multiple_of(p_gk_last, BK), BK)
 
             b_gk = tl.load(p_gk, boundary_check=(0, 1))
@@ -221,8 +221,8 @@ def chunk_bwd_kernel_dh(
                 p_gv = tl.make_block_ptr(gv + i_bg * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
                 p_gv_last = gv + i_bg * T*V + last_idx * V + i_v * BV + tl.arange(0, BV)
             else:
-                p_gv = tl.make_block_ptr(gv + i_b * T*H*V + i_hg * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-                p_gv_last = gv + i_b * T*H*V + last_idx * H*V + i_hg * V + i_v * BV + tl.arange(0, BV)
+                p_gv = tl.make_block_ptr(gv + i_b * T*H*V + i_h * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+                p_gv_last = gv + i_b * T*H*V + last_idx * H*V + i_h * V + i_v * BV + tl.arange(0, BV)
             p_gv_last = tl.max_contiguous(tl.multiple_of(p_gv_last, BV), BV)
 
             b_gv = tl.load(p_gv, boundary_check=(0, 1))
