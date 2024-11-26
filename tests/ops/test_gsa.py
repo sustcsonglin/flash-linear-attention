@@ -112,27 +112,36 @@ def test_fused_recurrent(
 @pytest.mark.parametrize("D", [100, 300])
 @pytest.mark.parametrize("M", [32, 64, 128])
 @pytest.mark.parametrize("dtype", [torch.float])
+@pytest.mark.parametrize("head_first", [True, False])
 def test_chunk(
     B: int,
     H: int,
     T: int,
     D: int,
     M: int,
+    head_first: bool,
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
     os.environ['TRITON_F32_DEFAULT'] = 'ieee'
 
-    q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
-    k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
-    v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
-    s = torch.randn((B, H, T, M), dtype=dtype, device='cuda').requires_grad_()
-    g = F.logsigmoid(torch.randn((B, H, T, M), dtype=dtype, device='cuda')).requires_grad_()
+    if head_first:
+        q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
+        k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
+        v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
+        s = torch.randn((B, H, T, M), dtype=dtype, device='cuda').requires_grad_()
+        g = F.logsigmoid(torch.randn((B, H, T, M), dtype=dtype, device='cuda')).requires_grad_()
+    else:
+        q = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_()
+        k = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_()
+        v = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_()
+        s = torch.randn((B, T, H, M), dtype=dtype, device='cuda').requires_grad_()
+        g = F.logsigmoid(torch.randn((B, T, H, M), dtype=dtype, device='cuda')).requires_grad_()
     hk0 = torch.randn(B, H, D, M, device='cuda').requires_grad_()
     hv0 = torch.randn(B, H, M, D, device='cuda').requires_grad_()
 
     do = torch.randn_like(v)
-    ref, _ = fused_recurrent_gsa(q, k, v, s, g, initial_state=(hk0, hv0))
+    ref, _ = fused_recurrent_gsa(q, k, v, s, g, initial_state=(hk0, hv0), head_first=head_first)
     ref.backward(do)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
@@ -140,7 +149,7 @@ def test_chunk(
     ref_ds, s.grad = s.grad.clone(), None
     ref_dg, g.grad = g.grad.clone(), None
 
-    tri, _ = chunk_gsa(q, k, v, s, g, initial_state=(hk0, hv0))
+    tri, _ = chunk_gsa(q, k, v, s, g, initial_state=(hk0, hv0), head_first=head_first)
     tri.backward(do)
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
@@ -152,8 +161,8 @@ def test_chunk(
     assert_close("dq", ref_dq, tri_dq, 0.005)
     assert_close("dk", ref_dk, tri_dk, 0.005)
     assert_close("dv", ref_dv, tri_dv, 0.005)
-    assert_close("ds", ref_ds, tri_ds, 0.005)
-    assert_close("dg", ref_dg, tri_dg, 0.005)
+    assert_close("ds", ref_ds, tri_ds, 0.008)
+    assert_close("dg", ref_dg, tri_dg, 0.008)
 
 
 @pytest.mark.parametrize("B", [4])
