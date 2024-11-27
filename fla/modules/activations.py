@@ -414,7 +414,8 @@ class SwiGLUBitLinearFunction(torch.autograd.Function):
         dlinear_weight = torch.einsum("bo,bi->oi", dout, z.reshape(-1, z.shape[-1]))
         dlinear_bias = None if ctx.linear_bias_is_none else dout.sum(0)
         return dx, dy, dlinear_weight, dlinear_bias
-    
+
+
 swiglu = SwiGLUFunction.apply
 
 swiglu_linear = SwiGLULinearFunction.apply
