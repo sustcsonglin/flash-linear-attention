@@ -4,26 +4,30 @@
 from __future__ import annotations
 
 import warnings
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from einops import rearrange
-from transformers.cache_utils import Cache
 from transformers.utils import logging
 
-from fla.modules import RotaryEmbedding
+from fla.modules import RMSNorm, RotaryEmbedding
 from fla.modules.fused_bitlinear import FusedBitLinear
+
+if TYPE_CHECKING:
+    from fla.models.utils import Cache
 
 try:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import (index_first_axis, pad_input,
                                          unpad_input)
 except ImportError:
-    warnings.warn("Flash Attention is not installed. Please install it via `pip install flash-attn --no-build-isolation`", 
-                  category=ImportWarning)
+    warnings.warn(
+        "Flash Attention is not installed. Please install it via `pip install flash-attn --no-build-isolation`",
+        category=ImportWarning
+    )
     flash_attn_func = None
 
 logger = logging.get_logger(__name__)
@@ -37,7 +41,10 @@ class BitAttention(nn.Module):
         num_heads: int = 32,
         num_kv_heads: Optional[int] = None,
         window_size: Optional[int] = None,
+        rope_theta: Optional[float] = 10000.,
         max_position_embeddings: Optional[int] = None,
+        norm_first: bool = False,
+        norm_eps: float = 1e-5,
         layer_idx: int = None
     ):
         super().__init__()
@@ -53,26 +60,19 @@ class BitAttention(nn.Module):
         self.kv_dim = self.num_kv_heads * self.head_dim
         self.kv_dim = self.num_kv_heads * self.head_dim
         self.window_size = window_size
+        self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
+        self.norm_first = norm_first
         self.layer_idx = layer_idx
 
+        if norm_first:
+            self.norm = RMSNorm(self.hidden_size, eps=norm_eps)
         self.q_proj = FusedBitLinear(self.hidden_size, self.hidden_size, bias=False)
         self.k_proj = FusedBitLinear(self.hidden_size, self.kv_dim, bias=False)
         self.v_proj = FusedBitLinear(self.hidden_size, self.kv_dim, bias=False)
         self.o_proj = FusedBitLinear(self.hidden_size, self.hidden_size, bias=False)
 
-        self.rotary = RotaryEmbedding(self.head_dim)
-
-        self.apply(self._initialize_weights)
-
-    def _initialize_weights(self, module: nn.Module):
-        if getattr(module, "_is_hf_initialized", False):
-            return
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight, gain=2 ** -2.5)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
-        module._is_hf_initialized = True
+        self.rotary = RotaryEmbedding(dim=self.head_dim, base=self.rope_theta)
 
     def forward(
         self,
@@ -83,12 +83,23 @@ class BitAttention(nn.Module):
         use_cache: bool = False,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        if attention_mask is not None:
+            assert len(attention_mask.shape) == 2, (
+                "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
+                "for padding purposes (0 indicating padding). "
+                "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
+            )
+
         batch_size, q_len, _ = hidden_states.size()
+
+        if self.norm_first:
+            hidden_states = self.norm(hidden_states)
+
         q = rearrange(self.q_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
         k = rearrange(self.k_proj(hidden_states), '... (h d) -> ... h d', h=self.num_kv_heads)
-        v = rearrange(self.v_proj(hidden_states), 'b t (h d) -> b h t d', h=self.num_kv_heads)
+        v = rearrange(self.v_proj(hidden_states), '... (h d) -> ... h d', h=self.num_kv_heads)
 
-        seqlen_offset, max_seqlen = 0, q.shape[1]
+        seqlen_offset, max_seqlen = 0, q_len
         if past_key_values is not None:
             seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
             max_seqlen = q.shape[1] + seqlen_offset
@@ -102,13 +113,15 @@ class BitAttention(nn.Module):
             max_seqlen = max(max_seqlen, self.max_position_embeddings)
         q, k = self.rotary(q, k, seqlen_offset, max_seqlen)
 
-        k = rearrange(k, 'b t h d -> b h t d')
         if past_key_values is not None:
-            k, v = past_key_values.update(k, v, self.layer_idx)
-        k, v = rearrange(k, 'b h t d -> b t h d'), rearrange(v, 'b h t d -> b t h d')
-        if self.num_kv_groups > 1:
-            k = rearrange(k.unsqueeze(-2).repeat(1, 1, 1, self.num_kv_groups, 1), 'b t h g d -> b t (h g) d')
-            v = rearrange(v.unsqueeze(-2).repeat(1, 1, 1, self.num_kv_groups, 1), 'b t h g d -> b t (h g) d')
+            k, v = past_key_values.update(
+                attn_state=(k.flatten(-2, -1), v.flatten(-2, -1)),
+                layer_idx=self.layer_idx,
+                offset=q_len,
+                cache_kwargs=dict(window_size=self.window_size)
+            )['attn_state']
+            k = rearrange(k, '... (h d) -> ... h d', h=self.num_kv_heads)
+            v = rearrange(v, '... (h d) -> ... h d', h=self.num_kv_heads)
 
         if flash_attn_func is None:
             raise ImportError("Please install Flash Attention via `pip install flash-attn --no-build-isolation` first")
