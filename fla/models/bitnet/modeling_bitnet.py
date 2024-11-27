@@ -20,7 +20,7 @@ from fla.layers.bitattn import BitAttention
 from fla.models.bitnet.configuration_bitnet import BitNetConfig
 from fla.models.utils import Cache
 from fla.modules import (FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss,
-                         RMSNorm, rms_norm)
+                         RMSNorm)
 from fla.modules.activations import swiglu_bitlinear
 from fla.modules.fused_bitlinear import BitLinear, rms_norm_linear_quant
 
