@@ -298,14 +298,13 @@ def fwd_inner_chunk(
     s_k_h,  # stride size: L * K
     s_k_t,  # stride size: K
     s_k_d,  # stride size: 1
-    B,  # B
-    H,  # H
-    T,  # T
     scale,  # K ** -0.5
-    # clamp_min, # minimum log value of the gate for numerical stability. default: -5
-    BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
-    BK: tl.constexpr,  # BLOCK SIZE along the K dimension
+    B: tl.constexpr,  # B
+    H: tl.constexpr,  # H
+    T: tl.constexpr,  # T
     K: tl.constexpr,  # K
+    BT: tl.constexpr,  # BLOCK SIZE along the sequence dimension, a.k.a. chunk size
+    BK: tl.constexpr  # BLOCK SIZE along the K dimension
 ):
 
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -406,7 +405,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
 
         g_org = g
         # cumulative decay should be in float32, otherwise the err will be accumulated and amplified.
-        g = chunk_local_cumsum(g_org, BT=BT)
+        g = chunk_local_cumsum(g_org, chunk_size=BT)
         o = q.new_empty(NK, B, H, T, V)
         q_g = torch.empty_like(q)
         k_g = torch.empty_like(k)
@@ -416,7 +415,10 @@ class FusedChunkGLAFunction(torch.autograd.Function):
             q, k, g, q_g, k_g,
             q.stride(1),
             scale,
-            K=K, BT=BT, BK=BK, num_warps=1
+            K=K,
+            BT=BT,
+            BK=BK,
+            num_warps=1
         )
 
         if output_final_state:
@@ -442,7 +444,14 @@ class FusedChunkGLAFunction(torch.autograd.Function):
             q_g, k_g, v, g, o, initial_state, final_state,
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
-            B=B, H=H, T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+            B=B,
+            H=H,
+            T=T,
+            K=K,
+            V=V,
+            BT=BT,
+            BK=BK,
+            BV=BV,
             USE_INITIAL_STATE=initial_state is not None,
             STORE_FINAL_STATE=output_final_state,
             CHECK=CHECK,
@@ -463,7 +472,14 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         fwd_inner_chunk[grid](
             q, k, g, A,
             q.stride(1), q.stride(2), q.stride(3),
-            B, H, T, scale, BT=BT, BK=BK, K=K, num_stages=3,
+            scale,
+            B=B,
+            H=H,
+            T=T,
+            K=K,
+            BT=BT,
+            BK=BK,
+            num_stages=3,
             num_warps=4
         )
         A = A.sum(0)
@@ -486,7 +502,7 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         # recomputation
         # inter-chunk
         BT = 16  # chunk_size
-        g = chunk_local_cumsum(g_org, BT=BT)
+        g = chunk_local_cumsum(g_org, chunk_size=BT)
         BK, BV = min(K, 64), min(V, 64)
         NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
         q_g = torch.empty_like(q)
@@ -496,7 +512,10 @@ class FusedChunkGLAFunction(torch.autograd.Function):
             q, k, g, q_g, k_g,
             q.stride(1),
             scale,
-            K=K, BT=BT, BK=BK, num_warps=1
+            K=K,
+            BT=BT,
+            BK=BK,
+            num_warps=1
         )
 
         # inter-chunk
@@ -516,8 +535,14 @@ class FusedChunkGLAFunction(torch.autograd.Function):
             q.stride(1), q.stride(2), q.stride(3),
             v.stride(1), v.stride(2), v.stride(3),
             scale,
-            B=B, H=H, T=T, K=K, V=V,
-            BT=BT, BK=BK, BV=BV,
+            B=B,
+            H=H,
+            T=T,
+            K=K,
+            V=V,
+            BT=BT,
+            BK=BK,
+            BV=BV,
             USE_INITIAL_STATE=initial_state is not None,
             CHECK=ctx.CHECK,
             num_warps=num_warps,
@@ -545,7 +570,10 @@ class FusedChunkGLAFunction(torch.autograd.Function):
             q, k, g,
             dA2, dq2, dk2,
             q.stride(1), q.stride(2), q.stride(3),
-            T=T, K=K, BT=BT, BK=BK,
+            T=T,
+            K=K,
+            BT=BT,
+            BK=BK,
             num_warps=1,
             num_stages=3
         )
@@ -557,7 +585,9 @@ class FusedChunkGLAFunction(torch.autograd.Function):
         bwd_decay_global_cumsum[grid](
             dq2, dq, dk2, dk, q, k, g, dg,
             q.stride(1),
-            BT=BT, K=K, BK=BK,
+            K=K,
+            BT=BT,
+            BK=BK,
             num_warps=1,
             num_stages=1
         )

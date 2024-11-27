@@ -4,7 +4,7 @@
 
 import math
 import warnings
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -52,7 +52,7 @@ def proj_then_conv1d(
     cache: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     # We do matmul and transpose BLH -> HBL at the same time
-    x = rearrange(proj_weight @ rearrange(x, "b l d -> d (b l)"), "d (b l) -> b d l", l=x.shape[-2])
+    x = rearrange(proj_weight @ rearrange(x, "b t d -> d (b t)"), "d (b t) -> b d t", t=x.shape[-2])
 
     if causal_conv1d_fn is None:
         raise ImportError("`causal_conv1d_fn` is not available. Please install `causal-conv1d` first.")
@@ -143,8 +143,9 @@ class ShortConvolution(nn.Conv1d):
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-        cache: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+        cache: Optional[torch.Tensor] = None,
+        output_final_state: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             x (`torch.Tensor`):
@@ -152,16 +153,22 @@ class ShortConvolution(nn.Conv1d):
             mask (`Optional[torch.Tensor]`):
                 Attention mask dealing with padded positions.
             cache (`Optional[torch.Tensor]`):
-                Previous cache tensor of shape `[batch_size, hidden_size, kernel_size]`,
+                Previous cache tensor of shape `[batch_size, hidden_size, kernel_size]`.
+                If provided, the cache is updated **inplace**.
+            output_final_state (Optional[bool]):
+                Whether to output the final state of shape `[batch_size, hidden_size, kernel_size]`. Default: `False`.
         Returns:
-            Tensor of shape `[batch_size, seq_len, hidden_size]`. The `cache` (if provided) is updated inplace.
+            Tensor of shape `[batch_size, seq_len, hidden_size]`.
         """
 
+        batch_size, _, hidden_size = x.shape
         if mask is not None:
             x = x.mul_(mask.unsqueeze(-1))
+        if output_final_state and cache is None:
+            cache = x.new_zeros(batch_size, hidden_size, self.kernel_size[0])
         if cache is not None and x.shape[1] == 1:
             return self.step(x, cache)
-        x = rearrange(x, "b l d -> b d l")
+        x = rearrange(x, "b t d -> b d t")
         # Update state (B D W)
         if cache is not None:
             cache.copy_(F.pad(x, (self.kernel_size[0] - x.shape[-1], 0)))
@@ -176,7 +183,7 @@ class ShortConvolution(nn.Conv1d):
             x = self._conv_forward(x, self.weight, self.bias)[..., :x.shape[-1]]
             if self.activation is not None:
                 x = ACT2FN[self.activation](x)
-        return rearrange(x, "b d l -> b l d")
+        return rearrange(x, "b d t -> b t d"), cache
 
     def step(
         self,
@@ -203,7 +210,7 @@ class ShortConvolution(nn.Conv1d):
                 x = x + self.bias
             if self.activation is not None:
                 x = ACT2FN[self.activation](x).to(dtype=dtype)
-        return x.unsqueeze(1)
+        return x.unsqueeze(1), cache
 
     @property
     def state_size(self) -> int:
@@ -213,38 +220,38 @@ class ShortConvolution(nn.Conv1d):
 class LongConvolution(nn.Module):
     """
     LongConvolution applies a convolution operation on the input tensor using a fixed
-    filter of length l_max.
+    filter of length max_len.
     The filter is learned during training and is applied using FFT convolution.
     Args:
         hidden_size (int): The number of expected features in the input and output.
-        l_max (int): The maximum sequence length.
+        max_len (int): The maximum sequence length.
     Returns:
-        y: (b, l, d) tensor
+        y: [batch_size, seq_len, hidden_size] tensor
     """
 
     def __init__(
         self,
         hidden_size: int,
-        l_max: int,
+        max_len: int,
         **kwargs,
     ):
         """
         Initializes the LongConvolution module.
         Args:
             hidden_size (int): The number of expected features in the input and output.
-            l_max (int): The maximum sequence length.
+            max_len (int): The maximum sequence length.
         """
         super().__init__()
         self.hidden_size = hidden_size
-        self.filter = nn.Parameter(torch.randn(self.hidden_size, l_max), requires_grad=True)
+        self.filter = nn.Parameter(torch.randn(self.hidden_size, max_len), requires_grad=True)
 
     def forward(self, x: torch.Tensor, *args, **kwargs):
         """
         Applies the LongConvolution operation on the input tensor.
         Args:
-            x: (b, l, d) tensor
+            x: [batch_size, seq_len, hidden_size] tensor
         Returns:
-            y: (b, l, d) tensor
+            y: [batch_size, seq_len, hidden_size] tensor
         """
         x = x.transpose(1, 2)
         y = fft_conv(x, self.filter, dropout_mask=None, gelu=False)
@@ -283,7 +290,7 @@ class ImplicitLongConvolution(nn.Module):
     Args:
         hidden_size (int):
             The number of expected features in the input and output.
-        l_max (int):
+        max_len (int):
             The maximum sequence length.
         d_emb (Optional[int]):
             The dimension of the positional embeddings. Must be odd and greater or equal to 3 (time, sine and cosine).
@@ -300,7 +307,7 @@ class ImplicitLongConvolution(nn.Module):
     def __init__(
         self,
         hidden_size: int,
-        l_max: int,
+        max_len: int,
         d_emb: int = 3,
         d_hidden: int = 16,
         **kwargs,
@@ -317,7 +324,7 @@ class ImplicitLongConvolution(nn.Module):
         assert (
             d_emb % 2 != 0 and d_emb >= 3
         ), "d_emb must be odd and greater or equal to 3 (time, sine and cosine)"
-        self.pos_emb = PositionalEmbedding(d_emb, l_max)
+        self.pos_emb = PositionalEmbedding(d_emb, max_len)
 
         # final linear layer
         self.mlp = nn.Sequential(
@@ -334,9 +341,9 @@ class ImplicitLongConvolution(nn.Module):
     def forward(self, x: torch.Tensor, *args, **kwargs):
         """
         Args:
-            x: (b, l, d) tensor
+            x: [batch_size, seq_len, hidden_size] tensor
         Returns:
-            y: (b, l, d) tensor
+            y: [batch_size, seq_len, hidden_size] tensor
         """
         x = x.transpose(1, 2)
         k = self.filter(x.shape[-1])

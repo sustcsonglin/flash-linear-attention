@@ -139,7 +139,7 @@ def fwd_prepare_wy_repr_kernel_chunk64(
     # i.e., [A11, 0; A21, A22]^-1 = [A11^-1, 0; -A22^-1 A21 A11^-1, A22^-1]
     b_A += tl.arange(0, BC)[:, None] == tl.arange(0, BC)[None, :]
     b_A2 += tl.arange(0, BC)[:, None] == tl.arange(0, BC)[None, :]
-    b_A3 = -tl.dot(tl.dot(b_A2, b_A3), b_A)
+    b_A3 = -tl.dot(tl.dot(b_A2, b_A3, allow_tf32=False), b_A, allow_tf32=False)
 
     if HEAD_FIRST:
         p_A1 = tl.make_block_ptr(A + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT, 0), (BC, BC), (1, 0))
@@ -382,16 +382,14 @@ def fwd_prepare_wy_repr(k, v, beta, head_first, chunk_size):
         B, H, T, K = k.shape
     else:
         B, T, H, K = k.shape
-    BT = chunk_size
-    NT = triton.cdiv(T, BT)
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
+    BC = min(BT, 32)
     BK = min(triton.next_power_of_2(K), 64)
+    NT = triton.cdiv(T, BT)
 
     u = torch.empty_like(v)
     w = torch.empty_like(k)
-    if head_first:
-        A = torch.empty(B, H, T, BT, device=k.device, dtype=k.dtype)
-    else:
-        A = torch.empty(B, T, H, BT, device=k.device, dtype=k.dtype)
+    A = torch.empty(B, *((H, T) if head_first else (T, H)), BT, device=k.device, dtype=k.dtype)
     fwd_fn = fwd_prepare_wy_repr_kernel_chunk64 if BT == 64 else fwd_prepare_wy_repr_kernel_chunk32
     fwd_fn[(NT, B*H)](
         k,
@@ -402,7 +400,7 @@ def fwd_prepare_wy_repr(k, v, beta, head_first, chunk_size):
         K=K,
         BT=BT,
         BK=BK,
-        BC=32,
+        BC=BC,
         HEAD_FIRST=head_first
     )
     w, u = fwd_recompute_w_u(k, v, beta, A, head_first, chunk_size)
@@ -414,11 +412,12 @@ def fwd_prepare_T(k, beta, head_first, chunk_size):
         B, H, T, K = k.shape
     else:
         B, T, H, K = k.shape
-    BT = chunk_size
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
+    BC = min(BT, 32)
     assert BT in [16, 32, 64]
     NT = triton.cdiv(T, BT)
     BK = min(triton.next_power_of_2(K), 64)
-    A = torch.empty(B, H, T, BT, device=k.device, dtype=k.dtype)
+    A = torch.empty(B, *((H, T) if head_first else (T, H)), BT, device=k.device, dtype=k.dtype)
     fwd_fn = fwd_prepare_wy_repr_kernel_chunk64 if BT == 64 else fwd_prepare_wy_repr_kernel_chunk32
     fwd_fn[(NT, B*H)](
         k,
@@ -429,7 +428,7 @@ def fwd_prepare_T(k, beta, head_first, chunk_size):
         K=K,
         BT=BT,
         BK=BK,
-        BC=32,
+        BC=BC,
         HEAD_FIRST=head_first
     )
     return A
@@ -442,7 +441,7 @@ def fwd_recompute_w_u(k, v, beta, A, head_first, chunk_size):
         B, T, H, K, V = *k.shape, v.shape[-1]
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
-    BT = chunk_size
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     NT = triton.cdiv(T, BT)
     u = torch.empty_like(v)
     w = torch.empty_like(k)
@@ -470,7 +469,7 @@ def fwd_recompute_w(k, beta, A, head_first, chunk_size):
         B, H, T, K = k.shape
     else:
         B, T, H, K = k.shape
-    BT = chunk_size
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     NT = triton.cdiv(T, BT)
     BK = min(triton.next_power_of_2(K), 64)
     w = torch.empty_like(k)
@@ -494,10 +493,10 @@ def bwd_prepare_wy_repr(k, v, beta, A, dw, du, head_first, chunk_size):
         B, H, T, K, V = *k.shape, v.shape[-1]
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
-    BT = chunk_size
-    NT = triton.cdiv(T, BT)
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
+    NT = triton.cdiv(T, BT)
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
     dbeta = torch.empty_like(beta)

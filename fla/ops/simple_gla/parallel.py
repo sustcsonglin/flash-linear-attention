@@ -7,7 +7,7 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.utils import chunk_global_reversed_cumsum, chunk_local_cumsum
+from fla.ops.utils import chunk_global_cumsum, chunk_local_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
@@ -536,7 +536,7 @@ def parallel_simple_gla_bwd(
     dk = dk.sum(0)
     dv = dv.sum(0)
     dg = dg.sum(0)
-    dg = chunk_global_reversed_cumsum(dg)
+    dg = chunk_global_cumsum(dg, reverse=True)
     return dq, dk, dv, dg
 
 
@@ -569,7 +569,8 @@ def parallel_simple_gla(
     v: torch.Tensor,
     g: torch.Tensor,
     scale: float = None,
-    output_attentions: bool = False
+    output_attentions: bool = False,
+    head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
@@ -580,15 +581,27 @@ def parallel_simple_gla(
         v (torch.Tensor):
             values of shape `[B, H, T, V]`
         g (torch.Tensor):
-            Forget gates of shape `(B, H, T)` applied to keys.
+            Forget gates of shape `[B, H, T]` applied to keys.
             Compared to GLA, the gating is head-wise instead of elementwise.
         scale (Optional[int]):
             Scale factor for attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         output_attentions (bool):
             Whether to output the materialized attention scores of shape [B, H, T, T]. Default: `False`.
+        head_first (Optional[bool]):
+            Whether the inputs are in the head-first format. Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        attn (torch.Tensor):
+            Attention scores of shape `[B, H, T, T]` if `output_attentions=True` else `None`
     """
     if scale is None:
         scale = k.shape[-1] ** -0.5
-    return ParallelSimpleGLAFunction.apply(q, k, v, g, scale, output_attentions)
-    return ParallelSimpleGLAFunction.apply(q, k, v, g, scale, output_attentions)
+    if not head_first:
+        q, k, v, g = map(lambda x: x.transpose(1, 2) if x is not None else None, (q, k, v, g))
+    o, attn = ParallelSimpleGLAFunction.apply(q, k, v, g, scale, output_attentions)
+    if not head_first:
+        o = o.transpose(1, 2).contiguous()
+    return o, attn

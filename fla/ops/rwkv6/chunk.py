@@ -7,8 +7,8 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.common.chunk_h import chunk_fwd_h_fn
-from fla.ops.gla.chunk import chunk_gla_bwd_dA_fn, chunk_gla_bwd_dv_fn
+from fla.ops.common.chunk_h import chunk_fwd_h
+from fla.ops.gla.chunk import chunk_gla_bwd_dA, chunk_gla_bwd_dv
 from fla.utils import contiguous
 
 
@@ -53,7 +53,7 @@ def chunk_rwkv6_fwd_cumsum_kernel(
     tl.store(p_o_minus_s, (b_o - b_s).to(p_o_minus_s.dtype.element_ty), boundary_check=(0, 1))
 
 
-def chunk_rwkv6_fwd_cumsum_fn(g, BT):
+def chunk_rwkv6_fwd_cumsum(g, BT):
     B, H, T, K = g.shape
     NT = triton.cdiv(T, BT)
     g, gi, ge = g, torch.empty_like(g, dtype=torch.float), torch.empty_like(g, dtype=torch.float)
@@ -61,7 +61,9 @@ def chunk_rwkv6_fwd_cumsum_fn(g, BT):
     chunk_rwkv6_fwd_cumsum_kernel[grid](
         g, gi, ge,
         g.stride(1), g.stride(2), g.stride(3),
-        T=T, S=K, BT=BT
+        T=T,
+        S=K,
+        BT=BT
     )
     return gi, ge
 
@@ -598,7 +600,7 @@ def chunk_rwkv6_bwd_kernel_inter(
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0, 1))
 
 
-def chunk_rwkv6_fwd_intra_A_gated_fn(q, k, gi, ge, u, scale, BT):
+def chunk_rwkv6_fwd_intra_A_gated(q, k, gi, ge, u, scale, BT):
     BC = 16
     B, H, T, K = q.shape
     A = q.new_empty(B, H, T, BT, dtype=torch.float32)
@@ -626,7 +628,7 @@ def chunk_rwkv6_fwd_intra_A_gated_fn(q, k, gi, ge, u, scale, BT):
     else:
         BK = 128
         NK = triton.cdiv(K, BK)
-        A_intra = q.new_empty(NK, B, H, BT, BC, dtype=torch.float32)
+        A_intra = q.new_empty(NK, B, H, T, BC, dtype=torch.float32)
         grid = (NK, NT * NC, B * H)
         chunk_rwkv6_fwd_A_kernel_intra_sub_intra_split[grid](
             q, k, gi, ge, u, A_intra,
@@ -642,7 +644,7 @@ def chunk_rwkv6_fwd_intra_A_gated_fn(q, k, gi, ge, u, scale, BT):
     return A
 
 
-def chunk_rwkv6_fwd_o_gated_gk_fn(q, v, g_cumsum, A, h, BT, scale):
+def chunk_rwkv6_fwd_o_gated_gk(q, v, g_cumsum, A, h, BT, scale):
     B, H, T, K, V = *q.shape, v.shape[-1]
     BV = min(32, triton.next_power_of_2(V))
     BK = min(32, triton.next_power_of_2(K))
@@ -661,7 +663,7 @@ def chunk_rwkv6_fwd_o_gated_gk_fn(q, v, g_cumsum, A, h, BT, scale):
     return o
 
 
-def chunk_rwkv6_bwd_dqk_intra_fn(q, k, g_cumsum_inclusive, g_cumsum_exclusive, dA, BT, scale):
+def chunk_rwkv6_bwd_dqk_intra(q, k, g_cumsum_inclusive, g_cumsum_exclusive, dA, BT, scale):
     B, H, T, K = q.shape
     BC = 16
     BK = min(64, triton.next_power_of_2(K))
@@ -679,7 +681,7 @@ def chunk_rwkv6_bwd_dqk_intra_fn(q, k, g_cumsum_inclusive, g_cumsum_exclusive, d
     return dq, dk
 
 
-def chunk_rwkv6_bwd_dqkgu_fn(q, k, v, h, g_cumsum_inclusive, g_cumsum_exclusive, u, do, dh, dA, dq, dk, BT, scale):
+def chunk_rwkv6_bwd_dqkgu(q, k, v, h, g_cumsum_inclusive, g_cumsum_exclusive, u, do, dh, dA, dq, dk, BT, scale):
     B, H, T, K, V = *q.shape, v.shape[-1]
     dg = torch.empty_like(g_cumsum_inclusive)
     BK = 64
@@ -774,7 +776,7 @@ def chunk_rwkv6_bwd_kernel_dh(
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
 
-def chunk_rwkv6_bwd_dh_fn(q, k, v, g_cumsum_inclusive, g_cumsum_exclusive, do, h0, dht, BT, scale, states_in_fp32=False):
+def chunk_rwkv6_bwd_dh(q, k, v, g_cumsum_inclusive, g_cumsum_exclusive, do, h0, dht, BT, scale, states_in_fp32=False):
     HQ = q.shape[1]
     B, H, T, K, V = *k.shape, v.shape[-1]
     BT = 64
@@ -805,20 +807,20 @@ class ChunkRWKV6Function(torch.autograd.Function):
     @contiguous
     def forward(ctx, q, k, v, g, u, scale, initial_state, output_final_state):
         BT = 64
-        g_cumsum_inclusive, g_cumsum_exclusive = chunk_rwkv6_fwd_cumsum_fn(g, BT=BT)  # gi, ge for short
-        h, ht = chunk_fwd_h_fn(
+        g_cumsum_inclusive, g_cumsum_exclusive = chunk_rwkv6_fwd_cumsum(g, BT=BT)  # gi, ge for short
+        h, ht = chunk_fwd_h(
             k=k,
             v=v,
             g=None,
             gk=g_cumsum_inclusive,
             gv=None,
-            BT=BT,
             h0=initial_state,
             output_final_state=output_final_state,
-            states_in_fp32=False
+            states_in_fp32=False,
+            chunk_size=BT
         )
-        A = chunk_rwkv6_fwd_intra_A_gated_fn(q, k, g_cumsum_inclusive, g_cumsum_exclusive, u, scale, BT)
-        o = chunk_rwkv6_fwd_o_gated_gk_fn(q, v, g_cumsum_exclusive, A, h, BT, scale)
+        A = chunk_rwkv6_fwd_intra_A_gated(q, k, g_cumsum_inclusive, g_cumsum_exclusive, u, scale, BT)
+        o = chunk_rwkv6_fwd_o_gated_gk(q, v, g_cumsum_exclusive, A, h, BT, scale)
         ctx.save_for_backward(q, k, v, g, initial_state, A, u)
         ctx.BT = BT
         ctx.scale = scale
@@ -829,19 +831,19 @@ class ChunkRWKV6Function(torch.autograd.Function):
     def backward(ctx, do, dht):
         q, k, v, g, initial_state, A, u = ctx.saved_tensors
         BT, scale = ctx.BT, ctx.scale
-        g_cumsum_inclusive, g_cumsum_exclusive = chunk_rwkv6_fwd_cumsum_fn(g, BT=BT)  # gi, ge for short
-        h, _ = chunk_fwd_h_fn(
+        g_cumsum_inclusive, g_cumsum_exclusive = chunk_rwkv6_fwd_cumsum(g, BT=BT)  # gi, ge for short
+        h, _ = chunk_fwd_h(
             k=k,
             v=v,
             g=None,
             gk=g_cumsum_inclusive,
             gv=None,
-            BT=BT,
             h0=initial_state,
             output_final_state=False,
-            states_in_fp32=True
+            states_in_fp32=True,
+            chunk_size=BT
         )
-        dh, dh0 = chunk_rwkv6_bwd_dh_fn(
+        dh, dh0 = chunk_rwkv6_bwd_dh(
             q=q,
             k=k,
             v=v,
@@ -855,9 +857,9 @@ class ChunkRWKV6Function(torch.autograd.Function):
             states_in_fp32=True
         )
         # dq dk in fp32
-        dA = chunk_gla_bwd_dA_fn(v=v, do=do, BT=BT, scale=scale)
-        dv = chunk_gla_bwd_dv_fn(k=k, g_cumsum=g_cumsum_inclusive, A=A, do=do, dh=dh, BT=BT, scale=scale)
-        dq, dk = chunk_rwkv6_bwd_dqk_intra_fn(
+        dA = chunk_gla_bwd_dA(v=v, do=do, scale=scale, chunk_size=BT)
+        dv = chunk_gla_bwd_dv(k=k, g_cumsum=g_cumsum_inclusive, A=A, do=do, dh=dh, scale=scale, chunk_size=BT)
+        dq, dk = chunk_rwkv6_bwd_dqk_intra(
             q=q,
             k=k,
             g_cumsum_inclusive=g_cumsum_inclusive,
@@ -866,7 +868,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
             BT=BT,
             scale=scale
         )
-        dq, dk, dg, du = chunk_rwkv6_bwd_dqkgu_fn(
+        dq, dk, dg, du = chunk_rwkv6_bwd_dqkgu(
             q=q,
             k=k,
             v=v,

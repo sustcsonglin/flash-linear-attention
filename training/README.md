@@ -23,6 +23,10 @@ pip install .
 pip install accelerate
 ```
 
+> [!CAUTION]
+> The 🤗 `tokenizers` have some [memory leak issues](https://github.com/huggingface/tokenizers/issues/1539) when processing very long documents.
+> To address this, please ensure you install `tokenizers>=0.20.4-rc0`.
+
 ## Preprocessing
 
 Before training, you need to download and pre-tokenize your dataset. 
@@ -37,11 +41,7 @@ python preprocess.py \
   --context_length 2048
 ```
 
-This will cache the processed dataset at `data/HuggingFaceFW/fineweb-edu/sample-10BT/train
-
-> [!CAUTION]
-> The 🤗 `tokenizers` have some [memory leak issues](https://github.com/huggingface/tokenizers/issues/1539) when processing very long documents.
-> To address this, please ensure you install `tokenizers>=0.20.4-rc0`.
+This will cache the processed dataset at `data/HuggingFaceFW/fineweb-edu/sample-10BT/train`.
 
 GLA utilizes a subset of Slimpajama for pretraining [in the paper](https://proceedings.mlr.press/v235/yang24ab.html).
 Given the size of the dataset, the fastest way to download it is using `git lfs` (refer to [this issue](https://huggingface.co/datasets/cerebras/SlimPajama-627B/discussions/2)).

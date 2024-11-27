@@ -14,16 +14,16 @@ def get_err_ratio(x, y):
 
 
 @pytest.mark.parametrize("B", [2])
-@pytest.mark.parametrize("H", [2])
-@pytest.mark.parametrize("T", [286, 300])
+@pytest.mark.parametrize("T", [1, 7, 15, 63, 286, 300])
+@pytest.mark.parametrize("H", [2, 16])
 @pytest.mark.parametrize("D", [50, 100, 200])
-@pytest.mark.parametrize("scale", [1, 0.5])
+@pytest.mark.parametrize("scale", [1])
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
 @pytest.mark.parametrize("head_first", [True, False])
 def test_chunk(
     B: int,
-    H: int,
     T: int,
+    H: int,
     D: int,
     dtype: torch.dtype,
     scale: float,

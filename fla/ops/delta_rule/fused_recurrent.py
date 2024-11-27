@@ -11,8 +11,7 @@ from fla.utils import contiguous
 
 
 @triton.jit
-def fused_recurrent_fwd_kernel(
-    # B: batch_size, H: n_heads, T: seq_len, D: d_head
+def fused_recurrent_delta_rule_fwd_kernel(
     q,  # query [B, H, T, K]
     k,  # key [B, H, T, V]
     v,  # value [B, H, T, V].
@@ -99,30 +98,30 @@ def fused_recurrent_fwd_kernel(
 
 
 @triton.jit
-def fused_recurrent_bwd_kernel(
-    # B: batch_size, H: n_heads, T: seq_len, D: d_head
-    # NV: number of split in the V dimension. NK: number of split in the K dimension
+def fused_recurrent_delta_rule_bwd_kernel(
+    # NK: number of split in the K dimension
+    # NV: number of split in the V dimension
     q,  # query [B, H, T, K]
     k,  # key [B, H, T, V]
     v,  # value [B, H, T, V]
     beta,  # beta [B, H, T, (V)]
-    dht,  # gradient of final state [B, H, K, V]
+    h0,  # initial state [B, H, K, V]
     dh0,  # gradient of initial state [B, H, K, V]
+    dht,  # gradient of final state [B, H, K, V]
     do,  # gradient of output [B, H, T, V]
     dq,  # gradient of query [NV, B, H, T, K]
     dk,  # gradient of key [NV, B, H, T, K]
     dv,  # gradient of value [NK, B, H, T, V]
     db,  # gradient of beta [NV, (NK), B, H, T]
-    h0,  # initial state [B, H, K, V]
     scale,  # K ** -0.5
-    NK,  # NK block size
-    B,  # batch_size
-    T,  # seq_len
-    H,  # n_heads
+    B: tl.constexpr,  # batch_size
+    T: tl.constexpr,  # seq_len
+    H: tl.constexpr,  # n_heads
     K: tl.constexpr,  # K
     V: tl.constexpr,  # V
     BK: tl.constexpr,  # BLOCK SIZE along the K dimension
     BV: tl.constexpr,  # BLOCK SIZE along the V dimension
+    NK: tl.constexpr,  # NK block size
     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state h0
     IS_BETA_HEADWISE: tl.constexpr,  # whether beta is headwise vector or scalar
     USE_DH0: tl.constexpr,  # whether to use dh0
@@ -162,10 +161,10 @@ def fused_recurrent_bwd_kernel(
             p_beta = beta + i_b * T*H + (T - 1) * H + i_h
             p_dbeta = db + (i_v * B + i_b) * T*H + (T - 1) * H + i_h
 
-    d_h = tl.zeros([BK, BV], dtype=tl.float32)
+    b_dh = tl.zeros([BK, BV], dtype=tl.float32)
     if USE_DHT:
         p_ht = dht + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[:, None]) * V + (i_v * BV + tl.arange(0, BV)[None, :])
-        d_h += tl.load(p_ht, mask=mask_k[:, None] & mask_v[None, :], other=0).to(tl.float32)
+        b_dh += tl.load(p_ht, mask=mask_k[:, None] & mask_v[None, :], other=0).to(tl.float32)
 
     for _ in range(T):
         b_q = tl.load(p_q, mask=mask_k, other=0).to(tl.float32) * scale
@@ -176,21 +175,21 @@ def fused_recurrent_bwd_kernel(
             b_beta = tl.load(p_beta, mask=mask_v, other=0).to(tl.float32)
         else:
             b_beta = tl.load(p_beta).to(tl.float32)
-        d_h += b_q[:, None] * b_do[None, :]
-        d_k = tl.sum(d_h * (b_v * b_beta)[None, :], axis=1)
-        d_v = tl.sum(d_h * b_k[:, None], axis=0)
+        b_dh += b_q[:, None] * b_do[None, :]
+        b_dk = tl.sum(b_dh * (b_v * b_beta)[None, :], axis=1)
+        b_dv = tl.sum(b_dh * b_k[:, None], axis=0)
 
-        d_beta = d_v * b_v if IS_BETA_HEADWISE else tl.sum(d_v * b_v)
-        d_v = d_v * b_beta
+        b_db = b_dv * b_v if IS_BETA_HEADWISE else tl.sum(b_dv * b_v)
+        b_dv = b_dv * b_beta
 
-        tl.store(p_dk, d_k.to(p_dk.dtype.element_ty), mask=mask_k)
-        tl.store(p_dv, d_v.to(p_dv.dtype.element_ty), mask=mask_v)
+        tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), mask=mask_k)
+        tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), mask=mask_v)
         if IS_BETA_HEADWISE:
-            tl.store(p_dbeta, d_beta.to(p_dbeta.dtype.element_ty), mask=mask_v)
+            tl.store(p_dbeta, b_db.to(p_dbeta.dtype.element_ty), mask=mask_v)
         else:
-            tl.store(p_dbeta, d_beta.to(p_dbeta.dtype.element_ty))
+            tl.store(p_dbeta, b_db.to(p_dbeta.dtype.element_ty))
 
-        d_h -= b_k[:, None] * d_v[None, :]
+        b_dh -= b_k[:, None] * b_dv[None, :]
 
         p_q -= K if HEAD_FIRST else H*K
         p_k -= K if HEAD_FIRST else H*K
@@ -203,7 +202,7 @@ def fused_recurrent_bwd_kernel(
 
     if USE_DH0:
         p_dh0 = dh0 + i_bh * K * V + (i_k * BK + tl.arange(0, BK)[:, None]) * V + (i_v * BV + tl.arange(0, BV)[None, :])
-        tl.store(p_dh0, d_h.to(p_dh0.dtype.element_ty), mask=mask_k[:, None] & mask_v[None, :])
+        tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), mask=mask_k[:, None] & mask_v[None, :])
 
     tl.debug_barrier()
 
@@ -240,10 +239,10 @@ def fused_recurrent_bwd_kernel(
         b_h += tl.load(p_h0, mask=mask_h, other=0).to(tl.float32)
 
     for _ in range(0, T):
-        d_k = tl.load(p_dk, mask=mask_k, other=0).to(tl.float32)
-        d_v = tl.load(p_dv, mask=mask_v, other=0).to(tl.float32)
-        d_k -= tl.sum(d_v[None, :] * b_h, axis=1)
-        tl.store(p_dk, d_k.to(p_dk.dtype.element_ty), mask=mask_k)
+        b_dk = tl.load(p_dk, mask=mask_k, other=0).to(tl.float32)
+        b_dv = tl.load(p_dv, mask=mask_v, other=0).to(tl.float32)
+        b_dk -= tl.sum(b_dv[None, :] * b_h, axis=1)
+        tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), mask=mask_k)
 
         b_k = tl.load(p_k, mask=mask_k, other=0).to(tl.float32)
         b_v = tl.load(p_v, mask=mask_v, other=0).to(tl.float32)
@@ -296,7 +295,7 @@ def fused_recurrent_delta_rule_fwd(
 
     grid = (NV, NK, B*H)
     u = torch.empty_like(v)
-    fused_recurrent_fwd_kernel[grid](
+    fused_recurrent_delta_rule_fwd_kernel[grid](
         q,
         k,
         v,
@@ -361,19 +360,19 @@ def fused_recurrent_delta_rule_bwd(
     else:
         dh0 = None
 
-    fused_recurrent_bwd_kernel[grid](
+    fused_recurrent_delta_rule_bwd_kernel[grid](
         q,
         k,
         v,
         beta,
-        dht,
+        initial_state,
         dh0,
+        dht,
         do,
         dq,
         dk,
         dv,
         db,
-        initial_state,
         scale,
         B=B,
         T=T,

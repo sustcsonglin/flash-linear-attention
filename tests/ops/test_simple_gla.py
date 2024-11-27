@@ -30,34 +30,43 @@ def assert_close(prefix, ref, tri, ratio):
 @pytest.mark.parametrize("T", [100, 512])
 @pytest.mark.parametrize("D", [100, 256])
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
+@pytest.mark.parametrize("head_first", [True, False])
 def test_chunk(
     B: int,
     H: int,
     T: int,
     D: int,
-    dtype: torch.dtype
+    dtype: torch.dtype,
+    head_first: bool
 ):
     torch.manual_seed(42)
     # [B, H, T, D]
-    q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
-    k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
-    v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
-    g = torch.randn((B, H, T), dtype=dtype, device='cuda')
+    if head_first:
+        q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
+        k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
+        v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
+        g = torch.randn((B, H, T), dtype=dtype, device='cuda')
+    else:
+        q = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_(True)
+        k = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_(True)
+        v = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_(True)
+        g = torch.randn((B, T, H), dtype=dtype, device='cuda')
     h0 = torch.rand((B, H, D, D), dtype=torch.float32, device='cuda').requires_grad_(True)
     g = F.logsigmoid(g).requires_grad_(True)
     do = torch.randn_like(v)
 
-    ref, ref_ht = fused_recurrent_simple_gla(q, k, v, g, initial_state=h0, output_final_state=True)
-    d_ht = torch.randn_like(ref_ht)
-    ((ref * do).sum() + (ref_ht * d_ht).sum()).backward()
+    ref, ref_ht = fused_recurrent_simple_gla(q, k, v, g, initial_state=h0, output_final_state=True, head_first=head_first)
+    # dht not supported yet in `fused_recurrent` kernel
+    ref, _ = fused_recurrent_simple_gla(q, k, v, g, initial_state=h0, output_final_state=False, head_first=head_first)
+    (ref * do).sum().backward()
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
     ref_dv, v.grad = v.grad.clone(), None
     ref_dg, g.grad = g.grad.clone(), None
     ref_dh0, h0.grad = h0.grad.clone(), None
 
-    tri, tri_ht = chunk_simple_gla(q, k, v, g, initial_state=h0, output_final_state=True)
-    ((tri * do).sum() + (tri_ht * d_ht).sum()).backward()
+    tri, tri_ht = chunk_simple_gla(q, k, v, g, initial_state=h0, output_final_state=True, head_first=head_first)
+    ((tri * do).sum() + (tri_ht * torch.zeros_like(ref_ht)).sum()).backward()
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
     tri_dv, v.grad = v.grad.clone(), None

@@ -97,12 +97,18 @@ class HGRNAttention(nn.Module):
             last_state = past_key_values[self.layer_idx]
 
         if self.use_short_conv:
+            conv_state_i, conv_state_f = None, None
             if last_state is not None:
                 conv_state_i, conv_state_f = last_state['conv_state']
-            else:
-                conv_state_i, conv_state_f = None, None
-            i = self.i_conv1d(self.i_proj(hidden_states), attention_mask, conv_state_i)
-            f = self.f_conv1d(self.f_proj(hidden_states), attention_mask, conv_state_f)
+            conv_mask = attention_mask[:, -hidden_states.shape[1]:] if attention_mask is not None else None
+            i, conv_state_i = self.i_conv1d(x=self.i_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_i,
+                                            output_final_state=use_cache)
+            f, conv_state_f = self.f_conv1d(x=self.f_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_f,
+                                            output_final_state=use_cache)
         else:
             i = self.i_proj(hidden_states)
             f = self.f_proj(hidden_states)
