@@ -20,10 +20,9 @@ from fla.layers.bitattn import BitAttention
 from fla.models.bitnet.configuration_bitnet import BitNetConfig
 from fla.models.utils import Cache
 from fla.modules import (FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss,
-                         RMSNorm)
-from fla.modules.activations import swiglu_linear
-from fla.modules.fused_bitlinear import BitLinear
-from fla.modules.layernorm import rms_norm_linear
+                         RMSNorm, rms_norm)
+from fla.modules.activations import swiglu_bitlinear
+from fla.modules.fused_bitlinear import BitLinear, rms_norm_linear_quant
 
 logger = logging.get_logger(__name__)
 
@@ -62,11 +61,11 @@ class BitNetMLP(nn.Module):
 
     def forward(self, x):
         if self.norm_first:
-            x = rms_norm_linear(x, self.norm.weight, self.norm.bias, self.gate_proj.weight, self.gate_proj.bias)
+            x = rms_norm_linear_quant(x, self.norm.weight, self.norm.bias, self.gate_proj.weight, self.gate_proj.bias)
         else:
             x = self.gate_proj(x)
         gate, y = x.chunk(2, -1)
-        return swiglu_linear(gate, y, self.down_proj.weight, self.down_proj.bias)
+        return swiglu_bitlinear(gate, y, self.down_proj.weight, self.down_proj.bias)
 
 
 class BitNetBlock(nn.Module):
