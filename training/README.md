@@ -25,7 +25,7 @@ pip install accelerate
 
 > [!CAUTION]
 > The 🤗 `tokenizers` have some [memory leak issues](https://github.com/huggingface/tokenizers/issues/1539) when processing very long documents.
-> To address this, please ensure you install `tokenizers>=0.20.4-rc0`.
+> To address this, please ensure you install `tokenizers>=0.20.4`.
 
 ## Preprocessing
 
