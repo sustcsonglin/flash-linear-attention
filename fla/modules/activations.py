@@ -6,8 +6,8 @@ import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
-import fused_bitlinear
 
+import fla.modules.fused_bitlinear as fused_bitlinear
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 sigmoid_fwd_codestring = """

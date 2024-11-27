@@ -3,6 +3,7 @@
 from .abc import ABCAttention
 from .attn import Attention
 from .based import BasedLinearAttention
+from .bitattn import BitAttention
 from .delta_net import DeltaNet
 from .gla import GatedLinearAttention
 from .gsa import GatedSlotAttention
@@ -12,7 +13,6 @@ from .linear_attn import LinearAttention
 from .multiscale_retention import MultiScaleRetention
 from .rebased import ReBasedLinearAttention
 from .rwkv6 import RWKV6Attention
-from .bitattn import BitAttention
 
 __all__ = [
     'ABCAttention',

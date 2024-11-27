@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from fla.models.abc import ABCConfig, ABCForCausalLM, ABCModel
+from fla.models.bitnet import BitNetConfig, BitNetForCausalLM, BitNetModel
 from fla.models.delta_net import (DeltaNetConfig, DeltaNetForCausalLM,
                                   DeltaNetModel)
 from fla.models.gla import GLAConfig, GLAForCausalLM, GLAModel
@@ -17,7 +18,6 @@ from fla.models.rwkv6 import RWKV6Config, RWKV6ForCausalLM, RWKV6Model
 from fla.models.samba import SambaConfig, SambaForCausalLM, SambaModel
 from fla.models.transformer import (TransformerConfig, TransformerForCausalLM,
                                     TransformerModel)
-from fla.models.bitnet import (BitNetConfig, BitNetForCausalLM, BitNetModel)
 
 __all__ = [
     'ABCConfig', 'ABCForCausalLM', 'ABCModel',
