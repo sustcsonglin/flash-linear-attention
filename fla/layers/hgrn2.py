@@ -114,13 +114,22 @@ class HGRN2Attention(nn.Module):
             last_state = past_key_values[self.layer_idx]
 
         if self.use_short_conv:
+            conv_state_q, conv_state_f, conv_state_i = None, None, None
             if last_state is not None:
                 conv_state_q, conv_state_f, conv_state_i = last_state['conv_state']
-            else:
-                conv_state_q, conv_state_f, conv_state_i = None, None, None
-            q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
-            f = self.f_conv1d(self.f_proj(hidden_states), attention_mask, conv_state_f)
-            i = self.i_conv1d(self.i_proj(hidden_states), attention_mask, conv_state_i)
+            conv_mask = attention_mask[:, -hidden_states.shape[1]:] if attention_mask is not None else None
+            q, conv_state_q = self.q_conv1d(x=self.q_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_q,
+                                            output_final_state=use_cache)
+            f, conv_state_f = self.f_conv1d(x=self.f_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_f,
+                                            output_final_state=use_cache)
+            i, conv_state_i = self.i_conv1d(x=self.i_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_i,
+                                            output_final_state=use_cache)
         else:
             q = self.q_proj(hidden_states)
             f = self.f_proj(hidden_states)
@@ -142,7 +151,7 @@ class HGRN2Attention(nn.Module):
             g = lower_bound + (1 - lower_bound) * f.sigmoid()
             k, g = 1 - g, g.log()
 
-        q, k, i, g = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (q, k.to(i), i, g))
+        q, k, i, g = map(lambda x: rearrange(x, '... (h d) -> ... h d', h=self.num_heads), (q, k.to(i), i, g))
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
@@ -152,12 +161,29 @@ class HGRN2Attention(nn.Module):
                 v=i,
                 gk=g,
                 initial_state=recurrent_state,
-                output_final_state=use_cache
+                output_final_state=use_cache,
+                head_first=False
             )
         elif mode == 'fused_chunk':
-            o, recurrent_state = fused_chunk_gla(q, k, i, g, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = fused_chunk_gla(
+                q=q,
+                k=k,
+                v=i,
+                g=g,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                head_first=False
+            )
         elif mode == 'chunk':
-            o, recurrent_state = chunk_gla(q, k, i, g, initial_state=recurrent_state, output_final_state=use_cache)
+            o, recurrent_state = chunk_gla(
+                q=q,
+                k=k,
+                v=i,
+                g=g,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                head_first=False
+            )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
@@ -169,7 +195,7 @@ class HGRN2Attention(nn.Module):
                 offset=q.shape[2]
             )
 
-        o = rearrange(o, 'b h t d -> b t (h d)')
+        o = rearrange(o, '... h d -> ... (h d)')
         o = rms_norm_linear(o, self.g_norm.weight, self.g_norm.bias, self.o_proj.weight, self.o_proj.bias)
         return o, None, past_key_values
 

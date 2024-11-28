@@ -7,7 +7,8 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-from fla.utils import autocast_custom_fwd, autocast_custom_bwd, contiguous
+import fla.modules.fused_bitlinear as fused_bitlinear
+from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 sigmoid_fwd_codestring = """
 template <typename T> T sigmoid_fwd(T x) {
@@ -43,21 +44,12 @@ sigmoid = SigmoidFunction.apply
 
 @triton.autotune(
     configs=[
-        triton.Config({'BT': 16}, num_warps=2),
-        triton.Config({'BT': 16}, num_warps=4),
-        triton.Config({'BT': 16}, num_warps=8),
-        triton.Config({'BT': 32}, num_warps=2),
-        triton.Config({'BT': 32}, num_warps=4),
-        triton.Config({'BT': 32}, num_warps=8),
-        triton.Config({'BT': 64}, num_warps=2),
-        triton.Config({'BT': 64}, num_warps=4),
-        triton.Config({'BT': 64}, num_warps=8),
-        triton.Config({'BT': 128}, num_warps=2),
-        triton.Config({'BT': 128}, num_warps=4),
-        triton.Config({'BT': 128}, num_warps=8),
-        triton.Config({'BT': 256}, num_warps=2),
-        triton.Config({'BT': 256}, num_warps=4),
-        triton.Config({'BT': 256}, num_warps=8)
+        triton.Config({}, num_warps=1),
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=16),
+        triton.Config({}, num_warps=32)
     ],
     key=['D']
 )
@@ -65,42 +57,30 @@ sigmoid = SigmoidFunction.apply
 def logsigmoid_fwd_kernel(
     x,
     y,
+    temperature,
     T: tl.constexpr,
     D: tl.constexpr,
-    BT: tl.constexpr
+    B: tl.constexpr
 ):
     i = tl.program_id(0)
-    o_i = i * BT + tl.arange(0, BT)
+    o_i = i * B + tl.arange(0, B)
+    m_i = o_i < T
 
-    p_x = x + o_i
-    p_y = y + o_i
-    mask = o_i < T
-
-    # [D,]
-    b_x = tl.load(p_x, mask=mask, other=0.).to(tl.float32)
+    b_x = tl.load(x + o_i, mask=m_i, other=0.).to(tl.float32)
     b_m = tl.minimum(0., b_x)
     b_z = 1. + tl.exp(-tl.abs(b_x))
-    b_y = b_m - tl.log(b_z)
-    tl.store(p_y, b_y.to(p_y.dtype.element_ty), mask=mask)
+    b_y = (b_m - tl.log(b_z)) / temperature
+    tl.store(y + o_i, b_y.to(y.dtype.element_ty), mask=m_i)
 
 
 @triton.autotune(
     configs=[
-        triton.Config({'BT': 16}, num_warps=2),
-        triton.Config({'BT': 16}, num_warps=4),
-        triton.Config({'BT': 16}, num_warps=8),
-        triton.Config({'BT': 32}, num_warps=2),
-        triton.Config({'BT': 32}, num_warps=4),
-        triton.Config({'BT': 32}, num_warps=8),
-        triton.Config({'BT': 64}, num_warps=2),
-        triton.Config({'BT': 64}, num_warps=4),
-        triton.Config({'BT': 64}, num_warps=8),
-        triton.Config({'BT': 128}, num_warps=2),
-        triton.Config({'BT': 128}, num_warps=4),
-        triton.Config({'BT': 128}, num_warps=8),
-        triton.Config({'BT': 256}, num_warps=2),
-        triton.Config({'BT': 256}, num_warps=4),
-        triton.Config({'BT': 256}, num_warps=8)
+        triton.Config({}, num_warps=1),
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=16),
+        triton.Config({}, num_warps=32)
     ],
     key=['D']
 )
@@ -109,47 +89,71 @@ def logsigmoid_bwd_kernel(
     x,
     dx,
     dy,
+    temperature,
     T: tl.constexpr,
     D: tl.constexpr,
-    BT: tl.constexpr
+    B: tl.constexpr
 ):
     i = tl.program_id(0)
-    o_i = i * BT + tl.arange(0, BT)
+    o_i = i * B + tl.arange(0, B)
+    m_i = o_i < T
 
-    p_x = x + o_i
-    p_dx = dx + o_i
-    p_dy = dy + o_i
-    mask = o_i < T
+    b_x = tl.load(x + o_i, mask=m_i, other=0.).to(tl.float32)
+    b_dy = tl.load(dy + o_i, mask=m_i, other=0.).to(tl.float32)
+    b_dx = b_dy * (1. - tl.sigmoid(b_x)) / temperature
+    tl.store(dx + o_i, b_dx.to(dx.dtype.element_ty), mask=m_i)
 
-    # [D,]
-    b_x = tl.load(p_x, mask=mask, other=0.).to(tl.float32)
-    b_dy = tl.load(p_dy, mask=mask, other=0.).to(tl.float32)
-    b_dx = b_dy * (1. - tl.sigmoid(b_x))
-    tl.store(p_dx, b_dx.to(p_dx.dtype.element_ty), mask=mask)
+
+def logsigmoid_fwd(x: torch.Tensor, temperature: float = 1.) -> torch.Tensor:
+    T, D = x.numel(), x.shape[-1]
+    B = triton.next_power_of_2(triton.cdiv(T, torch.cuda.get_device_properties(x.device).multi_processor_count))
+    y = torch.empty_like(x)
+    logsigmoid_fwd_kernel[(triton.cdiv(T, B),)](
+        x=x,
+        y=y,
+        temperature=temperature,
+        T=T,
+        D=D,
+        B=B
+    )
+    return y
+
+
+def logsigmoid_bwd(x: torch.Tensor, dy: torch.Tensor, temperature: float = 1.) -> torch.Tensor:
+    T, D = x.numel(), x.shape[-1]
+    B = triton.next_power_of_2(triton.cdiv(T, torch.cuda.get_device_properties(x.device).multi_processor_count))
+    dx = torch.empty_like(x)
+    logsigmoid_bwd_kernel[(triton.cdiv(T, B),)](
+        x=x,
+        dx=dx,
+        dy=dy,
+        temperature=temperature,
+        T=T,
+        D=D,
+        B=B
+    )
+    return dx
 
 
 class LogSigmoidFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    def forward(ctx, x):
-        T, D = x.numel(), x.shape[-1]
-        y = torch.empty_like(x)
-        logsigmoid_fwd_kernel[lambda meta: (triton.cdiv(meta['T'], meta['D']),)](x, y, T=T, D=D)
+    def forward(ctx, x, temperature):
         ctx.save_for_backward(x,)
-        return y
+        ctx.temperature = temperature
+        return logsigmoid_fwd(x, temperature)
 
     @staticmethod
     @contiguous
     def backward(ctx, dy):
         x, = ctx.saved_tensors
-        T, D = x.numel(), x.shape[-1]
-        dx = torch.empty_like(x)
-        logsigmoid_bwd_kernel[lambda meta: (triton.cdiv(meta['T'], meta['D']),)](x, dx, dy, T=T, D=D)
-        return dx
+        return logsigmoid_bwd(x, dy, ctx.temperature), None
 
 
-logsigmoid = LogSigmoidFunction.apply
+def logsigmoid(x: torch.Tensor, temperature: float = 1.) -> torch.Tensor:
+    return LogSigmoidFunction.apply(x, temperature)
+
 
 swish_fwd_codestring = """
 template <typename T> T swish_fwd(T x) {
@@ -380,9 +384,43 @@ class SwiGLULinearFunction(torch.autograd.Function):
         return dx, dy, dlinear_weight, dlinear_bias
 
 
+class SwiGLUBitLinearFunction(torch.autograd.Function):
+    r"""
+    Swish-Gated Linear Unit (SwiGLU) function followed by a linear transformation.
+
+    .. math::
+        \text{SwiGLULinear}(x, y, W, b) = (swish(x) * y) W + b
+
+    This simple wrap discards the intermediate results of SwiGLU(x, y) to save memory.
+    """
+
+    @staticmethod
+    @autocast_custom_fwd
+    def forward(ctx, x, y, weight, bias):
+        z = swiglu_fwd(x, y)
+        out = fused_bitlinear.bit_linear(z, weight, bias)
+        # We don't store z, will be recomputed in the backward pass to save memory
+        ctx.save_for_backward(x, y, weight)
+        ctx.linear_bias_is_none = bias is None
+        return out
+
+    @staticmethod
+    @autocast_custom_bwd
+    def backward(ctx, dout, *args):
+        x, y, weight = ctx.saved_tensors
+        dout = dout.reshape(-1, dout.shape[-1])
+        dz = fused_bitlinear.bit_linear(dout, weight.t()).view_as(x)
+        dx, dy, z = swiglu_bwd_with_output(x, y, dz)
+        dlinear_weight = torch.einsum("bo,bi->oi", dout, z.reshape(-1, z.shape[-1]))
+        dlinear_bias = None if ctx.linear_bias_is_none else dout.sum(0)
+        return dx, dy, dlinear_weight, dlinear_bias
+
+
 swiglu = SwiGLUFunction.apply
 
 swiglu_linear = SwiGLULinearFunction.apply
+
+swiglu_bitlinear = SwiGLUBitLinearFunction.apply
 
 ACT2FN = {
     'relu': F.relu,

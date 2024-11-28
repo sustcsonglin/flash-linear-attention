@@ -61,17 +61,16 @@ class BasedLinearAttention(nn.Module):
     def forward(self, hidden_states: torch.Tensor, **kwargs):
         mode = self.mode
         q, k, v = self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
-        q, k, v = map(lambda x: rearrange(x, "b l (h d) -> b h l d", h=self.num_heads), [q, k, v])
+        q, k, v = map(lambda x: rearrange(x, "... (h d) -> ... h d", h=self.num_heads), [q, k, v])
         if mode == "fused_chunk":
             q, k = self.feature_map(q), self.feature_map(k)
-            o = fused_chunk_linear_attn(q, k, v, normalize=True, scale=1)
+            o = fused_chunk_linear_attn(q, k, v, normalize=True, scale=1, head_first=False)
         elif mode == 'chunk':
             q, k = self.feature_map(q), self.feature_map(k)
-            o = chunk_linear_attn(q, k, v, normalize=True, scale=1)
+            o = chunk_linear_attn(q, k, v, normalize=True, scale=1, head_first=False)
         elif mode == 'parallel':
             assert q.shape[-1] <= 128
-            o = parallel_based(q, k, v, True, True)
-        o = rearrange(o, "b h l d -> b l (h d)")
+            o = parallel_based(q, k, v, True, True, head_first=False)
         o = self.o_proj(o)
         o = self.dropout(o)
         return o
@@ -80,16 +79,16 @@ class BasedLinearAttention(nn.Module):
 
     def forward_reference(self, hidden_states: torch.Tensor, filters: torch.Tensor = None, *args, **kwargs):
         """
-        x (torch.Tensor): tensor of shape (b, d, l)
-        y (torch.Tensor): tensor of shape (b, d, l)
+        x (torch.Tensor): tensor of shape (b, d, t)
+        y (torch.Tensor): tensor of shape (b, d, t)
         """
         # hidden_states = hidden_states.transpose(1, 2)
-        b, l, _ = hidden_states.size()
+        b, t, _ = hidden_states.size()
         q, k, v = self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
 
-        q = q.view(b, l, self.num_heads, self.feature_dim).transpose(1, 2)
-        k = k.view(b, l, self.num_key_value_heads, self.feature_dim).transpose(1, 2)
-        v = v.view(b, l, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        q = q.view(b, t, self.num_heads, self.feature_dim).transpose(1, 2)
+        k = k.view(b, t, self.num_key_value_heads, self.feature_dim).transpose(1, 2)
+        v = v.view(b, t, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         # Linear attention
         q, k = self.feature_map(q), self.feature_map(k)
@@ -100,7 +99,7 @@ class BasedLinearAttention(nn.Module):
             y = ((q * (k * v).cumsum(2)).sum(-1) / ((q * k.cumsum(2)).sum(-1) + self.eps))
         else:
             y = ((q * (k * v).sum(2, True)).sum(-1) / ((q * k.sum(2, True)).sum(-1) + self.eps))
-        y = rearrange(y, 'b h l d -> b l (h d)')
+        y = rearrange(y, 'b h t d -> b t (h d)')
         y = self.o_proj(y.to(hidden_states.dtype))
         y = self.dropout(y)
         return y.to(hidden_states.dtype)

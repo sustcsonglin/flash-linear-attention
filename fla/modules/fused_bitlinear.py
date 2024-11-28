@@ -500,6 +500,56 @@ def layer_norm_linear_quant_fn(
     )
 
 
+def rms_norm_linear_quant(
+    x: torch.Tensor,
+    norm_weight: torch.Tensor,
+    norm_bias: torch.Tensor,
+    linear_weight: torch.Tensor,
+    linear_bias: torch.Tensor,
+    residual: torch.Tensor = None,
+    eps: float = 1e-5,
+    prenorm: bool = False,
+    residual_in_fp32: bool = False
+):
+    return layer_norm_linear_quant_fn(
+        x=x,
+        norm_weight=norm_weight,
+        norm_bias=norm_bias,
+        linear_weight=linear_weight,
+        linear_bias=linear_bias,
+        residual=residual,
+        eps=eps,
+        prenorm=prenorm,
+        residual_in_fp32=residual_in_fp32,
+        is_rms_norm=True
+    )
+
+
+def bit_linear(x, weight, bias=None, norm_weight=None, norm_bias=None, eps=1e-8):
+    """
+    A functional version of BitLinear that applies quantization to activations and weights.
+
+    Args:
+        x: Input tensor with shape [n, d].
+        weight: Weight tensor with shape [out_features, in_features].
+        bias: Bias tensor with shape [out_features] (optional).
+        norm_weight: Weight tensor for RMS normalization with shape [in_features].
+        norm_bias: Bias tensor for RMS normalization with shape [in_features].
+        eps: A small constant for numerical stability in normalization.
+
+    Returns:
+        Output tensor with shape [n, out_features].
+    """
+    return layer_norm_linear_quant_fn(
+            x,
+            norm_weight,
+            norm_bias,
+            weight,
+            bias,
+            is_rms_norm=True
+        )
+
+
 class BitLinear(nn.Linear):
     """
     A custom linear layer that applies quantization on both activations and weights.

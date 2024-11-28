@@ -16,18 +16,18 @@ from transformers.modeling_outputs import (BaseModelOutputWithPast,
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 
-from fla.layers.attn import Attention
-from fla.models.transformer.configuration_transformer import TransformerConfig
+from fla.layers.bitattn import BitAttention
+from fla.models.bitnet.configuration_bitnet import BitNetConfig
 from fla.models.utils import Cache
 from fla.modules import (FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss,
                          RMSNorm)
-from fla.modules.activations import swiglu_linear
-from fla.modules.layernorm import rms_norm_linear
+from fla.modules.activations import swiglu_bitlinear
+from fla.modules.fused_bitlinear import BitLinear, rms_norm_linear_quant
 
 logger = logging.get_logger(__name__)
 
 
-class TransformerMLP(nn.Module):
+class BitNetMLP(nn.Module):
 
     def __init__(
         self,
@@ -37,7 +37,7 @@ class TransformerMLP(nn.Module):
         hidden_act: str = 'swish',
         norm_first: bool = True,
         norm_eps: float = 1e-5
-    ) -> TransformerMLP:
+    ) -> BitNetMLP:
         super().__init__()
 
         self.hidden_size = hidden_size
@@ -55,29 +55,29 @@ class TransformerMLP(nn.Module):
         if norm_first:
             self.norm = RMSNorm(hidden_size=hidden_size, eps=norm_eps)
 
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.gate_proj = BitLinear(self.hidden_size, self.intermediate_size * 2, bias=False)
+        self.down_proj = BitLinear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
     def forward(self, x):
         if self.norm_first:
-            x = rms_norm_linear(x, self.norm.weight, self.norm.bias, self.gate_proj.weight, self.gate_proj.bias)
+            x = rms_norm_linear_quant(x, self.norm.weight, self.norm.bias, self.gate_proj.weight, self.gate_proj.bias)
         else:
             x = self.gate_proj(x)
         gate, y = x.chunk(2, -1)
-        return swiglu_linear(gate, y, self.down_proj.weight, self.down_proj.bias)
+        return swiglu_bitlinear(gate, y, self.down_proj.weight, self.down_proj.bias)
 
 
-class TransformerBlock(nn.Module):
+class BitNetBlock(nn.Module):
 
-    def __init__(self, config: TransformerConfig, layer_idx: int):
+    def __init__(self, config: BitNetConfig, layer_idx: int):
         super().__init__()
 
         self.hidden_size = config.hidden_size
 
         if not config.norm_first:
             self.attn_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
-        self.attn = Attention(
+        self.attn = BitAttention(
             hidden_size=config.hidden_size,
             num_heads=config.num_heads,
             num_kv_heads=config.num_kv_heads,
@@ -90,7 +90,7 @@ class TransformerBlock(nn.Module):
         )
         if not config.norm_first:
             self.mlp_norm = RMSNorm(hidden_size=config.hidden_size, eps=config.norm_eps)
-        self.mlp = TransformerMLP(
+        self.mlp = BitNetMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
             intermediate_size=config.intermediate_size,
@@ -138,11 +138,11 @@ class TransformerBlock(nn.Module):
         return outputs
 
 
-class TransformerPreTrainedModel(PreTrainedModel):
+class BitNetPreTrainedModel(PreTrainedModel):
 
-    config_class = TransformerConfig
+    config_class = BitNetConfig
     supports_gradient_checkpointing = True
-    _no_split_modules = ['TransformerBlock']
+    _no_split_modules = ['BitNetBlock']
 
     def __init__(self, *inputs, **kwargs):
         super().__init__(*inputs, **kwargs)
@@ -153,7 +153,7 @@ class TransformerPreTrainedModel(PreTrainedModel):
         rescale_prenorm_residual: bool = False,
         num_residuals_per_layer: int = 2,
     ):
-        if isinstance(module, (nn.Linear, nn.Conv1d)):
+        if isinstance(module, (BitLinear, nn.Conv1d)):
             # Slightly different from the TF version which uses truncated_normal for initialization
             # cf https://github.com/pytorch/pytorch/pull/5617
             nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
@@ -181,15 +181,15 @@ class TransformerPreTrainedModel(PreTrainedModel):
                         p /= math.sqrt(num_residuals_per_layer * self.config.num_hidden_layers)
 
 
-class TransformerModel(TransformerPreTrainedModel):
+class BitNetModel(BitNetPreTrainedModel):
 
-    def __init__(self, config: TransformerConfig):
+    def __init__(self, config: BitNetConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.layers = nn.ModuleList([TransformerBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([BitNetBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.norm_eps)
 
         self.gradient_checkpointing = False
@@ -215,7 +215,7 @@ class TransformerModel(TransformerPreTrainedModel):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         if output_attentions:
             warnings.warn(
-                "`TransformerModel` does not support output attention weights now, so `output_attentions` is set to `False`."
+                "`BitNetModel` does not support output attention weights now, so `output_attentions` is set to `False`."
             )
             output_attentions = False
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -296,15 +296,15 @@ class TransformerModel(TransformerPreTrainedModel):
         )
 
 
-class TransformerForCausalLM(TransformerPreTrainedModel, GenerationMixin):
+class BitNetForCausalLM(BitNetPreTrainedModel, GenerationMixin):
 
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = TransformerModel(config)
+        self.model = BitNetModel(config)
         self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.lm_head = BitLinear(config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()

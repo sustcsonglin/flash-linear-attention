@@ -1,76 +1,109 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023-2024, Songlin Yang, Yu Zhang
 
+from typing import Optional
+
+import torch
 import triton
 import triton.language as tl
 
 
 @triton.autotune(
     configs=[
+        triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=16),
+        triton.Config({}, num_warps=32)
     ],
-    key=['S']
+    key=['D']
 )
 @triton.jit
 def softmax_fwd_kernel(
-    s,
+    x,
     p,
-    s_s_h,
-    s_s_t,
-    s_s_d,
-    T: tl.constexpr,
-    S: tl.constexpr,
-    BT: tl.constexpr
+    D: tl.constexpr,
+    B: tl.constexpr
 ):
-    i_t, i_bh = tl.program_id(0), tl.program_id(1)
+    i_n = tl.program_id(0)
+    o_d = tl.arange(0, B)
+    m_d = o_d < D
 
-    p_s = tl.make_block_ptr(s + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, 0), (BT, S), (1, 0))
-    p_p = tl.make_block_ptr(p + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, 0), (BT, S), (1, 0))
+    b_x = tl.load(x + i_n * D + o_d, mask=m_d, other=-float('inf'))
+    b_m = tl.max(b_x, 0)
+    b_x = tl.exp(b_x - b_m)
+    b_p = b_x / tl.sum(b_x, 0)
 
-    # [BT, S]
-    b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
-    # [BT]
-    b_m = tl.max(b_s, 1)
-
-    # [BT, BS]
-    b_s = tl.exp(b_s - b_m[:, None])
-    b_z = tl.sum(b_s, 1)
-    b_p = tl.where(b_s != 0, b_s / b_z[:, None], 0.)
-    tl.store(p_p, b_p.to(p_p.dtype.element_ty), boundary_check=(0, 1))
+    tl.store(p + i_n * D + o_d, b_p.to(p.dtype.element_ty), mask=m_d)
 
 
 @triton.autotune(
     configs=[
+        triton.Config({}, num_warps=1),
         triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=16),
+        triton.Config({}, num_warps=32)
     ],
-    key=['S']
+    key=['D']
 )
 @triton.jit
 def softmax_bwd_kernel(
     p,
     dp,
     ds,
-    s_s_h,
-    s_s_t,
-    s_s_d,
-    T: tl.constexpr,
-    S: tl.constexpr,
-    BT: tl.constexpr
+    D: tl.constexpr,
+    B: tl.constexpr
 ):
-    i_t, i_bh = tl.program_id(0), tl.program_id(1)
+    i_n = tl.program_id(0)
+    o_d = tl.arange(0, B)
+    m_d = o_d < D
 
-    p_p = tl.make_block_ptr(p + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, 0), (BT, S), (1, 0))
-    p_dp = tl.make_block_ptr(dp + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, 0), (BT, S), (1, 0))
-    p_ds = tl.make_block_ptr(ds + i_bh * s_s_h, (T, S), (s_s_t, s_s_d), (i_t * BT, 0), (BT, S), (1, 0))
-    # [BT, BS]
-    b_p = tl.load(p_p, boundary_check=(0, 1)).to(tl.float32)
-    b_dp = tl.load(p_dp, boundary_check=(0, 1)).to(tl.float32)
-    # [BT,]
-    b_pp = tl.sum(b_p * b_dp, 1)
-    # [BT, BS]
-    b_ds = b_p * b_dp - b_p * b_pp[:, None]
-    tl.store(p_ds, b_ds.to(p_ds.dtype.element_ty), boundary_check=(0, 1))
+    b_p = tl.load(p + i_n * D + o_d, mask=m_d, other=0.)
+    b_dp = tl.load(dp + i_n * D + o_d, mask=m_d, other=0.)
+    b_pp = tl.sum(b_p * b_dp, 0)
+    b_ds = b_p * b_dp - b_p * b_pp
+    tl.store(ds + i_n * D + o_d, b_ds.to(ds.dtype.element_ty), mask=m_d)
+
+
+def softmax_fwd(
+    x: torch.Tensor,
+    dtype: Optional[torch.dtype] = torch.float
+) -> torch.Tensor:
+    shape = x.shape
+    x = x.view(-1, x.shape[-1])
+
+    N, D = x.shape
+    B = triton.next_power_of_2(D)
+
+    p = torch.empty_like(x, dtype=dtype)
+    softmax_fwd_kernel[(N,)](
+        x=x,
+        p=p,
+        D=D,
+        B=B
+    )
+    return p.view(*shape)
+
+
+def softmax_bwd(
+    p: torch.Tensor,
+    dp: torch.Tensor,
+    dtype: Optional[torch.dtype] = torch.float
+) -> torch.Tensor:
+    shape = p.shape
+    p = p.view(-1, p.shape[-1])
+    ds = torch.empty_like(p, dtype=dtype)
+
+    N, D = p.shape
+    B = triton.next_power_of_2(D)
+    softmax_bwd_kernel[(N,)](
+        p=p,
+        dp=dp,
+        ds=ds,
+        D=D,
+        B=B
+    )
+    return ds.view(*shape)

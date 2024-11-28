@@ -7,10 +7,9 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.common.chunk_h import chunk_fwd_h_fn
-from fla.ops.gla.chunk import chunk_gla_bwd_dA_fn, chunk_gla_bwd_dv_fn
+from fla.ops.common.chunk_h import chunk_fwd_h
+from fla.ops.gla.chunk import chunk_gla_bwd_dA, chunk_gla_bwd_dv
 from fla.utils import contiguous
-
 
 
 @triton.autotune(
@@ -54,20 +53,19 @@ def chunk_rwkv6_fwd_cumsum_kernel(
     tl.store(p_o_minus_s, (b_o - b_s).to(p_o_minus_s.dtype.element_ty), boundary_check=(0, 1))
 
 
-def chunk_rwkv6_fwd_cumsum_fn(g, BT):
+def chunk_rwkv6_fwd_cumsum(g, BT):
     B, H, T, K = g.shape
     NT = triton.cdiv(T, BT)
-    grid = (NT, H*B)
     g, gi, ge = g, torch.empty_like(g, dtype=torch.float), torch.empty_like(g, dtype=torch.float)
     def grid(meta): return ((triton.cdiv(meta['S'], meta['BS']), NT, B * H))
     chunk_rwkv6_fwd_cumsum_kernel[grid](
         g, gi, ge,
         g.stride(1), g.stride(2), g.stride(3),
-        T=T, S=K, BT=BT
+        T=T,
+        S=K,
+        BT=BT
     )
     return gi, ge
-
-    
 
 
 @triton.autotune(
@@ -85,7 +83,7 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_inter(
     k,
     gi,  # cumulative decay inclusive
     ge,  # cumulative decay exclusive
-    A, 
+    A,
     s_k_h,
     s_k_t,
     s_k_d,
@@ -112,7 +110,8 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_inter(
         # k block inclusive
         p_gk = tl.make_block_ptr(gi + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
         # the last position of the k block inclusive
-        p_gn = tl.make_block_ptr(gi + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC +  BC - 1) * K + i_k * BK,), (BK,), (0,))
+        p_gn = tl.make_block_ptr(gi + i_bh * s_k_h, (T * K,), (s_k_d,),
+                                 ((i_t * BT + i_j * BC + BC - 1) * K + i_k * BK,), (BK,), (0,))
         # [BK,]
         b_gn = tl.load(p_gn, boundary_check=(0,))
         # [BC, BK]
@@ -161,7 +160,7 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_intra(
     i_t, i_i, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     if i_t * BT + i_i * BC >= T:
         return
-    
+
     i_j = i_i
     i_h = i_bh % H
     o_i = tl.arange(0, BC)
@@ -183,15 +182,13 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_intra(
         b_gk = tl.load(p_gk, boundary_check=(0,)).to(tl.float32)
         b_A += tl.sum(b_q * b_k[None, :] * tl.exp(b_g - b_gk[None, :]), 1)
         b_A = tl.where(o_i > j, b_A * scale, 0.)
-        p_qj = tl.make_block_ptr(k + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
-        b_qj = tl.load(p_qj, boundary_check=(0,))        
-        p_qi = tl.make_block_ptr(q + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
+        p_qi = tl.make_block_ptr(q + i_bh * s_k_h, (T * K,), (s_k_d,),
+                                 ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
         b_qi = tl.load(p_qi, boundary_check=(0,))
-        A_jj = tl.sum(b_qi * b_k * b_u * scale) 
+        A_jj = tl.sum(b_qi * b_k * b_u * scale)
         b_A = tl.where(o_i != j, b_A, A_jj)
         tl.store(A + o_A + j, b_A, mask=m_A)
-    
-    
+
 
 @triton.autotune(
     configs=[
@@ -248,11 +245,10 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_intra_split(
         b_gk = tl.load(p_gk, boundary_check=(0,)).to(tl.float32)
         b_A += tl.sum(b_q * b_k[None, :] * tl.exp(b_g - b_gk[None, :]), 1)
         b_A = tl.where(o_i > j, b_A * scale, 0.)
-        p_qj = tl.make_block_ptr(k + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
-        b_qj = tl.load(p_qj, boundary_check=(0,))        
-        p_qi = tl.make_block_ptr(q + i_bh * s_k_h, (T * K,), (s_k_d,), ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
+        p_qi = tl.make_block_ptr(q + i_bh * s_k_h, (T * K,), (s_k_d,),
+                                 ((i_t * BT + i_j * BC + j) * K + i_k * BK,), (BK,), (0,))
         b_qi = tl.load(p_qi, boundary_check=(0,))
-        A_jj = tl.sum(b_qi * b_k * b_u * scale) 
+        A_jj = tl.sum(b_qi * b_k * b_u * scale)
         b_A = tl.where(o_i != j, b_A, A_jj)
         tl.store(A + o_A + j, b_A, mask=m_A)
 
@@ -376,7 +372,7 @@ def chunk_rwkv6_bwd_kernel_intra(
     s_k_h,
     s_k_t,
     s_k_d,
-    scale, 
+    scale,
     T: tl.constexpr,
     K: tl.constexpr,
     BT: tl.constexpr,
@@ -385,7 +381,6 @@ def chunk_rwkv6_bwd_kernel_intra(
     NC: tl.constexpr
 ):
     i_k, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    n_bh = tl.num_programs(2)
     i_t, i_i = i_c // NC, i_c % NC
     if i_t * BT + i_i * BC >= T:
         return
@@ -401,19 +396,21 @@ def chunk_rwkv6_bwd_kernel_intra(
     b_dk = tl.zeros([BC, BK], dtype=tl.float32)
     o_i = tl.arange(0, BC)
     m_dA = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
-    
+
     p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_k = tl.load(p_k, boundary_check=(0, 1))
-    
+
     b_dq = tl.zeros([BC, BK], dtype=tl.float32)
 
     if i_i > 0:
         b_gn = tl.load(gi + i_bh * T * K + (o_q - 1) * K + o_k, mask=(m_k & (i_i > 0) & (o_q <= T)), other=0)
         for i_j in range(0, i_i):
-            p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-            p_gk = tl.make_block_ptr(gi + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+            p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d),
+                                    (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+            p_gk = tl.make_block_ptr(gi + i_bh * s_k_h, (T, K), (s_k_t, s_k_d),
+                                     (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
             p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
             # [BC, BK]
             b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -448,14 +445,17 @@ def chunk_rwkv6_bwd_kernel_intra(
     # [BC, BK]
     b_gk = tl.load(p_gk, boundary_check=(0, 1))
 
-    max_block_idx = min(NC, tl.cdiv(T-i_t*BT,BC))
+    max_block_idx = min(NC, tl.cdiv(T-i_t*BT, BC))
     if i_i < max_block_idx - 1:
-        p_gn = tl.make_block_ptr(gi + i_bh * s_k_h, (T*K,), (s_k_d,), ((i_t * BT + i_i * BC + BC - 1) * K + i_k * BK,), (BK,), (0,))
+        p_gn = tl.make_block_ptr(gi + i_bh * s_k_h, (T*K,), (s_k_d,),
+                                 ((i_t * BT + i_i * BC + BC - 1) * K + i_k * BK,), (BK,), (0,))
         # [BK,]
         b_gn = tl.load(p_gn, boundary_check=(0,))
         for i_j in range(i_i + 1, NC):
-            p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-            p_ge = tl.make_block_ptr(ge + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+            p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d),
+                                    (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+            p_ge = tl.make_block_ptr(ge + i_bh * s_k_h, (T, K), (s_k_t, s_k_d),
+                                     (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
             p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (T, BT), (BT, 1), (i_t * BT + i_j * BC, i_i * BC), (BC, BC), (1, 0))
             # [BC, BK]
             b_q = tl.load(p_q, boundary_check=(0, 1))
@@ -480,8 +480,6 @@ def chunk_rwkv6_bwd_kernel_intra(
         b_dk += tl.where(m_i, b_dA[:, None] * b_qj[None, :] * tl.exp(b_gqj[None, :] - b_gk), 0.)
     p_dk = tl.make_block_ptr(dk + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
-
-
 
 
 @triton.autotune(
@@ -580,7 +578,7 @@ def chunk_rwkv6_bwd_kernel_inter(
 
     o_i = tl.arange(0, BT)
     p_dA_dig = dA + i_bh * T * BT + (i_t * BT + o_i) * BT + o_i
-    b_dA_dig = tl.load(p_dA_dig, mask= (i_t * BT + o_i)<T, other=0)
+    b_dA_dig = tl.load(p_dA_dig, mask=(i_t * BT + o_i) < T, other=0)
     p_u = tl.make_block_ptr(u + i_h * K, (K,), (1,), (i_k * BK,), (BK,), (0,))
     b_u = tl.load(p_u, boundary_check=(0,))
     # scale is already applied to b_dA_diag
@@ -602,9 +600,7 @@ def chunk_rwkv6_bwd_kernel_inter(
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0, 1))
 
 
-
-
-def chunk_rwkv6_fwd_intra_A_gated_fn(q, k, gi, ge, u, scale, BT):
+def chunk_rwkv6_fwd_intra_A_gated(q, k, gi, ge, u, scale, BT):
     BC = 16
     B, H, T, K = q.shape
     A = q.new_empty(B, H, T, BT, dtype=torch.float32)
@@ -619,7 +615,7 @@ def chunk_rwkv6_fwd_intra_A_gated_fn(q, k, gi, ge, u, scale, BT):
         T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC
     )
     grid = (NT, NC, B * H)
-    ## TODO: can we merge the two kernels?
+    # TODO: can we merge the two kernels?
     # load the entire [BC, K] blocks into SRAM at once
     if K <= 256:
         chunk_rwkv6_fwd_A_kernel_intra_sub_intra[grid](
@@ -632,7 +628,7 @@ def chunk_rwkv6_fwd_intra_A_gated_fn(q, k, gi, ge, u, scale, BT):
     else:
         BK = 128
         NK = triton.cdiv(K, BK)
-        A_intra = q.new_empty(NK, B, H, BT, BC, dtype=torch.float32)
+        A_intra = q.new_empty(NK, B, H, T, BC, dtype=torch.float32)
         grid = (NK, NT * NC, B * H)
         chunk_rwkv6_fwd_A_kernel_intra_sub_intra_split[grid](
             q, k, gi, ge, u, A_intra,
@@ -648,7 +644,7 @@ def chunk_rwkv6_fwd_intra_A_gated_fn(q, k, gi, ge, u, scale, BT):
     return A
 
 
-def chunk_rwkv6_fwd_o_gated_gk_fn(q, v, g_cumsum, A, h, BT, scale):
+def chunk_rwkv6_fwd_o_gated_gk(q, v, g_cumsum, A, h, BT, scale):
     B, H, T, K, V = *q.shape, v.shape[-1]
     BV = min(32, triton.next_power_of_2(V))
     BK = min(32, triton.next_power_of_2(K))
@@ -667,7 +663,7 @@ def chunk_rwkv6_fwd_o_gated_gk_fn(q, v, g_cumsum, A, h, BT, scale):
     return o
 
 
-def chunk_rwkv6_bwd_dqk_intra_fn(q, k, g_cumsum_inclusive, g_cumsum_exclusive, dA, BT, scale):
+def chunk_rwkv6_bwd_dqk_intra(q, k, g_cumsum_inclusive, g_cumsum_exclusive, dA, BT, scale):
     B, H, T, K = q.shape
     BC = 16
     BK = min(64, triton.next_power_of_2(K))
@@ -679,13 +675,13 @@ def chunk_rwkv6_bwd_dqk_intra_fn(q, k, g_cumsum_inclusive, g_cumsum_exclusive, d
     grid = (NK, NT * NC, B * H)
     chunk_rwkv6_bwd_kernel_intra[grid](
         q, k, g_cumsum_inclusive, g_cumsum_exclusive, dA, dq, dk,
-        k.stride(1), k.stride(2), k.stride(3), scale, 
+        k.stride(1), k.stride(2), k.stride(3), scale,
         T=T, K=K, BT=BT, BC=BC, BK=BK, NC=NC
     )
     return dq, dk
 
 
-def chunk_rwkv6_bwd_dqkgu_fn(q, k, v, h, g_cumsum_inclusive, g_cumsum_exclusive, u, do, dh, dA, dq, dk, BT, scale):
+def chunk_rwkv6_bwd_dqkgu(q, k, v, h, g_cumsum_inclusive, g_cumsum_exclusive, u, do, dh, dA, dq, dk, BT, scale):
     B, H, T, K, V = *q.shape, v.shape[-1]
     dg = torch.empty_like(g_cumsum_inclusive)
     BK = 64
@@ -706,7 +702,6 @@ def chunk_rwkv6_bwd_dqkgu_fn(q, k, v, h, g_cumsum_inclusive, g_cumsum_exclusive,
     )
     du = du.sum([0, 1])
     return dq2, dk2, dg, du
-
 
 
 @triton.autotune(
@@ -781,7 +776,7 @@ def chunk_rwkv6_bwd_kernel_dh(
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
 
-def chunk_rwkv6_bwd_dh_fn(q, k, v, g_cumsum_inclusive, g_cumsum_exclusive, do, h0, dht, BT, scale, states_in_fp32=False):
+def chunk_rwkv6_bwd_dh(q, k, v, g_cumsum_inclusive, g_cumsum_exclusive, do, h0, dht, BT, scale, states_in_fp32=False):
     HQ = q.shape[1]
     B, H, T, K, V = *k.shape, v.shape[-1]
     BT = 64
@@ -807,24 +802,25 @@ def chunk_rwkv6_bwd_dh_fn(q, k, v, g_cumsum_inclusive, g_cumsum_exclusive, do, h
 
 
 class ChunkRWKV6Function(torch.autograd.Function):
+
     @staticmethod
     @contiguous
     def forward(ctx, q, k, v, g, u, scale, initial_state, output_final_state):
         BT = 64
-        g_cumsum_inclusive, g_cumsum_exclusive = chunk_rwkv6_fwd_cumsum_fn(g, BT=BT) # gi, ge for short
-        h, ht = chunk_fwd_h_fn(
+        g_cumsum_inclusive, g_cumsum_exclusive = chunk_rwkv6_fwd_cumsum(g, BT=BT)  # gi, ge for short
+        h, ht = chunk_fwd_h(
             k=k,
             v=v,
             g=None,
             gk=g_cumsum_inclusive,
             gv=None,
-            BT=BT,
             h0=initial_state,
             output_final_state=output_final_state,
-            states_in_fp32=False
+            states_in_fp32=False,
+            chunk_size=BT
         )
-        A = chunk_rwkv6_fwd_intra_A_gated_fn(q, k, g_cumsum_inclusive, g_cumsum_exclusive, u, scale, BT)
-        o = chunk_rwkv6_fwd_o_gated_gk_fn(q, v, g_cumsum_exclusive, A, h, BT, scale)
+        A = chunk_rwkv6_fwd_intra_A_gated(q, k, g_cumsum_inclusive, g_cumsum_exclusive, u, scale, BT)
+        o = chunk_rwkv6_fwd_o_gated_gk(q, v, g_cumsum_exclusive, A, h, BT, scale)
         ctx.save_for_backward(q, k, v, g, initial_state, A, u)
         ctx.BT = BT
         ctx.scale = scale
@@ -835,19 +831,19 @@ class ChunkRWKV6Function(torch.autograd.Function):
     def backward(ctx, do, dht):
         q, k, v, g, initial_state, A, u = ctx.saved_tensors
         BT, scale = ctx.BT, ctx.scale
-        g_cumsum_inclusive, g_cumsum_exclusive = chunk_rwkv6_fwd_cumsum_fn(g, BT=BT) # gi, ge for short
-        h, _ = chunk_fwd_h_fn(
+        g_cumsum_inclusive, g_cumsum_exclusive = chunk_rwkv6_fwd_cumsum(g, BT=BT)  # gi, ge for short
+        h, _ = chunk_fwd_h(
             k=k,
             v=v,
             g=None,
             gk=g_cumsum_inclusive,
             gv=None,
-            BT=BT,
             h0=initial_state,
             output_final_state=False,
-            states_in_fp32=True
+            states_in_fp32=True,
+            chunk_size=BT
         )
-        dh, dh0 = chunk_rwkv6_bwd_dh_fn(
+        dh, dh0 = chunk_rwkv6_bwd_dh(
             q=q,
             k=k,
             v=v,
@@ -861,18 +857,18 @@ class ChunkRWKV6Function(torch.autograd.Function):
             states_in_fp32=True
         )
         # dq dk in fp32
-        dA = chunk_gla_bwd_dA_fn(v=v, do=do, BT=BT, scale=scale)
-        dv = chunk_gla_bwd_dv_fn(k=k, g_cumsum=g_cumsum_inclusive, A=A, do=do, dh=dh, BT=BT, scale=scale)
-        dq, dk = chunk_rwkv6_bwd_dqk_intra_fn(
-            q=q, 
+        dA = chunk_gla_bwd_dA(v=v, do=do, scale=scale, chunk_size=BT)
+        dv = chunk_gla_bwd_dv(k=k, g_cumsum=g_cumsum_inclusive, A=A, do=do, dh=dh, scale=scale, chunk_size=BT)
+        dq, dk = chunk_rwkv6_bwd_dqk_intra(
+            q=q,
             k=k,
             g_cumsum_inclusive=g_cumsum_inclusive,
             g_cumsum_exclusive=g_cumsum_exclusive,
-            dA=dA, 
+            dA=dA,
             BT=BT,
             scale=scale
         )
-        dq, dk, dg, du = chunk_rwkv6_bwd_dqkgu_fn(
+        dq, dk, dg, du = chunk_rwkv6_bwd_dqkgu(
             q=q,
             k=k,
             v=v,
@@ -899,27 +895,42 @@ def chunk_rwkv6(
     u: torch.Tensor,
     scale: Optional[int] = None,
     initial_state: torch.Tensor = None,
-    output_final_state: bool = False
+    output_final_state: bool = False,
+    head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
         q (torch.Tensor):
-            queries of shape `(B, H, T, K)`
+            queries of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         k (torch.Tensor):
-            keys of shape `(B, H, T, K)`
+            keys of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         v (torch.Tensor):
-            values of shape `(B, H, T, V)`
+            values of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
         g (torch.Tensor):
-            Forget gates of shape `(B, H, T, K)` applied to keys.
+            forget gates of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
+        u (torch.Tensor):
+            bonus representations of shape `[H]`.
         scale (Optional[int]):
             Scale factor for the rwkv6 attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[torch.Tensor]):
-            Initial state of shape `(B, H, K, V)`. Default: `None`.
+            Initial state of shape `[B, H, K, V]`. Default: `None`.
         output_final_state (Optional[bool]):
-            Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
+            Whether to output the final state of shape `[B, H, K, V]`. Default: `False`.
+        head_first (Optional[bool]):
+            Whether the inputs are in the head-first format. Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        final_state (Optional[torch.Tensor]):
+            Final state of shape `[B, H, K, V]` if `output_final_state=True` and `head_first=True` else `[B, H, M, V]`.
     """
     if scale is None:
         scale = q.shape[-1] ** -0.5
+    if not head_first:
+        q, k, v, g = map(lambda x: x.transpose(1, 2) if x is not None else None, (q, k, v, g))
     o, final_state = ChunkRWKV6Function.apply(q, k, v, g, u, scale, initial_state, output_final_state)
+    if not head_first:
+        o = o.transpose(1, 2)
     return o, final_state

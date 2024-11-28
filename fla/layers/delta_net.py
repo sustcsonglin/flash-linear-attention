@@ -166,19 +166,28 @@ class DeltaNet(nn.Module):
             last_state = past_key_values[self.layer_idx]
 
         if self.use_short_conv:
+            conv_state_q, conv_state_k, conv_state_v = None, None, None
             if last_state is not None:
                 conv_state_q, conv_state_k, conv_state_v = last_state['conv_state']
-            else:
-                conv_state_q, conv_state_k, conv_state_v = None, None, None
-            q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
-            k = self.k_conv1d(self.k_proj(hidden_states), attention_mask, conv_state_k)
-            v = self.v_conv1d(self.v_proj(hidden_states), attention_mask, conv_state_v)
+            conv_mask = attention_mask[:, -hidden_states.shape[1]:] if attention_mask is not None else None
+            q, conv_state_q = self.q_conv1d(x=self.q_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_q,
+                                            output_final_state=use_cache)
+            k, conv_state_k = self.k_conv1d(x=self.k_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_k,
+                                            output_final_state=use_cache)
+            v, conv_state_v = self.v_conv1d(x=self.v_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_v,
+                                            output_final_state=use_cache)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
             v = self.silu(self.v_proj(hidden_states))
 
-        q, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (q, k, v))
+        q, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b t h d', h=self.num_heads), (q, k, v))
         if self.qk_activation != 'silu':
             if self.qk_activation == 'relu':
                 q, k = q.relu(), k.relu()
@@ -198,13 +207,13 @@ class DeltaNet(nn.Module):
                 k = sum_norm(k).to(k)
 
         if self.use_beta:
-            beta = rearrange(self.b_proj(hidden_states), 'b t h -> b h t').sigmoid()
+            beta = self.b_proj(hidden_states).sigmoid()
         else:
             beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
 
         # dealing with padding
         if attention_mask is not None:
-            beta = (torch.mul if self.training else torch.mul_)(beta, attention_mask[:, None, -beta.shape[-1]:])
+            beta = beta.mul(attention_mask[:, -beta.shape[-2]:, None])
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_delta_rule(
@@ -213,7 +222,8 @@ class DeltaNet(nn.Module):
                 v=v,
                 beta=beta,
                 initial_state=recurrent_state,
-                output_final_state=use_cache
+                output_final_state=use_cache,
+                head_first=False
             )
         elif mode == 'fused_chunk':
             o, recurrent_state = fused_chunk_delta_rule(
@@ -222,7 +232,8 @@ class DeltaNet(nn.Module):
                 v=v,
                 beta=beta,
                 initial_state=recurrent_state,
-                output_final_state=use_cache
+                output_final_state=use_cache,
+                head_first=False
             )
         elif mode == 'chunk':
             o, recurrent_state = chunk_delta_rule(
@@ -231,7 +242,8 @@ class DeltaNet(nn.Module):
                 v=v,
                 beta=beta,
                 initial_state=recurrent_state,
-                output_final_state=use_cache
+                output_final_state=use_cache,
+                head_first=False
             )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
@@ -244,7 +256,6 @@ class DeltaNet(nn.Module):
                 offset=q.shape[2]
             )
 
-        o = rearrange(o, 'b h t d -> b t h d')
         if self.use_gate:
             g = rearrange(self.g_proj(hidden_states), 'b t (h d) -> b t h d', h=self.num_heads)
             o = self.o_norm(o, g)

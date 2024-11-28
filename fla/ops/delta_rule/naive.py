@@ -41,14 +41,14 @@ def delta_rule_chunkwise(q, k, v, beta, chunk_size=32):
 
     assert l % chunk_size == 0
 
-    # compute (I - tri(diag(beta) KK^T))^{-1} 
+    # compute (I - tri(diag(beta) KK^T))^{-1}
     mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=q.device), diagonal=0)
     q, k, v, k_beta = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c=chunk_size), [q, k, v, k_beta])
     attn = -(k_beta @ k.transpose(-1, -2)).masked_fill(mask, 0)
     for i in range(1, chunk_size):
         attn[..., i, :i] = attn[..., i, :i] + (attn[..., i, :, None].clone() * attn[..., :, :i].clone()).sum(-2)
     attn = attn + torch.eye(chunk_size, dtype=torch.float, device=q.device)
-    
+
     u = attn @ v
     w = attn @ k_beta
     S = k.new_zeros(b, h, d_k, d_v)
@@ -67,11 +67,11 @@ def delta_rule_chunkwise(q, k, v, beta, chunk_size=32):
 
 def delta_rule_parallel(q, k, v, beta, BM=128, BN=32):
     b, h, l, d_k = q.shape
-    d_v = v.shape[-1]
+    # d_v = v.shape[-1]
     q = q * (d_k ** -0.5)
     v = v * beta[..., None]
     k_beta = k * beta[..., None]
-    # compute (I - tri(diag(beta) KK^T))^{-1} 
+    # compute (I - tri(diag(beta) KK^T))^{-1}
     q, k, v, k_beta = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c=BN), [q, k, v, k_beta])
     mask = torch.triu(torch.ones(BN, BN, dtype=torch.bool, device=q.device), diagonal=0)
     T = -(k_beta @ k.transpose(-1, -2)).masked_fill(mask, 0)
@@ -80,9 +80,9 @@ def delta_rule_parallel(q, k, v, beta, BM=128, BN=32):
     T = T + torch.eye(BN, dtype=torch.float, device=q.device)
 
     mask2 = torch.triu(torch.ones(BN, BN, dtype=torch.bool, device=q.device), diagonal=1)
-    A_local = (q @ k.transpose(-1,-2)).masked_fill(mask2, 0) @ T
+    A_local = (q @ k.transpose(-1, -2)).masked_fill(mask2, 0) @ T
     o_intra = A_local @ v
-    
+
     # apply cumprod transition matrices on k to the last position within the chunk
     k = k - ((k @ k.transpose(-1, -2)).masked_fill(mask, 0) @ T).transpose(-1, -2) @ k_beta
     # apply cumprod transition matrices on q to the first position within the chunk
@@ -107,13 +107,13 @@ def delta_rule_parallel(q, k, v, beta, BM=128, BN=32):
             o_i += A_ij @ v[:, :, j:j+BN]
         # inter block
         for j in range(i - BN, -BN, -BN):
-          k_j = k[:, :, j:j+BN]
-          A_ij = q_i @ k_j.transpose(-1, -2)
-          A[:, :, i:i+BM, j:j+BN] = A_ij
-          q_i = q_i - A_ij @ k_beta[:, :, j:j+BN]
-          o_i += A_ij @ v[:, :, j:j+BN]
+            k_j = k[:, :, j:j+BN]
+            A_ij = q_i @ k_j.transpose(-1, -2)
+            A[:, :, i:i+BM, j:j+BN] = A_ij
+            q_i = q_i - A_ij @ k_beta[:, :, j:j+BN]
+            o_i += A_ij @ v[:, :, j:j+BN]
         o[:, :, i:i+BM] = o_i
-    
+
     for i in range(0, l//BN):
         A[:, :, i*BN:i*BN+BN, i*BN:i*BN+BN] = A_local[:, :, i]
 
@@ -160,5 +160,5 @@ if __name__ == '__main__':
     assert torch.allclose(k.grad, k_grad, atol=1e-4), breakpoint()
     assert torch.allclose(v.grad, v_grad, atol=1e-4), breakpoint()
     assert torch.allclose(beta.grad, beta_grad, atol=1e-4), breakpoint()
-    
+
     print("All passed!")

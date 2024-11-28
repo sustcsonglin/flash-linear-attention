@@ -166,29 +166,38 @@ class SimpleGatedLinearAttention(nn.Module):
             last_state = past_key_values[self.layer_idx]
 
         if self.use_short_conv:
+            conv_state_q, conv_state_k, conv_state_v = None, None, None
             if last_state is not None:
                 conv_state_q, conv_state_k, conv_state_v = last_state['conv_state']
-            else:
-                conv_state_q, conv_state_k, conv_state_v = None, None, None
-            q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
-            k = self.k_conv1d(self.k_proj(hidden_states), attention_mask, conv_state_k)
-            v = self.v_conv1d(self.v_proj(hidden_states), attention_mask, conv_state_v)
+            conv_mask = attention_mask[:, -hidden_states.shape[1]:] if attention_mask is not None else None
+            q, conv_state_q = self.q_conv1d(x=self.q_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_q,
+                                            output_final_state=use_cache)
+            k, conv_state_k = self.k_conv1d(x=self.k_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_k,
+                                            output_final_state=use_cache)
+            v, conv_state_v = self.v_conv1d(x=self.v_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_v,
+                                            output_final_state=use_cache)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
-        gk = rearrange(self.gk_proj(hidden_states), 'b t h -> b h t')
+        gk = self.gk_proj(hidden_states)
 
         if self.feature_map_fn is not None:
             q, k = map(self.feature_map_fn, (q, k))
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
-        q = rearrange(q, 'b t (h d) -> b h t d', h=self.num_heads)
+        q = rearrange(q, '... (h d) -> ... h d', h=self.num_heads)
         if self.num_kv_groups > 1:
-            k, v = (repeat(x, 'b t (h d) -> b (h g) t d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v))
+            k, v = (repeat(x, '... (h d) -> ... (h g) d', h=self.num_kv_heads, g=self.num_kv_groups) for x in (k, v))
         else:
-            k, v = (rearrange(x, 'b t (h d) -> b h t d', h=self.num_kv_heads) for x in (k, v))
+            k, v = (rearrange(x, '... (h d) -> ... h d', h=self.num_kv_heads) for x in (k, v))
         gk = F.logsigmoid(gk) / self.gate_logit_normalizer
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
@@ -199,7 +208,8 @@ class SimpleGatedLinearAttention(nn.Module):
                 v=v,
                 gk=gk,
                 initial_state=recurrent_state,
-                output_final_state=use_cache
+                output_final_state=use_cache,
+                head_first=False
             )
         elif mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_simple_gla(
@@ -208,7 +218,8 @@ class SimpleGatedLinearAttention(nn.Module):
                 v=v,
                 gk=gk,
                 initial_state=recurrent_state,
-                output_final_state=use_cache
+                output_final_state=use_cache,
+                head_first=False
             )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
@@ -221,7 +232,6 @@ class SimpleGatedLinearAttention(nn.Module):
                 offset=q.shape[2]
             )
 
-        o = rearrange(o, 'b h t d -> b t h d')
         g = self.g_proj(hidden_states)
         if self.fuse_norm_and_gate:
             g = rearrange(g, 'b t (h d) -> b t h d', h=self.num_heads)

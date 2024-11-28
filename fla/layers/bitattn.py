@@ -14,6 +14,7 @@ from einops import rearrange
 from transformers.utils import logging
 
 from fla.modules import RMSNorm, RotaryEmbedding
+from fla.modules.fused_bitlinear import FusedBitLinear
 
 if TYPE_CHECKING:
     from fla.models.utils import Cache
@@ -32,7 +33,7 @@ except ImportError:
 logger = logging.get_logger(__name__)
 
 
-class Attention(nn.Module):
+class BitAttention(nn.Module):
 
     def __init__(
         self,
@@ -66,10 +67,10 @@ class Attention(nn.Module):
 
         if norm_first:
             self.norm = RMSNorm(self.hidden_size, eps=norm_eps)
-        self.q_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
-        self.k_proj = nn.Linear(self.hidden_size, self.kv_dim, bias=False)
-        self.v_proj = nn.Linear(self.hidden_size, self.kv_dim, bias=False)
-        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+        self.q_proj = FusedBitLinear(self.hidden_size, self.hidden_size, bias=False)
+        self.k_proj = FusedBitLinear(self.hidden_size, self.kv_dim, bias=False)
+        self.v_proj = FusedBitLinear(self.hidden_size, self.kv_dim, bias=False)
+        self.o_proj = FusedBitLinear(self.hidden_size, self.hidden_size, bias=False)
 
         self.rotary = RotaryEmbedding(dim=self.head_dim, base=self.rope_theta)
 

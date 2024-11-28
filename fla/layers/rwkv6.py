@@ -73,7 +73,7 @@ class RWKV6Attention(nn.Module):
         self.v_proj = DDLerpLinear(hidden_size, self.value_dim)
         self.g_proj = DDLerpLinear(hidden_size, self.value_dim)
         self.bonus = nn.Parameter(torch.zeros(num_heads, self.head_qk_dim))
-        self.bound_w = 20.0
+        self.bound_w = 100.0
 
         # TODO: fuse GroupNorm and output gate
         self.g_norm = GroupNorm(self.num_heads, self.value_dim, elementwise_affine=elementwise_affine, bias=True, eps=norm_eps)
@@ -140,21 +140,36 @@ class RWKV6Attention(nn.Module):
         # dealing with left-padding
         if attention_mask is not None:
             v = v.mul_(attention_mask[:, -v.shape[-2]:, None])
-        r, w, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b h t d', h=self.num_heads), (r, w, k, v))
+
+        r, w, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b t h d', h=self.num_heads), (r, w, k, v))
         w = -torch.exp(self.bound_w * F.softsign(w / self.bound_w))
         u = self.bonus
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_rwkv6(r, k, v, w, u,
-                                                       scale=1.,
-                                                       initial_state=recurrent_state,
-                                                       output_final_state=use_cache)
+            o, recurrent_state = fused_recurrent_rwkv6(
+                r=r,
+                k=k,
+                v=v,
+                w=w,
+                u=u,
+                scale=1.,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                head_first=False
+            )
         elif mode == 'chunk':
-            o, recurrent_state = chunk_rwkv6(r, k, v, w, u,
-                                             scale=1.,
-                                             initial_state=recurrent_state,
-                                             output_final_state=use_cache)
+            o, recurrent_state = chunk_rwkv6(
+                q=r,
+                k=k,
+                v=v,
+                g=w,
+                u=u,
+                scale=1.,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+                head_first=False
+            )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
@@ -166,7 +181,7 @@ class RWKV6Attention(nn.Module):
                 offset=r.shape[2]
             )
 
-        o = self.g_norm(rearrange(o, 'b h t d -> b t (h d)')) * self.gate_fn(g)
+        o = self.g_norm(rearrange(o, '... h d -> ... (h d)')) * self.gate_fn(g)
         o = self.o_proj(o)
 
         return o, None, past_key_values

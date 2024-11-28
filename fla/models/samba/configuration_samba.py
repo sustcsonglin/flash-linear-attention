@@ -34,7 +34,12 @@ class SambaConfig(PretrainedConfig):
         time_step_init_scheme: str = "random",
         time_step_floor: float = 1e-4,
         max_position_embeddings: int = 2048,
-        attn: Optional[Dict] = None,
+        attn: Optional[Dict] = {
+            'layers': (1, 3, 5, 7, 9, 11, 13, 15, 17),
+            'num_heads': 18,
+            'num_kv_heads': 18,
+            'window_size': 2048
+        },
         hidden_ratio: Optional[int] = 4,
         rescale_prenorm_residual: bool = False,
         use_cache: bool = True,
@@ -72,17 +77,6 @@ class SambaConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.fuse_cross_entropy = fuse_cross_entropy
         self.fuse_norm = fuse_norm
-
-        if attn is not None:
-            if not isinstance(attn, Dict):
-                raise ValueError("attn must be a dictionary")
-            if 'layers' not in attn:
-                raise ValueError("Layer indices must be provided to initialize hybrid attention layers")
-            if 'num_heads' not in attn:
-                raise ValueError("Number of heads must be provided to initialize hybrid attention layers")
-            attn['num_heads'] = attn.get('num_kv_heads', 18)
-            attn['num_kv_heads'] = attn.get('num_kv_heads', attn['num_heads'])
-            attn['window_size'] = attn.get('window_size', 2048)
 
         super().__init__(
             bos_token_id=bos_token_id,

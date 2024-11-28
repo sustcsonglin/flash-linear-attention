@@ -79,7 +79,7 @@ class GatedSlotAttention(nn.Module):
         self.norm_first = norm_first
 
         # Bound the weights to keep the gate safe
-        self.bound_f = 20.0
+        self.bound_f = 100.0
 
         self.layer_idx = layer_idx
 
@@ -154,23 +154,32 @@ class GatedSlotAttention(nn.Module):
             last_state = past_key_values[self.layer_idx]
 
         if self.use_short_conv:
+            conv_state_q, conv_state_k, conv_state_v = None, None, None
             if last_state is not None:
                 conv_state_q, conv_state_k, conv_state_v = last_state['conv_state']
-            else:
-                conv_state_q, conv_state_k, conv_state_v = None, None, None
-            q = self.q_conv1d(self.q_proj(hidden_states), attention_mask, conv_state_q)
-            k = self.k_conv1d(self.k_proj(hidden_states), attention_mask, conv_state_k)
-            v = self.v_conv1d(self.v_proj(hidden_states), attention_mask, conv_state_v)
+            conv_mask = attention_mask[:, -hidden_states.shape[1]:] if attention_mask is not None else None
+            q, conv_state_q = self.q_conv1d(x=self.q_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_q,
+                                            output_final_state=use_cache)
+            k, conv_state_k = self.k_conv1d(x=self.k_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_k,
+                                            output_final_state=use_cache)
+            v, conv_state_v = self.v_conv1d(x=self.v_proj(hidden_states),
+                                            mask=conv_mask,
+                                            cache=conv_state_v,
+                                            output_final_state=use_cache)
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
         f = self.f_proj(hidden_states)
 
-        q = rearrange(q, 'b t (h d) -> b h t d', h=self.num_heads)
-        k = rearrange(k, 'b t (h d) -> b h t d', h=self.num_kv_heads)
-        v = rearrange(v, 'b t (h d) -> b h t d', h=self.num_kv_heads)
-        f = rearrange(f, 'b t (h m) -> b h t m', h=self.num_kv_heads)
+        q = rearrange(q, 'b t (h d) -> b t h d', h=self.num_heads)
+        k = rearrange(k, 'b t (h d) -> b t h d', h=self.num_kv_heads)
+        v = rearrange(v, 'b t (h d) -> b t h d', h=self.num_kv_heads)
+        f = rearrange(f, 'b t (h m) -> b t h m', h=self.num_kv_heads)
 
         if self.feature_map is not None:
             q, k = map(lambda x: self.feature_map(x), (q, k))
@@ -183,8 +192,8 @@ class GatedSlotAttention(nn.Module):
         s = (1 - f.exp()).to(f.dtype)
         # dealing with left-padding
         if attention_mask is not None:
-            s = s.mul_(attention_mask[:, None, -s.shape[-2]:, None])
-            v = v.mul_(attention_mask[:, None, -v.shape[-2]:, None])
+            s = s.mul_(attention_mask[:, -s.shape[1]:, None, None])
+            v = v.mul_(attention_mask[:, -v.shape[1]:, None, None])
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         if mode == 'fused_recurrent':
@@ -196,7 +205,8 @@ class GatedSlotAttention(nn.Module):
                 g=f,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
-                scale=self.scale
+                scale=self.scale,
+                head_first=False
             )
         elif mode == 'chunk':
             o, recurrent_state = chunk_gsa(
@@ -207,7 +217,8 @@ class GatedSlotAttention(nn.Module):
                 g=f,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
-                scale=self.scale
+                scale=self.scale,
+                head_first=False
             )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
@@ -220,7 +231,7 @@ class GatedSlotAttention(nn.Module):
                 offset=q.shape[2]
             )
 
-        o = rearrange(o, 'b h t d -> b t (h d)')
+        o = rearrange(o, 'b t h d -> b t (h d)')
         o = rms_norm_linear(swish(o), self.g_norm.weight, self.g_norm.bias, self.o_proj.weight, self.o_proj.bias)
         return o, None, past_key_values
 

@@ -5,9 +5,9 @@ from typing import Optional
 from transformers.configuration_utils import PretrainedConfig
 
 
-class TransformerConfig(PretrainedConfig):
+class BitNetConfig(PretrainedConfig):
 
-    model_type = 'transformer'
+    model_type = 'bitnet'
     keys_to_ignore_at_inference = ['past_key_values']
 
     def __init__(

@@ -7,7 +7,7 @@ import torch
 import triton
 import triton.language as tl
 
-from fla.ops.utils import chunk_global_reversed_cumsum
+from fla.ops.utils import chunk_global_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
@@ -325,7 +325,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
 
         dw = (dq_aux * q * scale)[:, :, 1:] - (dk_aux * k)[:, :, 0:-1]
         dw = torch.nn.functional.pad(dw, (0, 0, 0, 1, 0, 0, 0, 0), value=0)
-        dw = chunk_global_reversed_cumsum(dw).to(w)
+        dw = chunk_global_cumsum(dw, reverse=True).to(w)
 
         du = ((do * v).sum(-1)[..., None] * k * q * scale).sum([0, -2]).to(u)
         return dq, dk, dv, dw, du, None, dh0, None, None
@@ -339,29 +339,42 @@ def fused_recurrent_rwkv6(
     u: torch.Tensor,
     scale: float = -1,
     initial_state: torch.Tensor = None,
-    output_final_state: bool = False
+    output_final_state: bool = False,
+    head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
         r (torch.Tensor):
-            reception of shape `(B, H, T, K)`. Alias: q, query in linear attention.
+            reception of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`. Alias: q, query in linear attention.
         k (torch.Tensor):
-            keys of shape `(B, H, T, K)`
+            keys of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]`.
         v (torch.Tensor):
-            values of shape `(B, H, T, V)`
+            values of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
         w (torch.Tensor):
-            data-dependent decays of shape `(B, H, T, K)` in log space! Alias: g.
+            data-dependent decays of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]` in log space! Alias: g.
         u (torch.Tensor):
-            bonus of shape `(H, K)`
+            bonus of shape `[H]`
         scale (Optional[int]):
             Scale factor for the RWKV6 attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[torch.Tensor]):
-            Initial state of shape `(B, H, K, V)`. Default: `None`.
+            Initial state of shape `[B, H, K, V]`. Default: `None`.
         output_final_state (Optional[bool]):
-            Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
+            Whether to output the final state of shape `[B, H, K, V]`. Default: `False`.
+        head_first (Optional[bool]):
+            Whether the inputs are in the head-first format. Default: `True`.
+
+    Returns:
+        o (torch.Tensor):
+            Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
+        final_state (Optional[torch.Tensor]):
+            Final state of shape `[B, H, K, V]` if `output_final_state=True` and `head_first=True` else `[B, H, M, V]`.
     """
     if scale == -1:
         scale = r.shape[-1] ** -0.5
+    if not head_first:
+        r, k, v, w = map(lambda x: x.transpose(1, 2), (r, k, v, w))
     o, final_state = FusedRecurrentRWKV6Function.apply(r, k, v, w, u, scale, initial_state, output_final_state)
+    if not head_first:
+        o = o.transpose(1, 2)
     return o, final_state

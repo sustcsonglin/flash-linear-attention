@@ -7,6 +7,9 @@ from packaging import version
 
 
 def contiguous(fn):
+    """
+    Make sure all input tensors are contiguous.
+    """
     @functools.wraps(fn)
     def wrapper(ctx, *args, **kwargs):
         return fn(ctx,
@@ -16,6 +19,9 @@ def contiguous(fn):
 
 
 def require_version(version, hint):
+    """
+    Perform a runtime check of the dependency versions, using the exact same syntax used by pip.
+    """
     def decorator(fn):
         @functools.wraps(fn)
         def wrapper(ctx, *args, **kwargs):
