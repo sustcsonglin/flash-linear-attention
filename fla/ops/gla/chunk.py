@@ -21,12 +21,15 @@ from fla.utils import contiguous
     ],
     key=["BC", "BK"],
 )
+@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gla_fwd_A_kernel_intra_sub_inter(
     q,
     k,
     g,
     A,
+    offsets,
+    indices,
     scale,
     T: tl.constexpr,
     H: tl.constexpr,
@@ -35,11 +38,19 @@ def chunk_gla_fwd_A_kernel_intra_sub_inter(
     BC: tl.constexpr,
     BK: tl.constexpr,
     NC: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr
 ):
     i_t, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
     i_i, i_j = i_c // NC, i_c % NC
+    if USE_OFFSETS:
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
+    else:
+        bos, eos = i_b * T, i_b * T + T
+
     if i_t * BT + i_i * BC >= T:
         return
     if i_i <= i_j:
@@ -55,13 +66,13 @@ def chunk_gla_fwd_A_kernel_intra_sub_inter(
             p_g = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
             p_k = tl.make_block_ptr(k + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
             p_gk = tl.make_block_ptr(g + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
-            p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
+            p_gn = tl.max_contiguous(tl.multiple_of(g + (i_bh * T + i_t * BT + i_i * BC) * K + o_k, BK), BK)
         else:
-            p_q = tl.make_block_ptr(q + i_b*T*H*K+i_h*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-            p_g = tl.make_block_ptr(g + i_b*T*H*K+i_h*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-            p_k = tl.make_block_ptr(k + i_b*T*H*K+i_h*K, (K, T), (1, H*K), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
-            p_gk = tl.make_block_ptr(g + i_b*T*H*K+i_h*K, (K, T), (1, H*K), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
-            p_gn = tl.max_contiguous(tl.multiple_of(g + i_b * T*H*K + (i_t * BT + i_i * BC) * H*K + i_h * K + o_k, BK), BK)
+            p_q = tl.make_block_ptr(q + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+            p_g = tl.make_block_ptr(g + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+            p_k = tl.make_block_ptr(k + (bos*H+i_h)*K, (K, T), (1, H*K), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
+            p_gk = tl.make_block_ptr(g + (bos*H+i_h)*K, (K, T), (1, H*K), (i_k * BK, i_t * BT + i_j * BC), (BK, BC), (0, 1))
+            p_gn = tl.max_contiguous(tl.multiple_of(g + (bos + i_t * BT + i_i * BC) * H*K + i_h * K + o_k, BK), BK)
 
         # [BK,]
         b_gn = tl.load(p_gn, mask=m_k, other=0)
@@ -79,7 +90,7 @@ def chunk_gla_fwd_A_kernel_intra_sub_inter(
     if HEAD_FIRST:
         p_A = tl.make_block_ptr(A + i_bh*T*BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
     else:
-        p_A = tl.make_block_ptr(A + i_b*T*H*BT + i_h*BT, (T, BT), (H*BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
+        p_A = tl.make_block_ptr(A + (bos*H + i_h)*BT, (T, BT), (H*BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
     tl.store(p_A, b_A.to(A.dtype.element_ty), boundary_check=(0, 1))
 
 
@@ -92,12 +103,15 @@ def chunk_gla_fwd_A_kernel_intra_sub_inter(
     ],
     key=["BK", "BT"],
 )
+@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gla_fwd_A_kernel_intra_sub_intra(
     q,
     k,
     g,
     A,
+    offsets,
+    indices,
     scale,
     T: tl.constexpr,
     H: tl.constexpr,
@@ -105,11 +119,19 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra(
     BT: tl.constexpr,
     BC: tl.constexpr,
     BK: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr
 ):
     i_t, i_i, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
     i_j = i_i
+    if USE_OFFSETS:
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
+    else:
+        bos, eos = i_b * T, i_b * T + T
+
     if i_t * BT + i_i * BC >= T:
         return
 
@@ -121,14 +143,14 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra(
         o_A = i_bh * T*BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_j * BC
         p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, 0), (BC, BK), (1, 0))
         p_g = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, 0), (BC, BK), (1, 0))
-        p_k = tl.max_contiguous(tl.multiple_of(k + i_bh * T*K + (i_t * BT + i_j * BC) * K + o_k, BK), BK)
-        p_gk = tl.max_contiguous(tl.multiple_of(g + i_bh * T*K + (i_t * BT + i_j * BC) * K + o_k, BK), BK)
+        p_k = tl.max_contiguous(tl.multiple_of(k + (i_bh * T + i_t * BT + i_j * BC) * K + o_k, BK), BK)
+        p_gk = tl.max_contiguous(tl.multiple_of(g + (i_bh * T + i_t * BT + i_j * BC) * K + o_k, BK), BK)
     else:
-        o_A = i_b * T*H*BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * H*BT + i_h * BT + i_j * BC
-        p_q = tl.make_block_ptr(q + i_b*T*H*K+i_h*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, 0), (BC, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_b*T*H*K+i_h*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, 0), (BC, BK), (1, 0))
-        p_k = tl.max_contiguous(tl.multiple_of(k + i_b * T*H*K + (i_t * BT + i_j * BC) * H*K + i_h * K + o_k, BK), BK)
-        p_gk = tl.max_contiguous(tl.multiple_of(g + i_b * T*H*K + (i_t * BT + i_j * BC) * H*K + i_h * K + o_k, BK), BK)
+        o_A = (bos + i_t * BT + i_i * BC + tl.arange(0, BC)) * H*BT + i_h * BT + i_j * BC
+        p_q = tl.make_block_ptr(q + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, 0), (BC, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, 0), (BC, BK), (1, 0))
+        p_k = tl.max_contiguous(tl.multiple_of(k + (bos + i_t * BT + i_j * BC) * H*K + i_h * K + o_k, BK), BK)
+        p_gk = tl.max_contiguous(tl.multiple_of(g + (bos + i_t * BT + i_j * BC) * H*K + i_h * K + o_k, BK), BK)
 
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_g = tl.load(p_g, boundary_check=(0, 1))
@@ -152,12 +174,15 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra(
     ],
     key=["BC", "BK"],
 )
+@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gla_fwd_A_kernel_intra_sub_intra_split(
     q,
     k,
     g,
     A,
+    offsets,
+    indices,
     scale,
     B: tl.constexpr,
     T: tl.constexpr,
@@ -167,12 +192,22 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_split(
     BC: tl.constexpr,
     BK: tl.constexpr,
     NC: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr
 ):
     i_k, i_tc, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
     i_t, i_i = i_tc // NC, i_tc % NC
     i_j = i_i
+    if USE_OFFSETS:
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        all = T
+        T = eos - bos
+    else:
+        bos, eos = i_b * T, i_b * T + T
+        all = B * T
+
     if i_t * BT + i_i * BC >= T:
         return
 
@@ -185,14 +220,14 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_split(
         o_A = (i_k * B*H + i_bh) * T * BC + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BC
         p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
         p_g = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_k = tl.max_contiguous(tl.multiple_of(k + i_bh * T*K + (i_t * BT + i_j * BC) * K + o_k, BK), BK)
-        p_gk = tl.max_contiguous(tl.multiple_of(g + i_bh * T*K + (i_t * BT + i_j * BC) * K + o_k, BK), BK)
+        p_k = tl.max_contiguous(tl.multiple_of(k + (i_bh * T + i_t * BT + i_j * BC) * K + o_k, BK), BK)
+        p_gk = tl.max_contiguous(tl.multiple_of(g + (i_bh * T + i_t * BT + i_j * BC) * K + o_k, BK), BK)
     else:
-        o_A = (i_k * B + i_b) * T*H*BC + (i_t * BT + i_i * BC + tl.arange(0, BC)) * H*BC + i_h * BC
-        p_q = tl.make_block_ptr(q + i_b*T*H*K+i_h*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_b*T*H*K+i_h*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_k = tl.max_contiguous(tl.multiple_of(k + i_b * T*H*K + (i_t * BT + i_j * BC) * H*K + i_h * K + o_k, BK), BK)
-        p_gk = tl.max_contiguous(tl.multiple_of(g + i_b * T*H*K + (i_t * BT + i_j * BC) * H*K + i_h * K + o_k, BK), BK)
+        o_A = (i_k * all + bos + i_t * BT + i_i * BC + tl.arange(0, BC)) * H*BC + i_h * BC
+        p_q = tl.make_block_ptr(q + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_k = tl.max_contiguous(tl.multiple_of(k + (bos + i_t * BT + i_j * BC) * H*K + i_h * K + o_k, BK), BK)
+        p_gk = tl.max_contiguous(tl.multiple_of(g + (bos + i_t * BT + i_j * BC) * H*K + i_h * K + o_k, BK), BK)
 
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_g = tl.load(p_g, boundary_check=(0, 1))
@@ -216,20 +251,33 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_split(
     ],
     key=["BC"],
 )
+@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gla_fwd_A_kernel_intra_sub_intra_merge(
     A,
     A2,
+    offsets,
+    indices,
     B: tl.constexpr,
     T: tl.constexpr,
     H: tl.constexpr,
     BT: tl.constexpr,
     BC: tl.constexpr,
     NK: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr
 ):
     i_t, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
+    if USE_OFFSETS:
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        all = T
+        T = eos - bos
+    else:
+        bos, eos = i_b * T, i_b * T + T
+        all = B * T
+
     if i_t * BT + i_c * BC >= T:
         return
 
@@ -238,12 +286,12 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_merge(
         if HEAD_FIRST:
             p_A = tl.make_block_ptr(A + (i_k*B*H+i_bh)*T*BC, (T, BC), (BC, 1), (i_t*BT + i_c*BC, 0), (BC, BC), (1, 0))
         else:
-            p_A = tl.make_block_ptr(A + (i_k*B+i_b)*T*H*BC+i_h*BC, (T, BC), (H*BC, 1), (i_t*BT + i_c*BC, 0), (BC, BC), (1, 0))
+            p_A = tl.make_block_ptr(A + (i_k*all+bos)*H*BC+i_h*BC, (T, BC), (H*BC, 1), (i_t*BT + i_c*BC, 0), (BC, BC), (1, 0))
         b_A += tl.load(p_A, boundary_check=(0, 1))
     if HEAD_FIRST:
         p_A2 = tl.make_block_ptr(A2 + i_bh*T*BT, (T, BT), (BT, 1), (i_t * BT + i_c * BC, i_c * BC), (BC, BC), (1, 0))
     else:
-        p_A2 = tl.make_block_ptr(A2 + i_b*T*H*BT+i_h*BT, (T, BT), (H*BT, 1), (i_t * BT + i_c * BC, i_c * BC), (BC, BC), (1, 0))
+        p_A2 = tl.make_block_ptr(A2 + (bos*H+i_h)*BT, (T, BT), (H*BT, 1), (i_t * BT + i_c * BC, i_c * BC), (BC, BC), (1, 0))
     tl.store(p_A2, b_A.to(A2.dtype.element_ty), boundary_check=(0, 1))
 
 
@@ -256,6 +304,7 @@ def chunk_gla_fwd_A_kernel_intra_sub_intra_merge(
     ],
     key=["BK", "BV", "BT"],
 )
+@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gla_fwd_kernel_o(
     q,
@@ -264,6 +313,8 @@ def chunk_gla_fwd_kernel_o(
     h,
     o,
     A,
+    offsets,
+    indices,
     scale,
     T: tl.constexpr,
     H: tl.constexpr,
@@ -272,11 +323,22 @@ def chunk_gla_fwd_kernel_o(
     BT: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    NT: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
+    if USE_OFFSETS:
+        i_tg = i_t
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
+        NT = tl.cdiv(T, BT)
+    else:
+        NT = tl.cdiv(T, BT)
+        i_tg = i_b * NT + i_t
+        bos, eos = i_b * T, i_b * T + T
+
     m_s = tl.arange(0, BT)[:, None] >= tl.arange(0, BT)[None, :]
 
     b_o = tl.zeros([BT, BV], dtype=tl.float32)
@@ -284,11 +346,11 @@ def chunk_gla_fwd_kernel_o(
         if HEAD_FIRST:
             p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
             p_g = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-
+            p_h = tl.make_block_ptr(h + (i_bh * NT + i_t) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         else:
-            p_q = tl.make_block_ptr(q + i_b * T*H*K + i_h*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-            p_g = tl.make_block_ptr(g + i_b * T*H*K + i_h*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_h = tl.make_block_ptr(h + i_bh * NT*K*V + i_t * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+            p_q = tl.make_block_ptr(q + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+            p_g = tl.make_block_ptr(g + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+            p_h = tl.make_block_ptr(h + (i_tg * H + i_h) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
 
         # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
@@ -308,9 +370,9 @@ def chunk_gla_fwd_kernel_o(
         p_o = tl.make_block_ptr(o + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         p_A = tl.make_block_ptr(A + i_bh * T*BT, (T, BT), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
     else:
-        p_v = tl.make_block_ptr(v + i_b*T*H*V + i_h*V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_o = tl.make_block_ptr(o + i_b*T*H*V + i_h*V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_A = tl.make_block_ptr(A + i_b*T*H*BT + i_h*BT, (T, BT), (H*BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
+        p_v = tl.make_block_ptr(v + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_o = tl.make_block_ptr(o + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_A = tl.make_block_ptr(A + (bos * H + i_h) * BT, (T, BT), (H*BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
     # [BT, BV]
     b_v = tl.load(p_v, boundary_check=(0, 1))
     # [BT, BT]
@@ -329,6 +391,7 @@ def chunk_gla_fwd_kernel_o(
     ],
     key=["BK", "NC", "BT"],
 )
+@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gla_bwd_kernel_intra(
     q,
@@ -337,6 +400,8 @@ def chunk_gla_bwd_kernel_intra(
     dA,
     dq,
     dk,
+    offsets,
+    indices,
     T: tl.constexpr,
     H: tl.constexpr,
     K: tl.constexpr,
@@ -344,11 +409,18 @@ def chunk_gla_bwd_kernel_intra(
     BC: tl.constexpr,
     BK: tl.constexpr,
     NC: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr
 ):
     i_k, i_c, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
     i_t, i_i = i_c // NC, i_c % NC
+    if USE_OFFSETS:
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+    else:
+        bos, eos = i_b * T, i_b * T + T
+    T = eos - bos
     if i_t * BT + i_i * BC >= T:
         return
 
@@ -358,15 +430,15 @@ def chunk_gla_bwd_kernel_intra(
     if HEAD_FIRST:
         p_g = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     else:
-        p_g = tl.make_block_ptr(g + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_g = tl.make_block_ptr(g + (bos*H + i_h) * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     # [BC, BK]
     b_g = tl.load(p_g, boundary_check=(0, 1))
     b_dq = tl.zeros([BC, BK], dtype=tl.float32)
     if i_i > 0:
         if HEAD_FIRST:
-            p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
+            p_gn = tl.max_contiguous(tl.multiple_of(g + (i_bh * T + i_t * BT + i_i * BC) * K + o_k, BK), BK)
         else:
-            p_gn = tl.max_contiguous(tl.multiple_of(g + i_b*T*H*K + (i_t * BT + i_i * BC) * H*K + i_h*K + o_k, BK), BK)
+            p_gn = tl.max_contiguous(tl.multiple_of(g + (bos + i_t * BT + i_i * BC) * H*K + i_h*K + o_k, BK), BK)
         # [BK,]
         b_gn = tl.load(p_gn, mask=m_k, other=0)
         for i_j in range(0, i_i):
@@ -375,9 +447,9 @@ def chunk_gla_bwd_kernel_intra(
                 p_gk = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
                 p_dA = tl.make_block_ptr(dA + i_bh * T*BT, (T, BT), (BT, 1), (i_t * BT + i_i * BC, i_j * BC), (BC, BC), (1, 0))
             else:
-                p_k = tl.make_block_ptr(k+i_b*T*H*K+i_h*K, (T, K), (H*K, 1), (i_t*BT+i_j*BC, i_k * BK), (BC, BK), (1, 0))
-                p_gk = tl.make_block_ptr(g+i_b*T*H*K+i_h*K, (T, K), (H*K, 1), (i_t*BT+i_j*BC, i_k * BK), (BC, BK), (1, 0))
-                p_dA = tl.make_block_ptr(dA+i_b*T*H*BT+i_h*BT, (T, BT), (H*BT, 1), (i_t*BT+i_i*BC, i_j * BC), (BC, BC), (1, 0))
+                p_k = tl.make_block_ptr(k+(bos*H+i_h)*K, (T, K), (H*K, 1), (i_t*BT+i_j*BC, i_k * BK), (BC, BK), (1, 0))
+                p_gk = tl.make_block_ptr(g+(bos*H+i_h)*K, (T, K), (H*K, 1), (i_t*BT+i_j*BC, i_k * BK), (BC, BK), (1, 0))
+                p_dA = tl.make_block_ptr(dA+(bos*H+i_h)*BT, (T, BT), (H*BT, 1), (i_t*BT+i_i*BC, i_j * BC), (BC, BC), (1, 0))
             # [BC, BK]
             b_k = tl.load(p_k, boundary_check=(0, 1))
             b_gk = tl.load(p_gk, boundary_check=(0, 1))
@@ -392,14 +464,14 @@ def chunk_gla_bwd_kernel_intra(
     m_dA = (i_t * BT + i_i * BC + tl.arange(0, BC)) < T
     if HEAD_FIRST:
         o_dA = i_bh * T*BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * BT + i_i * BC
-        p_kj = tl.max_contiguous(tl.multiple_of(k + i_bh * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
-        p_gkj = tl.max_contiguous(tl.multiple_of(g + i_bh * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
+        p_kj = tl.max_contiguous(tl.multiple_of(k + (i_bh * T + i_t * BT + i_i * BC) * K + o_k, BK), BK)
+        p_gkj = tl.max_contiguous(tl.multiple_of(g + (i_bh * T + i_t * BT + i_i * BC) * K + o_k, BK), BK)
         p_dq = tl.make_block_ptr(dq + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     else:
-        o_dA = i_b * T*H*BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * H*BT + i_h * BT + i_i * BC
-        p_kj = tl.max_contiguous(tl.multiple_of(k + i_b * T*H*K + (i_t * BT + i_i * BC) * H*K + i_h * K + o_k, BK), BK)
-        p_gkj = tl.max_contiguous(tl.multiple_of(g + i_b * T*H*K + (i_t * BT + i_i * BC) * H*K + i_h * K + o_k, BK), BK)
-        p_dq = tl.make_block_ptr(dq + i_b*T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        o_dA = bos*H*BT + (i_t * BT + i_i * BC + tl.arange(0, BC)) * H*BT + i_h * BT + i_i * BC
+        p_kj = tl.max_contiguous(tl.multiple_of(k + (bos + i_t * BT + i_i * BC) * H*K + i_h * K + o_k, BK), BK)
+        p_gkj = tl.max_contiguous(tl.multiple_of(g + (bos + i_t * BT + i_i * BC) * H*K + i_h * K + o_k, BK), BK)
+        p_dq = tl.make_block_ptr(dq + (bos*H + i_h) * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
 
     for j in range(0, min(BC, T - i_t * BT - i_i * BC)):
         # [BC,]
@@ -421,8 +493,8 @@ def chunk_gla_bwd_kernel_intra(
         p_k = tl.make_block_ptr(k + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
         p_gk = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     else:
-        p_k = tl.make_block_ptr(k + i_b * T*H*K + i_h*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
-        p_gk = tl.make_block_ptr(g + i_b * T*H*K + i_h*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + (bos*H + i_h) * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        p_gk = tl.make_block_ptr(g + (bos*H + i_h) * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
 
     # [BC, BK]
     b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -434,7 +506,7 @@ def chunk_gla_bwd_kernel_intra(
         if HEAD_FIRST:
             p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh*T*K + (i_t * BT + i_i * BC + BC - 1)*K + o_k, BK), BK)
         else:
-            p_gn = tl.max_contiguous(tl.multiple_of(g + i_b*T*H*K + (i_t * BT + i_i * BC + BC - 1)*H*K + i_h*K + o_k, BK), BK)
+            p_gn = tl.max_contiguous(tl.multiple_of(g + bos*H*K + (i_t * BT + i_i * BC + BC - 1)*H*K + i_h*K + o_k, BK), BK)
         # [BK,]
         b_gn = tl.load(p_gn, mask=m_k, other=0)
         for i_j in range(i_i + 1, NC):
@@ -443,9 +515,9 @@ def chunk_gla_bwd_kernel_intra(
                 p_g = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
                 p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (BT, T), (1, BT), (i_i*BC, i_t*BT + i_j*BC), (BC, BC), (0, 1))
             else:
-                p_q = tl.make_block_ptr(q+i_b*T*H*K+i_h*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-                p_g = tl.make_block_ptr(g+i_b*T*H*K+i_h*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-                p_dA = tl.make_block_ptr(dA+i_b*T*H*BT+i_h*BT, (BT, T), (1, H*BT), (i_i*BC, i_t*BT + i_j*BC), (BC, BC), (0, 1))
+                p_q = tl.make_block_ptr(q + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+                p_g = tl.make_block_ptr(g + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+                p_dA = tl.make_block_ptr(dA + (bos*H+i_h)*BT, (BT, T), (1, H*BT), (i_i*BC, i_t*BT + i_j*BC), (BC, BC), (0, 1))
             # [BC, BK]
             b_q = tl.load(p_q, boundary_check=(0, 1))
             b_g = tl.load(p_g, boundary_check=(0, 1))
@@ -458,14 +530,14 @@ def chunk_gla_bwd_kernel_intra(
         b_dk *= tl.exp(b_gn[None, :] - b_gk)
     if HEAD_FIRST:
         o_dA = i_bh * T * BT + (i_t * BT + i_i * BC) * BT + i_i * BC + tl.arange(0, BC)
-        p_qj = tl.max_contiguous(tl.multiple_of(q + i_bh * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
-        p_gqj = tl.max_contiguous(tl.multiple_of(g + i_bh * T*K + (i_t * BT + i_i * BC) * K + o_k, BK), BK)
+        p_qj = tl.max_contiguous(tl.multiple_of(q + (i_bh * T + i_t * BT + i_i * BC) * K + o_k, BK), BK)
+        p_gqj = tl.max_contiguous(tl.multiple_of(g + (i_bh * T + i_t * BT + i_i * BC) * K + o_k, BK), BK)
         p_dk = tl.make_block_ptr(dk + i_bh*T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     else:
-        o_dA = i_b * T*H*BT + (i_t * BT + i_i * BC) * H*BT + i_h * BT + i_i * BC + tl.arange(0, BC)
-        p_qj = tl.max_contiguous(tl.multiple_of(q + i_b * T*H*K + (i_t * BT + i_i * BC) * H*K + i_h * K + o_k, BK), BK)
-        p_gqj = tl.max_contiguous(tl.multiple_of(g + i_b * T*H*K + (i_t * BT + i_i * BC) * H*K + i_h * K + o_k, BK), BK)
-        p_dk = tl.make_block_ptr(dk + i_b*T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
+        o_dA = bos*H*BT + (i_t * BT + i_i * BC) * H*BT + i_h * BT + i_i * BC + tl.arange(0, BC)
+        p_qj = tl.max_contiguous(tl.multiple_of(q + (bos + i_t * BT + i_i * BC) * H*K + i_h * K + o_k, BK), BK)
+        p_gqj = tl.max_contiguous(tl.multiple_of(g + (bos + i_t * BT + i_i * BC) * H*K + i_h * K + o_k, BK), BK)
+        p_dk = tl.make_block_ptr(dk + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
     for j in range(0, min(BC, T - i_t * BT - i_i * BC)):
         # [BC,]
         b_dA = tl.load(dA + o_dA + j * (1 if HEAD_FIRST else H) * BT)
@@ -489,21 +561,31 @@ def chunk_gla_bwd_kernel_intra(
     ],
     key=["BV", "BT"],
 )
+@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gla_bwd_kernel_dA(
     v,
     do,
     dA,
+    offsets,
+    indices,
     scale,
     T: tl.constexpr,
     H: tl.constexpr,
     V: tl.constexpr,
     BT: tl.constexpr,
     BV: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr
 ):
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
     i_b, i_h = i_bh // H, i_bh % H
+    if USE_OFFSETS:
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+    else:
+        bos, eos = i_b * T, i_b * T + T
+    T = eos - bos
 
     b_dA = tl.zeros([BT, BT], dtype=tl.float32)
     for i_v in range(tl.cdiv(V, BV)):
@@ -511,15 +593,15 @@ def chunk_gla_bwd_kernel_dA(
             p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
             p_v = tl.make_block_ptr(v + i_bh * T*V, (V, T), (1, V), (i_v * BV, i_t * BT), (BV, BT), (0, 1))
         else:
-            p_do = tl.make_block_ptr(do + i_b * T*H*V + i_h * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_v = tl.make_block_ptr(v + i_b * T*H*V + i_h * V, (V, T), (1, H*V), (i_v * BV, i_t * BT), (BV, BT), (0, 1))
+            p_do = tl.make_block_ptr(do + (bos*H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+            p_v = tl.make_block_ptr(v + (bos*H + i_h) * V, (V, T), (1, H*V), (i_v * BV, i_t * BT), (BV, BT), (0, 1))
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_do = tl.load(p_do, boundary_check=(0, 1))
         b_dA += tl.dot(b_do, b_v)
     if HEAD_FIRST:
         p_dA = tl.make_block_ptr(dA + i_bh * T*BT, (T, BT), (BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
     else:
-        p_dA = tl.make_block_ptr(dA + i_b * T*H*BT + i_h * BT, (T, BT), (H*BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
+        p_dA = tl.make_block_ptr(dA + (bos * H + i_h) * BT, (T, BT), (H*BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
     m_s = tl.arange(0, BT)[:, None] >= tl.arange(0, BT)[None, :]
     b_dA = tl.where(m_s, b_dA * scale, 0.)
     tl.store(p_dA, b_dA.to(p_dA.dtype.element_ty), boundary_check=(0, 1))
@@ -534,6 +616,7 @@ def chunk_gla_bwd_kernel_dA(
     ],
     key=["BK", "BV", "BT"],
 )
+@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gla_bwd_kernel_dv(
     k,
@@ -542,6 +625,8 @@ def chunk_gla_bwd_kernel_dv(
     do,
     dh,
     dv,
+    offsets,
+    indices,
     T: tl.constexpr,
     H: tl.constexpr,
     K: tl.constexpr,
@@ -549,20 +634,30 @@ def chunk_gla_bwd_kernel_dv(
     BT: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    NT: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
+    if USE_OFFSETS:
+        i_tg = i_t
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
+        NT = tl.cdiv(T, BT)
+    else:
+        NT = tl.cdiv(T, BT)
+        i_tg = i_b * NT + i_t
+        bos, eos = i_b * T, i_b * T + T
 
     if HEAD_FIRST:
         p_A = tl.make_block_ptr(A + i_bh * T * BT, (BT, T), (1, BT), (0, i_t * BT), (BT, BT), (0, 1))
         p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         p_dv = tl.make_block_ptr(dv + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     else:
-        p_A = tl.make_block_ptr(A + i_b * T*H*BT + i_h * BT, (BT, T), (1, H*BT), (0, i_t * BT), (BT, BT), (0, 1))
-        p_do = tl.make_block_ptr(do + i_b * T*H*V + i_h * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dv = tl.make_block_ptr(dv + i_b * T*H*V + i_h * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_A = tl.make_block_ptr(A + (bos * H + i_h) * BT, (BT, T), (1, H*BT), (0, i_t * BT), (BT, BT), (0, 1))
+        p_do = tl.make_block_ptr(do + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dv = tl.make_block_ptr(dv + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
 
     b_A = tl.load(p_A, boundary_check=(0, 1))
     b_A = tl.where(tl.arange(0, BT)[:, None] <= tl.arange(0, BT)[None, :], b_A, 0.)
@@ -578,11 +673,12 @@ def chunk_gla_bwd_kernel_dv(
             p_k = tl.make_block_ptr(k + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
             p_gk = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
             p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * T*K + min(i_t * BT + BT, T) * K - K + o_k, BK), BK)
+            p_dh = tl.make_block_ptr(dh + (i_bh * NT + i_t) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         else:
-            p_k = tl.make_block_ptr(k + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-            p_gk = tl.make_block_ptr(g + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-            p_gn = tl.max_contiguous(tl.multiple_of(g + i_b * T*H*K + (min(i_t * BT + BT, T) - 1)*H*K + i_h * K + o_k, BK), BK)
-        p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V + i_t * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+            p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+            p_gk = tl.make_block_ptr(g + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+            p_gn = tl.max_contiguous(tl.multiple_of(g + (bos + min(i_t * BT + BT, T) - 1)*H*K + i_h * K + o_k, BK), BK)
+            p_dh = tl.make_block_ptr(dh + (i_tg * H + i_h) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
 
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_gk = tl.load(p_gk, boundary_check=(0, 1))
@@ -604,6 +700,7 @@ def chunk_gla_bwd_kernel_dv(
     ],
     key=["BK", "BV", "BT"],
 )
+@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gla_bwd_kernel_inter(
     q,
@@ -618,6 +715,8 @@ def chunk_gla_bwd_kernel_inter(
     dq2,
     dk2,
     dg,
+    offsets,
+    indices,
     scale,
     T: tl.constexpr,
     H: tl.constexpr,
@@ -626,11 +725,21 @@ def chunk_gla_bwd_kernel_inter(
     BT: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    NT: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr
 ):
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
+    if USE_OFFSETS:
+        i_tg = i_t
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
+        NT = tl.cdiv(T, BT)
+    else:
+        NT = tl.cdiv(T, BT)
+        i_tg = i_b * NT + i_t
+        bos, eos = i_b * T, i_b * T + T
     o_k = i_k * BK + tl.arange(0, BK)
     m_k = o_k < K
 
@@ -638,8 +747,8 @@ def chunk_gla_bwd_kernel_inter(
         p_gk = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh * T*K + (min(T, i_t * BT + BT)-1) * K + o_k, BK), BK)
     else:
-        p_gk = tl.make_block_ptr(g + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_gn = tl.max_contiguous(tl.multiple_of(g + i_b * T*H*K + (min(T, i_t * BT + BT)-1) * H*K + i_h * K + o_k, BK), BK)
+        p_gk = tl.make_block_ptr(g + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_gn = tl.max_contiguous(tl.multiple_of(g + (bos + min(T, i_t * BT + BT)-1) * H*K + i_h * K + o_k, BK), BK)
     b_gn = tl.load(p_gn, mask=m_k, other=0)
     b_dq = tl.zeros([BT, BK], dtype=tl.float32)
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
@@ -649,11 +758,13 @@ def chunk_gla_bwd_kernel_inter(
         if HEAD_FIRST:
             p_v = tl.make_block_ptr(v + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
             p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+            p_h = tl.make_block_ptr(h + i_bh * NT*K*V + i_t * K*V, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
+            p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V + i_t * K*V, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
         else:
-            p_v = tl.make_block_ptr(v + i_b * T*H*V + i_h * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_do = tl.make_block_ptr(do + i_b * T*H*V + i_h * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_h = tl.make_block_ptr(h + i_bh * NT*K*V + i_t * V * K, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
-        p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V + i_t * V * K, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
+            p_v = tl.make_block_ptr(v + (bos*H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+            p_do = tl.make_block_ptr(do + (bos*H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+            p_h = tl.make_block_ptr(h + (i_tg * H + i_h) * K*V, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
+            p_dh = tl.make_block_ptr(dh + (i_tg * H + i_h) * K*V, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
         # [BT, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_do = tl.load(p_do, boundary_check=(0, 1))
@@ -677,10 +788,10 @@ def chunk_gla_bwd_kernel_inter(
         p_dq = tl.make_block_ptr(dq + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dk = tl.make_block_ptr(dk + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     else:
-        p_q = tl.make_block_ptr(q + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_k = tl.make_block_ptr(k + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dq = tl.make_block_ptr(dq + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dk = tl.make_block_ptr(dk + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_q = tl.make_block_ptr(q + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_dq = tl.make_block_ptr(dq + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_dk = tl.make_block_ptr(dk + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_k = tl.load(p_k, boundary_check=(0, 1))
     b_dgk += tl.sum(b_dk * b_k, axis=0)
@@ -697,9 +808,9 @@ def chunk_gla_bwd_kernel_inter(
         p_dk = tl.make_block_ptr(dk2 + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dg = tl.make_block_ptr(dg + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     else:
-        p_dq = tl.make_block_ptr(dq2 + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dk = tl.make_block_ptr(dk2 + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dg = tl.make_block_ptr(dg + i_b * T*H*K + i_h * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_dq = tl.make_block_ptr(dq2 + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_dk = tl.make_block_ptr(dk2 + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_dg = tl.make_block_ptr(dg + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0, 1))
@@ -710,6 +821,8 @@ def chunk_gla_fwd_intra_gk(
     k: torch.Tensor,
     g: torch.Tensor,
     scale: float,
+    offsets: Optional[torch.Tensor] = None,
+    indices: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -718,10 +831,18 @@ def chunk_gla_fwd_intra_gk(
     else:
         B, T, H, K = k.shape
     BT = min(chunk_size, triton.next_power_of_2(T))
+    if offsets is None:
+        NT = triton.cdiv(T, BT)
+    else:
+        if indices is None:
+            indices = torch.cat([
+                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
+                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
+            ])
+        NT = len(indices)
     BC = min(16, triton.next_power_of_2(T))
     BK = min(64, triton.next_power_of_2(K))
     NC = triton.cdiv(BT, BC)
-    NT = triton.cdiv(T, BT)
 
     A = q.new_empty(B, *((H, T) if head_first else (T, H)), BT, dtype=torch.float32)
     grid = (NT, NC * NC, B * H)
@@ -730,6 +851,8 @@ def chunk_gla_fwd_intra_gk(
         k,
         g,
         A,
+        offsets,
+        indices,
         scale,
         T=T,
         H=H,
@@ -740,6 +863,7 @@ def chunk_gla_fwd_intra_gk(
         NC=NC,
         HEAD_FIRST=head_first
     )
+
     grid = (NT, NC, B * H)
     # load the entire [BC, K] blocks into SRAM at once
     if K <= 256:
@@ -749,6 +873,8 @@ def chunk_gla_fwd_intra_gk(
             k,
             g,
             A,
+            offsets,
+            indices,
             scale,
             T=T,
             H=H,
@@ -762,13 +888,16 @@ def chunk_gla_fwd_intra_gk(
     else:
         BK = min(128, triton.next_power_of_2(K))
         NK = triton.cdiv(K, BK)
-        A_intra = q.new_empty(NK, B, H, T, BC, dtype=torch.float32)
+        A_intra = q.new_empty(NK, B, *((H, T) if head_first else (T, H)), BC, dtype=torch.float32)
+
         grid = (NK, NT * NC, B * H)
         chunk_gla_fwd_A_kernel_intra_sub_intra_split[grid](
             q,
             k,
             g,
             A_intra,
+            offsets,
+            indices,
             scale,
             B=B,
             T=T,
@@ -780,10 +909,13 @@ def chunk_gla_fwd_intra_gk(
             NC=NC,
             HEAD_FIRST=head_first
         )
+
         grid = (NT, NC, B * H)
         chunk_gla_fwd_A_kernel_intra_sub_intra_merge[grid](
             A_intra,
             A,
+            offsets,
+            indices,
             B=B,
             T=T,
             H=H,
@@ -802,6 +934,8 @@ def chunk_gla_fwd_o_gk(
     A: torch.Tensor,
     h: torch.Tensor,
     scale: float,
+    offsets: Optional[torch.Tensor] = None,
+    indices: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -810,10 +944,17 @@ def chunk_gla_fwd_o_gk(
     else:
         B, T, H, K, V = *q.shape, v.shape[-1]
     BT = min(chunk_size, triton.next_power_of_2(T))
+    if offsets is None:
+        NT = triton.cdiv(T, BT)
+    else:
+        indices = torch.cat([
+            torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
+            for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
+        ])
+        NT = len(indices)
     BK = min(32, triton.next_power_of_2(K))
     BV = min(32, triton.next_power_of_2(V))
     NV = triton.cdiv(V, BV)
-    NT = triton.cdiv(T, BT)
 
     grid = (NV, NT, B * H)
     o = torch.empty_like(v)
@@ -824,6 +965,8 @@ def chunk_gla_fwd_o_gk(
         h,
         o,
         A,
+        offsets,
+        indices,
         scale,
         T=T,
         H=H,
@@ -832,7 +975,6 @@ def chunk_gla_fwd_o_gk(
         BT=BT,
         BK=BK,
         BV=BV,
-        NT=NT,
         HEAD_FIRST=head_first
     )
     return o
@@ -842,6 +984,8 @@ def chunk_gla_bwd_dA(
     v: torch.Tensor,
     do: torch.Tensor,
     scale: float,
+    offsets: Optional[torch.Tensor] = None,
+    indices: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -850,15 +994,25 @@ def chunk_gla_bwd_dA(
     else:
         B, T, H, V = v.shape
     BT = min(chunk_size, triton.next_power_of_2(T))
+    if offsets is None:
+        N, NT = B, triton.cdiv(T, BT)
+    else:
+        if indices is None:
+            indices = torch.cat([
+                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
+                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
+            ])
+        N, NT = len(offsets) - 1, len(indices)
     BV = min(64, triton.next_power_of_2(V))
-    NT = triton.cdiv(T, BT)
 
     dA = v.new_empty(B, *((H, T) if head_first else (T, H)), BT, dtype=torch.float32)
-    grid = (NT, B * H)
+    grid = (NT, N * H)
     chunk_gla_bwd_kernel_dA[grid](
         v,
         do,
         dA,
+        offsets,
+        indices,
         scale,
         T=T,
         H=H,
@@ -876,7 +1030,8 @@ def chunk_gla_bwd_dv(
     A: torch.Tensor,
     do: torch.Tensor,
     dh: torch.Tensor,
-    scale: float,
+    offsets: Optional[torch.Tensor] = None,
+    indices: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -884,13 +1039,21 @@ def chunk_gla_bwd_dv(
         B, H, T, K, V = *k.shape, do.shape[-1]
     else:
         B, T, H, K, V = *k.shape, do.shape[-1]
+    BT = min(chunk_size, triton.next_power_of_2(T))
+    if offsets is None:
+        N, NT = B, triton.cdiv(T, BT)
+    else:
+        if indices is None:
+            indices = torch.cat([
+                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
+                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
+            ])
+        N, NT = len(offsets) - 1, len(indices)
     BK = min(64, triton.next_power_of_2(K))
     BV = min(32, triton.next_power_of_2(V))
-    BT = min(chunk_size, triton.next_power_of_2(T))
-    NT = triton.cdiv(T, BT)
 
     dv = torch.empty_like(do)
-    grid = (triton.cdiv(V, BV), NT, B * H)
+    grid = (triton.cdiv(V, BV), NT, N * H)
     chunk_gla_bwd_kernel_dv[grid](
         k,
         g,
@@ -898,6 +1061,8 @@ def chunk_gla_bwd_dv(
         do,
         dh,
         dv,
+        offsets,
+        indices,
         T=T,
         H=H,
         K=K,
@@ -905,7 +1070,6 @@ def chunk_gla_bwd_dv(
         BT=BT,
         BK=BK,
         BV=BV,
-        NT=NT,
         HEAD_FIRST=head_first
     )
     return dv
@@ -916,6 +1080,8 @@ def chunk_gla_bwd_dqk_intra(
     k: torch.Tensor,
     g: torch.Tensor,
     dA: torch.Tensor,
+    offsets: Optional[torch.Tensor] = None,
+    indices: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -924,14 +1090,23 @@ def chunk_gla_bwd_dqk_intra(
     else:
         B, T, H, K = q.shape
     BT = min(chunk_size, triton.next_power_of_2(T))
+    if offsets is None:
+        N, NT = B, triton.cdiv(T, BT)
+    else:
+        if indices is None:
+            indices = torch.cat([
+                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
+                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
+            ])
+        N, NT = len(offsets) - 1, len(indices)
     BC = min(16, triton.next_power_of_2(T))
     BK = min(64, triton.next_power_of_2(K))
     NK = triton.cdiv(K, BK)
-    NT = triton.cdiv(T, BT)
     NC = triton.cdiv(BT, BC)
+
     dq = torch.empty_like(q, dtype=torch.float32)
     dk = torch.empty_like(k, dtype=torch.float32)
-    grid = (NK, NT * NC, B * H)
+    grid = (NK, NT * NC, N * H)
     chunk_gla_bwd_kernel_intra[grid](
         q,
         k,
@@ -939,6 +1114,8 @@ def chunk_gla_bwd_dqk_intra(
         dA,
         dq,
         dk,
+        offsets,
+        indices,
         T=T,
         H=H,
         K=K,
@@ -962,6 +1139,8 @@ def chunk_gla_bwd_dqkg(
     dq: torch.Tensor,
     dk: torch.Tensor,
     scale: float,
+    offsets: Optional[torch.Tensor] = None,
+    indices: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -970,13 +1149,21 @@ def chunk_gla_bwd_dqkg(
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
     BT = min(chunk_size, triton.next_power_of_2(T))
+    if offsets is None:
+        N, NT = B, triton.cdiv(T, BT)
+    else:
+        if indices is None:
+            indices = torch.cat([
+                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
+                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
+            ])
+        N, NT = len(offsets) - 1, len(indices)
     BK = min(64, triton.next_power_of_2(K))
     BV = min(64, triton.next_power_of_2(V))
     NK = triton.cdiv(K, BK)
-    NT = triton.cdiv(T, BT)
 
     dg = torch.empty_like(g)
-    grid = (NK, NT, B * H)
+    grid = (NK, NT, N * H)
     # work around triton compiler bugs.
     dq2 = torch.empty_like(dq)
     dk2 = torch.empty_like(dk)
@@ -993,6 +1180,8 @@ def chunk_gla_bwd_dqkg(
         dq2,
         dk2,
         dg,
+        offsets,
+        indices,
         scale,
         T=T,
         H=H,
@@ -1001,7 +1190,6 @@ def chunk_gla_bwd_dqkg(
         BT=BT,
         BK=BK,
         BV=BV,
-        NT=NT,
         HEAD_FIRST=head_first
     )
     return dq2, dk2, dg
@@ -1016,13 +1204,21 @@ def chunk_gla_fwd(
     scale: float,
     initial_state: torch.Tensor,
     output_final_state: bool,
+    offsets: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     T = q.shape[2] if head_first else q.shape[1]
     BT = min(chunk_size, triton.next_power_of_2(T))
     if g_cumsum is None:
-        g_cumsum = chunk_local_cumsum(g, BT, head_first=head_first)
+        g_cumsum = chunk_local_cumsum(g, BT, offsets=offsets, head_first=head_first)
+
+    indices = None
+    if offsets is not None:
+        indices = torch.cat([
+            torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
+            for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
+        ])
     h, ht = chunk_fwd_h(
         k=k,
         v=v,
@@ -1032,9 +1228,11 @@ def chunk_gla_fwd(
         h0=initial_state,
         output_final_state=output_final_state,
         states_in_fp32=False,
+        offsets=offsets,
         head_first=head_first,
         chunk_size=BT
     )
+
     # the intra A is kept in fp32
     # the computation has very marginal effect on the entire throughput
     A = chunk_gla_fwd_intra_gk(
@@ -1042,6 +1240,8 @@ def chunk_gla_fwd(
         k=k,
         g=g_cumsum,
         scale=scale,
+        offsets=offsets,
+        indices=indices,
         head_first=head_first,
         chunk_size=BT
     )
@@ -1052,6 +1252,8 @@ def chunk_gla_fwd(
         A=A,
         h=h,
         scale=scale,
+        offsets=offsets,
+        indices=indices,
         head_first=head_first,
         chunk_size=BT
     )
@@ -1070,14 +1272,21 @@ def chunk_gla_bwd(
     A: torch.Tensor,
     do: torch.Tensor,
     dht: torch.Tensor,
+    offsets: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
     T = q.shape[2] if head_first else q.shape[1]
     BT = min(chunk_size, triton.next_power_of_2(T))
     if g_cumsum is None:
-        g_cumsum = chunk_local_cumsum(g, BT, head_first=head_first)
+        g_cumsum = chunk_local_cumsum(g, BT, offsets=offsets, head_first=head_first)
 
+    indices = None
+    if offsets is not None:
+        indices = torch.cat([
+            torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
+            for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
+        ])
     if h is None:
         h, _ = chunk_fwd_h(
             k=k,
@@ -1088,6 +1297,7 @@ def chunk_gla_bwd(
             h0=initial_state,
             output_final_state=False,
             states_in_fp32=True,
+            offsets=offsets,
             head_first=head_first,
             chunk_size=BT
         )
@@ -1103,6 +1313,7 @@ def chunk_gla_bwd(
         dht=dht,
         scale=scale,
         states_in_fp32=True,
+        offsets=offsets,
         head_first=head_first,
         chunk_size=BT
     )
@@ -1112,7 +1323,8 @@ def chunk_gla_bwd(
         A=A,
         do=do,
         dh=dh,
-        scale=scale,
+        offsets=offsets,
+        indices=indices,
         head_first=head_first,
         chunk_size=BT
     )
@@ -1121,6 +1333,8 @@ def chunk_gla_bwd(
         v=v,
         do=do,
         scale=scale,
+        offsets=offsets,
+        indices=indices,
         head_first=head_first,
         chunk_size=BT
     )
@@ -1129,6 +1343,8 @@ def chunk_gla_bwd(
         k=k,
         g=g_cumsum,
         dA=dA,
+        offsets=offsets,
+        indices=indices,
         head_first=head_first,
         chunk_size=BT
     )
@@ -1143,6 +1359,8 @@ def chunk_gla_bwd(
         dq=dq,
         dk=dk,
         scale=scale,
+        offsets=offsets,
+        indices=indices,
         head_first=head_first,
         chunk_size=BT
     )
@@ -1153,8 +1371,20 @@ class ChunkGLAFunction(torch.autograd.Function):
 
     @staticmethod
     @contiguous
-    def forward(ctx, q, k, v, g, scale, initial_state, output_final_state, head_first):
-        BT = 64
+    def forward(
+        ctx,
+        q,
+        k,
+        v,
+        g,
+        scale,
+        initial_state,
+        output_final_state,
+        offsets,
+        head_first
+    ):
+        T = q.shape[2] if head_first else q.shape[1]
+        chunk_size = min(64, triton.next_power_of_2(T))
         g_cumsum, A, h, ht, o = chunk_gla_fwd(
             q=q,
             k=k,
@@ -1164,8 +1394,9 @@ class ChunkGLAFunction(torch.autograd.Function):
             scale=scale,
             initial_state=initial_state,
             output_final_state=output_final_state,
+            offsets=offsets,
             head_first=head_first,
-            chunk_size=BT
+            chunk_size=chunk_size
         )
         # recompute g_cumsum in bwd pass
         if g.dtype != torch.float32:
@@ -1173,8 +1404,9 @@ class ChunkGLAFunction(torch.autograd.Function):
         else:
             g = None
         ctx.save_for_backward(q, k, v, g, g_cumsum, initial_state, A)
-        ctx.BT = BT
+        ctx.chunk_size = chunk_size
         ctx.scale = scale
+        ctx.offsets = offsets
         ctx.head_first = head_first
         return o, ht
 
@@ -1182,7 +1414,7 @@ class ChunkGLAFunction(torch.autograd.Function):
     @contiguous
     def backward(ctx, do, dht):
         q, k, v, g, g_cumsum, initial_state, A = ctx.saved_tensors
-        BT, scale, head_first = ctx.BT, ctx.scale, ctx.head_first
+        chunk_size, scale, offsets, head_first = ctx.chunk_size, ctx.scale, ctx.offsets, ctx.head_first
         dq, dk, dv, dg, dh0 = chunk_gla_bwd(
             q=q,
             k=k,
@@ -1195,10 +1427,11 @@ class ChunkGLAFunction(torch.autograd.Function):
             initial_state=initial_state,
             do=do,
             dht=dht,
+            offsets=offsets,
             head_first=head_first,
-            chunk_size=BT
+            chunk_size=chunk_size
         )
-        return dq.to(q), dk.to(k), dv.to(v), dg, None, dh0, None, None
+        return dq.to(q), dk.to(k), dv.to(v), dg, None, dh0, None, None, None
 
 
 def chunk_gla(
@@ -1209,6 +1442,7 @@ def chunk_gla(
     scale: Optional[int] = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
+    offsets: Optional[torch.Tensor] = None,
     head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
@@ -1225,20 +1459,66 @@ def chunk_gla(
             Scale factor for the GLA attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[torch.Tensor]):
-            Initial state of shape `[B, H, K, V]`. Default: `None`.
+            Initial state of shape `[N, H, K, V]` for `N` input sequences.
+            For equal-length input sequences, `N` equals the batch size `B`.
+            Default: `None`.
         output_final_state (Optional[bool]):
-            Whether to output the final state of shape `[B, H, K, V]`. Default: `False`.
+            Whether to output the final state of shape `[N, H, K, V]`. Default: `False`.
+        offsets (Optional[torch.Tensor]):
+            Offsets of shape `[N+1]` defining the bos/eos positions of `N` variable-length sequences in the batch.
+            For example,
+            if `offsets` is `[0, 1, 3, 6, 10, 15]`, there are `N=5` sequences with lengths 1, 2, 3, 4 and 5 respectively.
+            If provided, the inputs are concatenated and the batch size `B` is expected to be 1.
+            Default: `None`.
         head_first (Optional[bool]):
             Whether the inputs are in the head-first format.
+            This head-first format is not supported for variable-length inputs.
             Default: `True`.
 
     Returns:
         o (torch.Tensor):
             Outputs of shape `[B, H, T, V]` if `head_first=True` else `[B, T, H, V]`.
         final_state (torch.Tensor):
-            Final state of shape `[B, H, K, V]` if `output_final_state=True` else `None`.
+            Final state of shape `[N, H, K, V]` if `output_final_state=True` else `None`.
+
+    Examples::
+        >>> import torch
+        >>> import torch.nn.functional as F
+        >>> from einops import rearrange
+        >>> from fla.ops.gla import chunk_gla
+        # inputs with equal lengths
+        >>> B, T, H, K, V = 4, 2048, 4, 512, 512
+        >>> q = torch.randn(B, T, H, K, device='cuda')
+        >>> k = torch.randn(B, T, H, K, device='cuda')
+        >>> v = torch.randn(B, T, H, V, device='cuda')
+        >>> g = F.logsigmoid(torch.randn(B, T, H, K, device='cuda'))
+        >>> h0 = torch.randn(B, H, K, V, device='cuda')
+        >>> o, ht = chunk_gla(q, k, v, g,
+                              initial_state=h0,
+                              output_final_state=True,
+                              head_first=False)
+        # for variable-length inputs, the batch size `B` is expected to be 1 and `offsets` is required
+        >>> q, k, v, g = map(lambda x: rearrange(x, 'b t h d -> 1 (b t) h d'), (q, k, v, g))
+        # for a batch with 4 sequences, offsets with 5 start/end positions are expected
+        >>> offsets = q.new_tensor([0, 2048, 4096, 6144, 8192], dtype=torch.long)
+        >>> o_var, ht_var = chunk_gla(q, k, v, g,
+                                      initial_state=h0,
+                                      output_final_state=True,
+                                      offsets=offsets,
+                                      head_first=False)
+        >>> assert o.allclose(o_var.view(o.shape))
+        >>> assert ht.allclose(ht_var)
     """
+    if offsets is not None:
+        if q.shape[0] != 1:
+            raise ValueError(f"The batch size is expected to be 1 rather than {q.shape[0]} when using `offsets`."
+                             f"Please flatten variable-length inputs before processing.")
+        if head_first:
+            raise RuntimeError("Sequences with variable lengths are not supported for head-first mode")
+        if initial_state is not None and initial_state.shape[0] != len(offsets) - 1:
+            raise ValueError(f"The number of initial states is expected to be equal to the number of input sequences, "
+                             f"i.e., {len(offsets) - 1} rather than {initial_state.shape[0]}.")
     if scale is None:
         scale = q.shape[-1] ** -0.5
-    o, final_state = ChunkGLAFunction.apply(q, k, v, g, scale, initial_state, output_final_state, head_first)
+    o, final_state = ChunkGLAFunction.apply(q, k, v, g, scale, initial_state, output_final_state, offsets, head_first)
     return o, final_state
