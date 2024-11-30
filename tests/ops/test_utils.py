@@ -3,8 +3,7 @@
 import pytest
 import torch
 
-from fla.ops.utils import (chunk_global_cumsum, chunk_global_reversed_cumsum,
-                           chunk_local_cumsum)
+from fla.ops.utils import chunk_global_cumsum, chunk_local_cumsum
 
 
 def reversed_cumsum(x, dim=-1):
@@ -87,12 +86,12 @@ def test_global_reversed_cumsum(
     torch.manual_seed(42)
     s = torch.randn(B, H, T, dtype=dtype).cuda() if head_first else torch.randn(B, T, H, dtype=dtype).cuda()
     ref = reversed_cumsum(s, dim=(2 if head_first else 1)).to(dtype)
-    tri = chunk_global_reversed_cumsum(s, dtype, head_first=head_first)
+    tri = chunk_global_cumsum(s, dtype, reverse=True, head_first=head_first)
     torch.testing.assert_close(ref, tri)
 
     s = torch.randn(B, H, T, D, dtype=dtype).cuda() if head_first else torch.randn(B, T, H, D, dtype=dtype).cuda()
     ref = reversed_cumsum(s, dim=(2 if head_first else 1)).to(dtype)
-    tri = chunk_global_reversed_cumsum(s, dtype, head_first=head_first)
+    tri = chunk_global_cumsum(s, dtype, reverse=True, head_first=head_first)
     torch.testing.assert_close(ref, tri)
 
 
@@ -116,12 +115,12 @@ def test_global_reversed_cumsum_varlen(
     ], 0).cuda().sort()[0]
     s = torch.randn(1, T, H, dtype=dtype).cuda()
     ref = torch.cat([reversed_cumsum(s[:, start:end], 1) for start, end in zip(offsets[:-1], offsets[1:])], 1).to(dtype)
-    tri = chunk_global_reversed_cumsum(s, dtype, offsets=offsets, head_first=False)
+    tri = chunk_global_cumsum(s, dtype, reverse=True, offsets=offsets, head_first=False)
     torch.testing.assert_close(ref, tri)
 
     s = torch.randn(1, T, H, D, dtype=dtype).cuda()
     ref = torch.cat([reversed_cumsum(s[:, start:end], 1) for start, end in zip(offsets[:-1], offsets[1:])], 1).to(dtype)
-    tri = chunk_global_reversed_cumsum(s, dtype, offsets=offsets, head_first=False)
+    tri = chunk_global_cumsum(s, dtype, reverse=True, offsets=offsets, head_first=False)
     torch.testing.assert_close(ref, tri)
 
 
