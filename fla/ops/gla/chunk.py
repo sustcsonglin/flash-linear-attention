@@ -995,18 +995,18 @@ def chunk_gla_bwd_dA(
         B, T, H, V = v.shape
     BT = min(chunk_size, triton.next_power_of_2(T))
     if offsets is None:
-        N, NT = B, triton.cdiv(T, BT)
+        NT = triton.cdiv(T, BT)
     else:
         if indices is None:
             indices = torch.cat([
                 torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
                 for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
             ])
-        N, NT = len(offsets) - 1, len(indices)
+        NT = len(indices)
     BV = min(64, triton.next_power_of_2(V))
 
     dA = v.new_empty(B, *((H, T) if head_first else (T, H)), BT, dtype=torch.float32)
-    grid = (NT, N * H)
+    grid = (NT, B * H)
     chunk_gla_bwd_kernel_dA[grid](
         v,
         do,
@@ -1041,19 +1041,19 @@ def chunk_gla_bwd_dv(
         B, T, H, K, V = *k.shape, do.shape[-1]
     BT = min(chunk_size, triton.next_power_of_2(T))
     if offsets is None:
-        N, NT = B, triton.cdiv(T, BT)
+        NT = triton.cdiv(T, BT)
     else:
         if indices is None:
             indices = torch.cat([
                 torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
                 for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
             ])
-        N, NT = len(offsets) - 1, len(indices)
+        NT = len(indices)
     BK = min(64, triton.next_power_of_2(K))
     BV = min(32, triton.next_power_of_2(V))
 
     dv = torch.empty_like(do)
-    grid = (triton.cdiv(V, BV), NT, N * H)
+    grid = (triton.cdiv(V, BV), NT, B * H)
     chunk_gla_bwd_kernel_dv[grid](
         k,
         g,
@@ -1091,14 +1091,14 @@ def chunk_gla_bwd_dqk_intra(
         B, T, H, K = q.shape
     BT = min(chunk_size, triton.next_power_of_2(T))
     if offsets is None:
-        N, NT = B, triton.cdiv(T, BT)
+        NT = triton.cdiv(T, BT)
     else:
         if indices is None:
             indices = torch.cat([
                 torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
                 for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
             ])
-        N, NT = len(offsets) - 1, len(indices)
+        NT = len(indices)
     BC = min(16, triton.next_power_of_2(T))
     BK = min(64, triton.next_power_of_2(K))
     NK = triton.cdiv(K, BK)
@@ -1106,7 +1106,7 @@ def chunk_gla_bwd_dqk_intra(
 
     dq = torch.empty_like(q, dtype=torch.float32)
     dk = torch.empty_like(k, dtype=torch.float32)
-    grid = (NK, NT * NC, N * H)
+    grid = (NK, NT * NC, B * H)
     chunk_gla_bwd_kernel_intra[grid](
         q,
         k,
@@ -1150,20 +1150,20 @@ def chunk_gla_bwd_dqkg(
         B, T, H, K, V = *k.shape, v.shape[-1]
     BT = min(chunk_size, triton.next_power_of_2(T))
     if offsets is None:
-        N, NT = B, triton.cdiv(T, BT)
+        NT = triton.cdiv(T, BT)
     else:
         if indices is None:
             indices = torch.cat([
                 torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
                 for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
             ])
-        N, NT = len(offsets) - 1, len(indices)
+        NT = len(indices)
     BK = min(64, triton.next_power_of_2(K))
     BV = min(64, triton.next_power_of_2(V))
     NK = triton.cdiv(K, BK)
 
     dg = torch.empty_like(g)
-    grid = (NK, NT, N * H)
+    grid = (NK, NT, B * H)
     # work around triton compiler bugs.
     dq2 = torch.empty_like(dq)
     dk2 = torch.empty_like(dk)
