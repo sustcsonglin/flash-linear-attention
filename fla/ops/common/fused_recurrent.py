@@ -189,7 +189,6 @@ def fused_recurrent_bwd_kernel(
         all = B * T
 
     if HEAD_FIRST:
-        p_q = q + i_nh * T*K + ((T-1) * K if REVERSE else 0) + i_k * BK + tl.arange(0, BK)
         p_k = k + i_nh * T*K + ((T-1) * K if REVERSE else 0) + i_k * BK + tl.arange(0, BK)
         p_v = v + i_nh * T*V + ((T-1) * V if REVERSE else 0) + i_v * BV + tl.arange(0, BV)
         p_do = do + i_nh * T*V + ((T-1) * V if REVERSE else 0) + i_v * BV + tl.arange(0, BV)
@@ -201,7 +200,6 @@ def fused_recurrent_bwd_kernel(
         if USE_GV:
             p_gv = gv + i_nh * T*V + ((T-1) * V if REVERSE else 0) + i_v * BV + tl.arange(0, BV)
     else:
-        p_q = q + (bos + ((T-1) if REVERSE else 0)) * H*K + i_h * K + i_k * BK + tl.arange(0, BK)
         p_k = k + (bos + ((T-1) if REVERSE else 0)) * H*K + i_h * K + i_k * BK + tl.arange(0, BK)
         p_v = v + (bos + ((T-1) if REVERSE else 0)) * H*V + i_h * V + i_v * BV + tl.arange(0, BV)
         p_do = do + (bos + ((T-1) if REVERSE else 0)) * H*V + i_h * V + i_v * BV + tl.arange(0, BV)
@@ -240,7 +238,6 @@ def fused_recurrent_bwd_kernel(
         b_dq = tl.sum(b_dq, axis=1) * scale
         tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), mask=mask_k)
 
-        p_q += (-1 if REVERSE else 1) * (1 if HEAD_FIRST else H) * K
         p_k += (-1 if REVERSE else 1) * (1 if HEAD_FIRST else H) * K
         p_v += (-1 if REVERSE else 1) * (1 if HEAD_FIRST else H) * V
         p_do += (-1 if REVERSE else 1) * (1 if HEAD_FIRST else H) * V
@@ -336,16 +333,16 @@ def fused_recurrent_fwd(
     initial_state: Optional[torch.Tensor] = None,
     output_final_state: bool = False,
     reverse: bool = False,
-    offsets: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
     head_first: bool = True
 ):
     if head_first:
         B, H, T, K, V = *k.shape, v.shape[-1]
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
+    N = B if offsets is None else len(offsets) - 1
     BK, BV = min(K, 64), min(V, 64)
     NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
-    N = B if offsets is None else len(offsets) - 1
 
     h0 = initial_state
     if output_final_state:
@@ -397,7 +394,7 @@ def fused_recurrent_bwd(
     scale: Optional[float] = None,
     initial_state: Optional[torch.Tensor] = None,
     reverse: bool = False,
-    offsets: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
     head_first: bool = True
 ):
     if head_first:
@@ -481,7 +478,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
     @autocast_custom_fwd
     def forward(
         ctx,
-        q,
+        q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
         g: Optional[torch.Tensor] = None,
@@ -491,7 +488,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
         initial_state: Optional[torch.Tensor] = None,
         output_final_state: bool = False,
         reverse: bool = False,
-        offsets: Optional[torch.Tensor] = None,
+        offsets: Optional[torch.LongTensor] = None,
         head_first: bool = True
     ):
         o, ht = fused_recurrent_fwd(
@@ -559,7 +556,7 @@ def fused_recurrent(
     initial_state: Optional[torch.Tensor] = None,
     output_final_state: bool = False,
     reverse: bool = False,
-    offsets: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
     head_first: bool = True
 ):
     if scale is None:
