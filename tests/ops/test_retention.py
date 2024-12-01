@@ -33,8 +33,8 @@ def assert_close(prefix, ref, tri, ratio):
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_chunk(
     B: int,
-    H: int,
     T: int,
+    H: int,
     K: int,
     expand_ratio: int,
     head_first: bool,
