@@ -1456,7 +1456,7 @@ def chunk_gla(
         g (torch.Tensor):
             Forget gates of shape `[B, H, T, K]` if `head_first=True` else `[B, T, H, K]` applied to keys.
         scale (Optional[int]):
-            Scale factor for the GLA attention scores.
+            Scale factor for the attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[torch.Tensor]):
             Initial state of shape `[N, H, K, V]` for `N` input sequences.
@@ -1471,8 +1471,7 @@ def chunk_gla(
             If provided, the inputs are concatenated and the batch size `B` is expected to be 1.
             Default: `None`.
         head_first (Optional[bool]):
-            Whether the inputs are in the head-first format.
-            This head-first format is not supported for variable-length inputs.
+            Whether the inputs are in the head-first format, which is not supported for variable-length inputs.
             Default: `True`.
 
     Returns:

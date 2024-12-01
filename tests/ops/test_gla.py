@@ -91,7 +91,7 @@ def test_fused_recurrent(
 @pytest.mark.parametrize("T", [130, 146, 162, 178, 300, 2048])
 @pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("D", [300, 100])
-@pytest.mark.parametrize("dtype", [torch.float])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float])
 @pytest.mark.parametrize("head_first", [False])
 def test_chunk(
     B: int,
@@ -148,7 +148,7 @@ def test_chunk(
 @pytest.mark.parametrize("T", [64, 128, 200, 250, 256, 300, 400, 512, 1000, 2048])
 @pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("D", [300, 100])
-@pytest.mark.parametrize("dtype", [torch.float])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float])
 def test_chunk_varlen(
     N: int,
     T: int,
@@ -164,7 +164,6 @@ def test_chunk_varlen(
         torch.arange(16, T)[torch.randperm(T - 1)[:N-1]],
         torch.tensor([T], dtype=torch.long)
     ], 0).cuda().sort()[0]
-    print(offsets)
     # seq-first required for inputs with variable lengths
     q = torch.randn((1, T, H, D), dtype=dtype, device='cuda').requires_grad_()
     k = torch.randn((1, T, H, D), dtype=dtype, device='cuda').requires_grad_()

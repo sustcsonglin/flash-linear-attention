@@ -49,8 +49,7 @@ def fused_recurrent_gla(
             If provided, the inputs are concatenated and the batch size `B` is expected to be 1.
             Default: `None`.
         head_first (Optional[bool]):
-            Whether the inputs are in the head-first format.
-            This head-first format is not supported for variable-length inputs.
+            Whether the inputs are in the head-first format, which is not supported for variable-length inputs.
             Default: `True`.
 
     Returns:
