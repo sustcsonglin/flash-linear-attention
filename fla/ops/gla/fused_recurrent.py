@@ -18,7 +18,7 @@ def fused_recurrent_gla(
     initial_state: Optional[torch.Tensor] = None,
     output_final_state: bool = False,
     reverse: bool = False,
-    offsets: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
     head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
@@ -42,7 +42,7 @@ def fused_recurrent_gla(
             Default: `None`.
         output_final_state (Optional[bool]):
             Whether to output the final state of shape `[N, H, K, V]`. Default: `False`.
-        offsets (Optional[torch.Tensor]):
+        offsets (Optional[torch.LongTensor]):
             Offsets of shape `[N+1]` defining the bos/eos positions of `N` variable-length sequences in the batch.
             For example,
             if `offsets` is `[0, 1, 3, 6, 10, 15]`, there are `N=5` sequences with lengths 1, 2, 3, 4 and 5 respectively.

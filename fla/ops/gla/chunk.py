@@ -821,8 +821,8 @@ def chunk_gla_fwd_intra_gk(
     k: torch.Tensor,
     g: torch.Tensor,
     scale: float,
-    offsets: Optional[torch.Tensor] = None,
-    indices: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -835,10 +835,8 @@ def chunk_gla_fwd_intra_gk(
         NT = triton.cdiv(T, BT)
     else:
         if indices is None:
-            indices = torch.cat([
-                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
-                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
-            ])
+            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
+            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         NT = len(indices)
     BC = min(16, triton.next_power_of_2(T))
     BK = min(64, triton.next_power_of_2(K))
@@ -934,8 +932,8 @@ def chunk_gla_fwd_o_gk(
     A: torch.Tensor,
     h: torch.Tensor,
     scale: float,
-    offsets: Optional[torch.Tensor] = None,
-    indices: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -947,10 +945,9 @@ def chunk_gla_fwd_o_gk(
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
-        indices = torch.cat([
-            torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
-            for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
-        ])
+        if indices is None:
+            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
+            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         NT = len(indices)
     BK = min(32, triton.next_power_of_2(K))
     BV = min(32, triton.next_power_of_2(V))
@@ -984,8 +981,8 @@ def chunk_gla_bwd_dA(
     v: torch.Tensor,
     do: torch.Tensor,
     scale: float,
-    offsets: Optional[torch.Tensor] = None,
-    indices: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -998,10 +995,8 @@ def chunk_gla_bwd_dA(
         NT = triton.cdiv(T, BT)
     else:
         if indices is None:
-            indices = torch.cat([
-                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
-                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
-            ])
+            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
+            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         NT = len(indices)
     BV = min(64, triton.next_power_of_2(V))
 
@@ -1030,8 +1025,8 @@ def chunk_gla_bwd_dv(
     A: torch.Tensor,
     do: torch.Tensor,
     dh: torch.Tensor,
-    offsets: Optional[torch.Tensor] = None,
-    indices: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -1044,10 +1039,8 @@ def chunk_gla_bwd_dv(
         NT = triton.cdiv(T, BT)
     else:
         if indices is None:
-            indices = torch.cat([
-                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
-                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
-            ])
+            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
+            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         NT = len(indices)
     BK = min(64, triton.next_power_of_2(K))
     BV = min(32, triton.next_power_of_2(V))
@@ -1080,8 +1073,8 @@ def chunk_gla_bwd_dqk_intra(
     k: torch.Tensor,
     g: torch.Tensor,
     dA: torch.Tensor,
-    offsets: Optional[torch.Tensor] = None,
-    indices: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -1094,10 +1087,8 @@ def chunk_gla_bwd_dqk_intra(
         NT = triton.cdiv(T, BT)
     else:
         if indices is None:
-            indices = torch.cat([
-                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
-                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
-            ])
+            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
+            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         NT = len(indices)
     BC = min(16, triton.next_power_of_2(T))
     BK = min(64, triton.next_power_of_2(K))
@@ -1139,8 +1130,8 @@ def chunk_gla_bwd_dqkg(
     dq: torch.Tensor,
     dk: torch.Tensor,
     scale: float,
-    offsets: Optional[torch.Tensor] = None,
-    indices: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -1153,10 +1144,8 @@ def chunk_gla_bwd_dqkg(
         NT = triton.cdiv(T, BT)
     else:
         if indices is None:
-            indices = torch.cat([
-                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
-                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
-            ])
+            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], chunk_size).tolist()])
+            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         NT = len(indices)
     BK = min(64, triton.next_power_of_2(K))
     BV = min(64, triton.next_power_of_2(V))
@@ -1204,7 +1193,8 @@ def chunk_gla_fwd(
     scale: float,
     initial_state: torch.Tensor,
     output_final_state: bool,
-    offsets: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -1213,12 +1203,6 @@ def chunk_gla_fwd(
     if g_cumsum is None:
         g_cumsum = chunk_local_cumsum(g, BT, offsets=offsets, head_first=head_first)
 
-    indices = None
-    if offsets is not None:
-        indices = torch.cat([
-            torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
-            for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
-        ])
     h, ht = chunk_fwd_h(
         k=k,
         v=v,
@@ -1272,7 +1256,8 @@ def chunk_gla_bwd(
     A: torch.Tensor,
     do: torch.Tensor,
     dht: torch.Tensor,
-    offsets: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ):
@@ -1281,12 +1266,6 @@ def chunk_gla_bwd(
     if g_cumsum is None:
         g_cumsum = chunk_local_cumsum(g, BT, offsets=offsets, head_first=head_first)
 
-    indices = None
-    if offsets is not None:
-        indices = torch.cat([
-            torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
-            for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
-        ])
     if h is None:
         h, _ = chunk_fwd_h(
             k=k,
@@ -1385,6 +1364,15 @@ class ChunkGLAFunction(torch.autograd.Function):
     ):
         T = q.shape[2] if head_first else q.shape[1]
         chunk_size = min(64, triton.next_power_of_2(T))
+
+        # 2-d indices denoting the offsets of chunks in each sequence
+        # for example, if the passed `offsets` is [0, 100, 356] and `chunk_size` is 64,
+        # then there are 2 and 4 chunks in the 1st and 2nd sequences respectively, and `indices` will be
+        # [[0, 0], [0, 1], [1, 0], [1, 1], [1, 2], [1, 3]]
+        indices = None
+        if offsets is not None:
+            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], chunk_size).tolist()])
+            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         g_cumsum, A, h, ht, o = chunk_gla_fwd(
             q=q,
             k=k,
@@ -1395,6 +1383,7 @@ class ChunkGLAFunction(torch.autograd.Function):
             initial_state=initial_state,
             output_final_state=output_final_state,
             offsets=offsets,
+            indices=indices,
             head_first=head_first,
             chunk_size=chunk_size
         )
@@ -1407,6 +1396,7 @@ class ChunkGLAFunction(torch.autograd.Function):
         ctx.chunk_size = chunk_size
         ctx.scale = scale
         ctx.offsets = offsets
+        ctx.indices = indices
         ctx.head_first = head_first
         return o, ht
 
@@ -1414,7 +1404,7 @@ class ChunkGLAFunction(torch.autograd.Function):
     @contiguous
     def backward(ctx, do, dht):
         q, k, v, g, g_cumsum, initial_state, A = ctx.saved_tensors
-        chunk_size, scale, offsets, head_first = ctx.chunk_size, ctx.scale, ctx.offsets, ctx.head_first
+        chunk_size, scale, offsets, indices, head_first = ctx.chunk_size, ctx.scale, ctx.offsets, ctx.indices, ctx.head_first
         dq, dk, dv, dg, dh0 = chunk_gla_bwd(
             q=q,
             k=k,
@@ -1428,6 +1418,7 @@ class ChunkGLAFunction(torch.autograd.Function):
             do=do,
             dht=dht,
             offsets=offsets,
+            indices=indices,
             head_first=head_first,
             chunk_size=chunk_size
         )
@@ -1442,7 +1433,7 @@ def chunk_gla(
     scale: Optional[int] = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
-    offsets: Optional[torch.Tensor] = None,
+    offsets: Optional[torch.LongTensor] = None,
     head_first: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
@@ -1464,7 +1455,7 @@ def chunk_gla(
             Default: `None`.
         output_final_state (Optional[bool]):
             Whether to output the final state of shape `[N, H, K, V]`. Default: `False`.
-        offsets (Optional[torch.Tensor]):
+        offsets (Optional[torch.LongTensor]):
             Offsets of shape `[N+1]` defining the bos/eos positions of `N` variable-length sequences in the batch.
             For example,
             if `offsets` is `[0, 1, 3, 6, 10, 15]`, there are `N=5` sequences with lengths 1, 2, 3, 4 and 5 respectively.
