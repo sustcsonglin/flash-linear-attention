@@ -14,6 +14,7 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 
 # Table of Contents
 
+- [News](#news)
 - [Models](#models)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -25,10 +26,23 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 - [Benchmarks](#benchmarks)
 - [Citation](#citation)
 
-# Models
-Roughly sorted according to the timeline supported in FLA
+# News
 
-| Date    | Model     | Title                                                                                                     |                                  Paper                                   |                                            Code                                             |                                                  FLA impl                                                   |
+- [2024-12]: :loudspeaker: `fla` now officially supports kernels with variable-length inputs.
+- [2024-11]: The inputs are now switched from head-first to seq-first format.
+- [2024-11]: :rocket: `fla` now provides a flexible way for training hybrid models.
+- [2024-10]: :fire: Announcing `flame`, a minimal and scalable framework for training `fla` models. Check out the details [here](training/README.md).
+- [2024-09]: `fla` now includes a fused linear and cross-entropy layer, significantly reducing memory usage during training.
+- [2024-09]: :tada: Add GSA implementation to `fla` ([paper](https://arxiv.org/abs/2409.07146)).
+- [2024-05]: :tada: Add DeltaNet implementation to `fla` ([paper](https://arxiv.org/abs/2102.11174)).
+- [2024-05]: :rocket: `fla` v0.1: a variety of subquadratic kernels/layers/models integrated (RetNet/GLA/Mamba/HGRN/HGRN2/RWKV6, etc., see [Models](#models)).
+- [2023-12]: :tada: Launched `fla`, offering a collection of implementations for state-of-the-art linear attention models.
+
+# Models
+
+Roughly sorted according to the timeline supported in `fla`
+
+| Date    | Model     | Title                                                                                                     |                                  Paper                                   |                                            Code                                             |                                                  `fla` impl                                                   |
 | :------ | :-------- | :-------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------: |
 | 2023-07 | RetNet    | Retentive network: a successor to transformer for large language models                                   |                [arxiv](https://arxiv.org/abs/2307.08621)                 |                [official](https://github.com/microsoft/torchscale/tree/main)                | [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/multiscale_retention.py) |
 | 2023-12 | GLA       | Gated Linear Attention Transformers with Hardware-Efficient Training                                      |                [arxiv](https://arxiv.org/abs/2312.06635)                 |                [official](https://github.com/berlino/gated_linear_attention)                |         [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/gla.py)          |
@@ -397,7 +411,7 @@ If you find this repo useful, please consider citing our works:
 }
 
 @software{yang2024fla,
-  title  = {FLA: A Triton-Based Library for Hardware-Efficient Implementations of Linear Attention Mechanism},
+  title  = {`fla`: A Triton-Based Library for Hardware-Efficient Implementations of Linear Attention Mechanism},
   author = {Yang, Songlin and Zhang, Yu},
   url    = {https://github.com/sustcsonglin/flash-linear-attention},
   month  = jan,
