@@ -237,10 +237,7 @@ def fused_recurrent_retention_fwd(
     NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
 
     h0 = initial_state
-    if output_final_state:
-        ht = q.new_empty(N, H, K, V, dtype=torch.float32)
-    else:
-        ht = None
+    ht = q.new_empty(N, H, K, V, dtype=torch.float32) if output_final_state else None
     o = q.new_empty(NK, *v.shape, dtype=torch.float)
 
     grid = (NV, NK, N * H)
@@ -292,7 +289,7 @@ def fused_recurrent_retention_bwd(
     dk = q.new_empty(NV, *k.shape, dtype=torch.float)
     dv = q.new_empty(NK, *v.shape, dtype=torch.float)
     h0 = initial_state
-    dh0 = q.new_empty(B, H, K, V, dtype=torch.float) if initial_state is not None else None
+    dh0 = torch.empty_like(initial_state) if initial_state is not None else None
 
     grid = (NV, NK, N * H)
     fused_recurrent_retention_bwd_kernel[grid](
