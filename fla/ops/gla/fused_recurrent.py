@@ -42,6 +42,8 @@ def fused_recurrent_gla(
             Default: `None`.
         output_final_state (Optional[bool]):
             Whether to output the final state of shape `[N, H, K, V]`. Default: `False`.
+        reverse (Optional[bool]):
+            If `True`, process the state passing in reverse order. Default: `False`.
         offsets (Optional[torch.LongTensor]):
             Offsets of shape `[N+1]` defining the bos/eos positions of `N` variable-length sequences in the batch.
             For example,
