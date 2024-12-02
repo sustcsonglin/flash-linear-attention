@@ -82,7 +82,7 @@ def test_chunk(
 @pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("K", [32, 64, 100])
 @pytest.mark.parametrize("expand_ratio", [1, 2])
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float])
 def test_chunk_varlen(
     N: int,
     T: int,
