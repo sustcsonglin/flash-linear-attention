@@ -14,6 +14,7 @@
 """PyTorch MAMBA2 model."""
 
 import math
+import warnings
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
@@ -32,26 +33,28 @@ from fla.modules.layernorm_gated import RMSNormGated
 
 logger = logging.get_logger(__name__)
 
-try:
-    from mamba_ssm.ops.triton.selective_state_update import \
-        selective_state_update
-    from mamba_ssm.ops.triton.ssd_combined import (
-        mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined)
-except ImportError:
-    (
+with warnings.catch_warnings(category=FutureWarning):
+    warnings.simplefilter('ignore')
+    try:
+        from mamba_ssm.ops.triton.selective_state_update import \
+            selective_state_update
+        from mamba_ssm.ops.triton.ssd_combined import (
+            mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined)
+    except ImportError:
+        (
+            selective_state_update,
+            mamba_chunk_scan_combined,
+            mamba_split_conv1d_scan_combined,
+        ) = (None, None, None)
+    try:
+        from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+    except ImportError:
+        causal_conv1d_update, causal_conv1d_fn = None, None
+    is_fast_path_available = all((
         selective_state_update,
-        mamba_chunk_scan_combined,
-        mamba_split_conv1d_scan_combined,
-    ) = (None, None, None)
-
-try:
-    from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
-except ImportError:
-    causal_conv1d_update, causal_conv1d_fn = None, None
-
-is_fast_path_available = all(
-    (selective_state_update, causal_conv1d_fn, causal_conv1d_update)
-)
+        causal_conv1d_fn,
+        causal_conv1d_update
+    ))
 
 
 def pad_tensor_by_size(input_tensor: torch.Tensor, pad_size: int):
