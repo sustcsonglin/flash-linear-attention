@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+import os
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -40,6 +42,7 @@ def test_chunk(
     head_first: bool
 ):
     torch.manual_seed(42)
+    os.environ['TRITON_F32_DEFAULT'] = 'ieee'
     # [B, H, T, D]
     if head_first:
         q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
@@ -66,26 +69,103 @@ def test_chunk(
     ref_dh0, h0.grad = h0.grad.clone(), None
 
     tri, tri_ht = chunk_simple_gla(q, k, v, g, initial_state=h0, output_final_state=True, head_first=head_first)
-    ((tri * do).sum() + (tri_ht * torch.zeros_like(ref_ht)).sum()).backward()
+    ((tri * do).sum()).backward()
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
     tri_dv, v.grad = v.grad.clone(), None
     tri_dg, g.grad = g.grad.clone(), None
     tri_dh0, h0.grad = h0.grad.clone(), None
 
-    assert get_err_ratio(tri, ref) < 0.004, f" o diff: {torch.abs(ref - tri).max()}, ratio: {get_err_ratio(ref, tri)}"
-    assert get_err_ratio(tri_ht, ref_ht) < 0.005, \
-        f"ht diff: {torch.abs(ref_ht - tri_ht).max()}, ratio: {get_err_ratio(ref_ht, tri_ht)}"
-    assert get_err_ratio(tri_dq, ref_dq) < 0.005, \
-        f"dq diff: {torch.abs(ref_dq - tri_dq).max()}, ratio: {get_err_ratio(ref_dq, tri_dq)}"
-    assert get_err_ratio(tri_dk, ref_dk) < 0.005, \
-        f"dk diff: {torch.abs(ref_dk - tri_dk).max()}, ratio: {get_err_ratio(ref_dk, tri_dk)}"
-    assert get_err_ratio(tri_dv, ref_dv) < 0.005, \
-        f"dv diff: {torch.abs(ref_dv - tri_dv).max()}, ratio: {get_err_ratio(ref_dv, tri_dv)}"
-    assert get_err_ratio(tri_dg, ref_dg) < 0.005, \
-        f"dg diff: {torch.abs(ref_dg - tri_dg).max()}, ratio: {get_err_ratio(ref_dg, tri_dg)}"
-    assert get_err_ratio(tri_dh0, ref_dh0) < 0.005, \
-        f"dh0 diff: {torch.abs(ref_dh0 - tri_dh0).max()}, ratio: {get_err_ratio(ref_dh0, tri_dh0)}"
+    assert_close("  o", ref, tri, 0.004)
+    assert_close(" ht", ref_ht, tri_ht, 0.005)
+    assert_close(" dq", ref_dq, tri_dq, 0.005)
+    assert_close(" dk", ref_dk, tri_dk, 0.005)
+    assert_close(" dv", ref_dv, tri_dv, 0.005)
+    assert_close(" dg", ref_dg, tri_dg, 0.005)
+    assert_close("dh0", ref_dh0, tri_dh0, 0.005)
+
+
+@pytest.mark.parametrize("N", [4])
+@pytest.mark.parametrize("T", [64, 128, 200, 250, 256, 300, 400, 512, 1000, 2048])
+@pytest.mark.parametrize("H", [4])
+@pytest.mark.parametrize("D", [100, 256])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float])
+def test_chunk_varlen(
+    N: int,
+    T: int,
+    H: int,
+    D: int,
+    dtype: torch.dtype,
+):
+    torch.manual_seed(42)
+    os.environ['TRITON_F32_DEFAULT'] = 'ieee'
+
+    # randomly split the sequence into N segments
+    offsets = torch.cat([
+        torch.tensor([0], dtype=torch.long),
+        torch.arange(16, T)[torch.randperm(T - 1)[:N-1]],
+        torch.tensor([T], dtype=torch.long)
+    ], 0).cuda().sort()[0]
+    # seq-first required for inputs with variable lengths
+    q = torch.randn((1, T, H, D), dtype=dtype, device='cuda').requires_grad_()
+    k = torch.randn((1, T, H, D), dtype=dtype, device='cuda').requires_grad_()
+    v = torch.randn((1, T, H, D), dtype=dtype, device='cuda').requires_grad_()
+    g = F.logsigmoid(torch.randn((1, T, H), dtype=dtype, device='cuda')).requires_grad_()
+    h0 = torch.randn((N, H, D, D), dtype=torch.float32, device='cuda').requires_grad_()
+    do = torch.randn_like(v)
+
+    ref, ref_ht = fused_recurrent_simple_gla(
+        q=q,
+        k=k,
+        v=v,
+        g=g,
+        initial_state=h0,
+        output_final_state=True,
+        offsets=offsets,
+        head_first=False
+    )
+    # dht not supported yet in `fused_recurrent` kernel
+    ref, _ = fused_recurrent_simple_gla(
+        q=q,
+        k=k,
+        v=v,
+        g=g,
+        initial_state=h0,
+        output_final_state=False,
+        offsets=offsets,
+        head_first=False
+    )
+    ((ref * do).sum()).backward()
+    ref_dq, q.grad = q.grad.clone(), None
+    ref_dk, k.grad = k.grad.clone(), None
+    ref_dv, v.grad = v.grad.clone(), None
+    ref_dg, g.grad = g.grad.clone(), None
+    ref_dh0, h0.grad = h0.grad.clone(), None
+
+    tri, tri_ht = chunk_simple_gla(
+        q=q,
+        k=k,
+        v=v,
+        g=g,
+        initial_state=h0,
+        output_final_state=True,
+        offsets=offsets,
+        head_first=False
+    )
+    ((tri * do).sum()).backward()
+    tri_dq, q.grad = q.grad.clone(), None
+    tri_dk, k.grad = k.grad.clone(), None
+    tri_dv, v.grad = v.grad.clone(), None
+    tri_dg, g.grad = g.grad.clone(), None
+    tri_dh0, h0.grad = h0.grad.clone(), None
+
+    assert_close("  o", ref, tri, 0.004)
+    assert_close(" ht", ref_ht, tri_ht, 0.005)
+    assert_close(" dq", ref_dq, tri_dq, 0.005)
+    assert_close(" dk", ref_dk, tri_dk, 0.005)
+    assert_close(" dv", ref_dv, tri_dv, 0.005)
+    assert_close(" dg", ref_dg, tri_dg, 0.005)
+    assert_close("dh0", ref_dh0, tri_dh0, 0.005)
 
 
 @pytest.mark.parametrize("B", [1])
@@ -101,7 +181,7 @@ def test_parallel(
     dtype: torch.dtype
 ):
     torch.manual_seed(42)
-
+    os.environ['TRITON_F32_DEFAULT'] = 'ieee'
     q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
     k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
     v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)

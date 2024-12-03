@@ -12,8 +12,9 @@ This repo aims at providing a collection of efficient Triton-based implementatio
   <img width="400" alt="image" src="https://github.com/sustcsonglin/flash-linear-attention/assets/18402347/02ff2e26-1495-4088-b701-e72cd65ac6cf">
 </div>
 
-# Table of Contents
+## Table of Contents
 
+- [News](#news)
 - [Models](#models)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -25,10 +26,23 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 - [Benchmarks](#benchmarks)
 - [Citation](#citation)
 
-# Models
-Roughly sorted according to the timeline supported in FLA
+## News
 
-| Date    | Model     | Title                                                                                                     |                                  Paper                                   |                                            Code                                             |                                                  FLA impl                                                   |
+- [2024-12]: :loudspeaker: `fla` now officially supports kernels with variable-length inputs.
+- [2024-11]: The inputs are now switched from head-first to seq-first format.
+- [2024-11]: :rocket: `fla` now provides a flexible way for training hybrid models.
+- [2024-10]: :fire: Announcing `flame`, a minimal and scalable framework for training `fla` models. Check out the details [here](training/README.md).
+- [2024-09]: `fla` now includes a fused linear and cross-entropy layer, significantly reducing memory usage during training.
+- [2024-09]: :tada: Add GSA implementation to `fla` ([paper](https://arxiv.org/abs/2409.07146)).
+- [2024-05]: :tada: Add DeltaNet implementation to `fla` ([paper](https://arxiv.org/abs/2102.11174)).
+- [2024-05]: :rocket: `fla` v0.1: a variety of subquadratic kernels/layers/models integrated (RetNet/GLA/Mamba/HGRN/HGRN2/RWKV6, etc., see [Models](#models)).
+- [2023-12]: :tada: Launched `fla`, offering a collection of implementations for state-of-the-art linear attention models.
+
+## Models
+
+Roughly sorted according to the timeline supported in `fla`
+
+| Date    | Model     | Title                                                                                                     |                                  Paper                                   |                                            Code                                             |                                                  `fla` impl                                                   |
 | :------ | :-------- | :-------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------: |
 | 2023-07 | RetNet    | Retentive network: a successor to transformer for large language models                                   |                [arxiv](https://arxiv.org/abs/2307.08621)                 |                [official](https://github.com/microsoft/torchscale/tree/main)                | [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/multiscale_retention.py) |
 | 2023-12 | GLA       | Gated Linear Attention Transformers with Hardware-Efficient Training                                      |                [arxiv](https://arxiv.org/abs/2312.06635)                 |                [official](https://github.com/berlino/gated_linear_attention)                |         [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/gla.py)          |
@@ -44,7 +58,7 @@ Roughly sorted according to the timeline supported in FLA
 | 2024-09 | GSA       | Gated Slot Attention for Efficient Linear-Time Sequence Modeling                                          |                [arxiv](https://arxiv.org/abs/2409.07146)                 | [official](https://github.com/sustcsonglin/flash-linear-attention/tree/main/fla/models/gsa) |           [code](https://github.com/sustcsonglin/flash-linear-attention/tree/main/fla/models/gsa)           |
 
 
-# Installation
+## Installation
 
 The following requirements should be satisfied 
 - [PyTorch](https://pytorch.org/) >= 2.0
@@ -70,9 +84,9 @@ While we offer some fixes for Triton<=2.1, be aware that these may result in red
 > For both Triton 2.2 and earlier versions (up to 2.1), you can reliably use the `Chunk` version (with hidden states materialized into HBMs).
 > After careful optimization, this version generally delivers high performance in most scenarios.
 
-# Usage
+## Usage
 
-## Token Mixing
+### Token Mixing
 
 We provide ``token mixing'' linear attention layers in `fla.layers` for you to use. 
 You can replace the standard multihead attention layer in your model with other linear attention layers. 
@@ -175,7 +189,7 @@ GLAForCausalLM(
 
 ```
 
-## Fused Modules
+### Fused Modules
 
 We offer a collection of fused modules in `fla.modules` to facilitate faster training:
 
@@ -188,7 +202,7 @@ We offer a collection of fused modules in `fla.modules` to facilitate faster tra
 * [`Linear Cross Entropy`](fla/modules/fused_linear_cross_entropy.py): fused linear layer and cross entropy loss to avoid the materialization of large logits tensors. Also refer to implementations by [mgmalek](https://github.com/mgmalek/efficient_cross_entropy) and [Liger-Kernel](https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/ops/fused_linear_cross_entropy.py).
 * [`Linear KL Divergence`](fla/modules/fused_kl_div.py): fused linear layer and KL divergence loss in a similar vein as CE loss.
 
-## Generation
+### Generation
 
 Upon successfully pretraining a model, it becomes accessible for generating text using the 🤗 text generation APIs.
 In the following, we give a generation example:
@@ -228,7 +242,7 @@ All of the pretrained models currently available can be found in [`fla-hub`](htt
 >>> for model in list_models(author='fla-hub'): print(model.id)
 ```
 
-## Hybrid Models
+### Hybrid Models
 
 `fla` provides a flexible method to incorporate standard attention layers into existing linear attention models. 
 This is easily achieved by specifying the `attn` argument in the model configuration.
@@ -336,7 +350,7 @@ SambaForCausalLM(
 During inference, you **DO NOT** need to revise anything for generation!
 The model will produce output as-is, without any need for additional configurations or modifications.
 
-# Evaluations
+## Evaluations
 
 The [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) library allows you to easily perform (zero-shot) model evaluations. 
 Follow the steps below to use this library:
@@ -364,7 +378,7 @@ Running the command above will provide the task results reported in the GLA pape
 >>> from lm_eval.tasks import TaskManager; TaskManager().initialize_tasks()
 ```
 
-# Benchmarks
+## Benchmarks
 
 We compared our Triton-based RetNet implementation with CUDA-based FlashAttention2, using a batch size of 8, 32 heads, and a head dimension of 128, across different sequence lengths. 
 These tests were conducted on a single A100 80GB GPU, as illustrated in the following graph
@@ -386,7 +400,7 @@ Performance:
 ![Performance](https://github.com/sustcsonglin/flash-linear-attention/assets/30831390/36961182-da39-48ba-96a6-84c572ce51d7)
 
 
-# Citation
+## Citation
 If you find this repo useful, please consider citing our works:
 ```bib
 @inproceedings{yang2024gla,

@@ -25,6 +25,7 @@ def chunk_local_cumsum_scalar_kernel(
     s,
     o,
     offsets,
+    indices,
     T: tl.constexpr,
     H: tl.constexpr,
     BT: tl.constexpr,
@@ -34,17 +35,18 @@ def chunk_local_cumsum_scalar_kernel(
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
     i_b, i_h = i_bh // H, i_bh % H
     if USE_OFFSETS:
-        start, end = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
     else:
-        start, end = i_b * T, i_b * T + T
-    T = end - start
+        bos, eos = i_b * T, i_b * T + T
 
     if HEAD_FIRST:
         p_s = tl.make_block_ptr(s + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
         p_o = tl.make_block_ptr(o + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
     else:
-        p_s = tl.make_block_ptr(s + start*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
-        p_o = tl.make_block_ptr(o + start*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
+        p_s = tl.make_block_ptr(s + bos*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
+        p_o = tl.make_block_ptr(o + bos*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
     # [BT]
     b_s = tl.load(p_s, boundary_check=(0,)).to(tl.float32)
     b_o = tl.cumsum(b_s, axis=0)
@@ -66,6 +68,7 @@ def chunk_local_reversed_cumsum_scalar_kernel(
     s,
     o,
     offsets,
+    indices,
     T: tl.constexpr,
     H: tl.constexpr,
     BT: tl.constexpr,
@@ -75,17 +78,18 @@ def chunk_local_reversed_cumsum_scalar_kernel(
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
     i_b, i_h = i_bh // H, i_bh % H
     if USE_OFFSETS:
-        start, end = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
     else:
-        start, end = i_b * T, i_b * T + T
-    T = end - start
+        bos, eos = i_b * T, i_b * T + T
 
     if HEAD_FIRST:
         p_s = tl.make_block_ptr(s + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
         p_o = tl.make_block_ptr(o + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
     else:
-        p_s = tl.make_block_ptr(s + start*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
-        p_o = tl.make_block_ptr(o + start*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
+        p_s = tl.make_block_ptr(s + bos*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
+        p_o = tl.make_block_ptr(o + bos*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
     # [BT]
     b_s = tl.load(p_s, boundary_check=(0,)).to(tl.float32)
     b_z = tl.sum(b_s, axis=0)
@@ -113,6 +117,7 @@ def chunk_local_cumsum_vector_kernel(
     s,
     o,
     offsets,
+    indices,
     T: tl.constexpr,
     H: tl.constexpr,
     S: tl.constexpr,
@@ -124,10 +129,11 @@ def chunk_local_cumsum_vector_kernel(
     i_s, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
     if USE_OFFSETS:
-        start, end = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
     else:
-        start, end = i_b * T, i_b * T + T
-    T = end - start
+        bos, eos = i_b * T, i_b * T + T
 
     o_i = tl.arange(0, BT)
     m_s = tl.where(o_i[:, None] >= o_i[None, :], 1., 0.)
@@ -136,8 +142,8 @@ def chunk_local_cumsum_vector_kernel(
         p_s = tl.make_block_ptr(s + i_bh * T*S, (T, S), (S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
         p_o = tl.make_block_ptr(o + i_bh * T*S, (T, S), (S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
     else:
-        p_s = tl.make_block_ptr(s + start*H*S + i_h * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-        p_o = tl.make_block_ptr(o + start*H*S + i_h * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+        p_s = tl.make_block_ptr(s + (bos * H + i_h) * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+        p_o = tl.make_block_ptr(o + (bos * H + i_h) * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
     # [BT, BS]
     b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
     b_o = tl.dot(m_s, b_s, allow_tf32=False)
@@ -164,6 +170,7 @@ def chunk_local_reversed_cumsum_vector_kernel(
     s,
     o,
     offsets,
+    indices,
     T: tl.constexpr,
     H: tl.constexpr,
     S: tl.constexpr,
@@ -175,10 +182,11 @@ def chunk_local_reversed_cumsum_vector_kernel(
     i_s, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
     if USE_OFFSETS:
-        start, end = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
     else:
-        start, end = i_b * T, i_b * T + T
-    T = end - start
+        bos, eos = i_b * T, i_b * T + T
 
     o_i = tl.arange(0, BT)
     m_s = tl.where(o_i[:, None] <= o_i[None, :], 1., 0.)
@@ -187,8 +195,8 @@ def chunk_local_reversed_cumsum_vector_kernel(
         p_s = tl.make_block_ptr(s + i_bh * T*S, (T, S), (S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
         p_o = tl.make_block_ptr(o + i_bh * T*S, (T, S), (S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
     else:
-        p_s = tl.make_block_ptr(s + start*H*S + i_h * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-        p_o = tl.make_block_ptr(o + start*H*S + i_h * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+        p_s = tl.make_block_ptr(s + (bos * H + i_h) * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+        p_o = tl.make_block_ptr(o + (bos * H + i_h) * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
     # [BT, BS]
     b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
     b_o = tl.dot(m_s, b_s, allow_tf32=False)
@@ -220,10 +228,10 @@ def chunk_global_cumsum_scalar_kernel(
     i_bh = tl.program_id(0)
     i_b, i_h = i_bh // H, i_bh % H
     if USE_OFFSETS:
-        start, end = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
     else:
-        start, end = i_b * T, i_b * T + T
-    T = end - start
+        bos, eos = i_b * T, i_b * T + T
+    T = eos - bos
 
     b_z = tl.zeros([], dtype=tl.float32)
     for i_t in range(tl.cdiv(T, BT)):
@@ -231,8 +239,8 @@ def chunk_global_cumsum_scalar_kernel(
             p_s = tl.make_block_ptr(s + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
             p_o = tl.make_block_ptr(o + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
         else:
-            p_s = tl.make_block_ptr(s + start*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
-            p_o = tl.make_block_ptr(o + start*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
+            p_s = tl.make_block_ptr(s + bos*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
+            p_o = tl.make_block_ptr(o + bos*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
         b_s = tl.load(p_s, boundary_check=(0,)).to(tl.float32)
         b_o = tl.cumsum(b_s, axis=0) + b_z[None]
         b_z += tl.sum(b_s, axis=0)
@@ -264,10 +272,10 @@ def chunk_global_reversed_cumsum_scalar_kernel(
     i_bh = tl.program_id(0)
     i_b, i_h = i_bh // H, i_bh % H
     if USE_OFFSETS:
-        start, end = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
     else:
-        start, end = i_b * T, i_b * T + T
-    T = end - start
+        bos, eos = i_b * T, i_b * T + T
+    T = eos - bos
 
     b_z = tl.zeros([], dtype=tl.float32)
     for i_t in range(tl.cdiv(T, BT) - 1, -1, -1):
@@ -275,8 +283,8 @@ def chunk_global_reversed_cumsum_scalar_kernel(
             p_s = tl.make_block_ptr(s + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
             p_o = tl.make_block_ptr(o + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
         else:
-            p_s = tl.make_block_ptr(s + start*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
-            p_o = tl.make_block_ptr(o + start*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
+            p_s = tl.make_block_ptr(s + bos*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
+            p_o = tl.make_block_ptr(o + bos*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
         b_s = tl.load(p_s, boundary_check=(0,)).to(tl.float32)
         b_zz = tl.sum(b_s, axis=0)
         b_z += b_zz
@@ -315,10 +323,10 @@ def chunk_global_cumsum_vector_kernel(
     i_s, i_bh = tl.program_id(0), tl.program_id(1)
     i_b, i_h = i_bh // H, i_bh % H
     if USE_OFFSETS:
-        start, end = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
     else:
-        start, end = i_b * T, i_b * T + T
-    T = end - start
+        bos, eos = i_b * T, i_b * T + T
+    T = eos - bos
 
     o_i = tl.arange(0, BT)
     m_s = tl.where(o_i[:, None] >= o_i[None, :], 1., 0.)
@@ -329,8 +337,8 @@ def chunk_global_cumsum_vector_kernel(
             p_s = tl.make_block_ptr(s + i_bh * T*S, (T, S), (S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
             p_z = tl.make_block_ptr(z + i_bh * T*S, (T, S), (S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
         else:
-            p_s = tl.make_block_ptr(s + start*H*S + i_h * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-            p_z = tl.make_block_ptr(z + start*H*S + i_h * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+            p_s = tl.make_block_ptr(s + (bos * H + i_h) * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+            p_z = tl.make_block_ptr(z + (bos * H + i_h) * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
         # [BT, BS]
         b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
         b_c = b_z[None, :] + tl.dot(m_s, b_s, allow_tf32=False)
@@ -370,10 +378,10 @@ def chunk_global_reversed_cumsum_vector_kernel(
     i_s, i_bh = tl.program_id(0), tl.program_id(1)
     i_b, i_h = i_bh // H, i_bh % H
     if USE_OFFSETS:
-        start, end = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_b).to(tl.int32), tl.load(offsets + i_b + 1).to(tl.int32)
     else:
-        start, end = i_b * T, i_b * T + T
-    T = end - start
+        bos, eos = i_b * T, i_b * T + T
+    T = eos - bos
 
     o_i = tl.arange(0, BT)
     m_s = tl.where(o_i[:, None] <= o_i[None, :], 1., 0.)
@@ -384,8 +392,8 @@ def chunk_global_reversed_cumsum_vector_kernel(
             p_s = tl.make_block_ptr(s + i_bh * T*S, (T, S), (S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
             p_z = tl.make_block_ptr(z + i_bh * T*S, (T, S), (S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
         else:
-            p_s = tl.make_block_ptr(s + start*H*S + i_h * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
-            p_z = tl.make_block_ptr(z + start*H*S + i_h * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+            p_s = tl.make_block_ptr(s + (bos * H + i_h) * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
+            p_z = tl.make_block_ptr(z + (bos * H + i_h) * S, (T, S), (H*S, 1), (i_t * BT, i_s * BS), (BT, BS), (1, 0))
         # [BT, BS]
         b_s = tl.load(p_s, boundary_check=(0, 1)).to(tl.float32)
         b_c = b_z[None, :] + tl.dot(m_s, b_s, allow_tf32=False)
@@ -400,6 +408,7 @@ def chunk_local_cumsum_scalar(
     chunk_size: int,
     reverse: bool = False,
     offsets: Optional[torch.Tensor] = None,
+    indices: Optional[torch.Tensor] = None,
     head_first: bool = True
 ) -> torch.Tensor:
     if head_first:
@@ -409,11 +418,15 @@ def chunk_local_cumsum_scalar(
     if offsets is not None:
         B = len(offsets) - 1
     BT = chunk_size
-    if offsets is not None:
-        B = len(offsets) - 1
-        NT = sum(triton.cdiv(i, BT) for i in (offsets[1:] - offsets[:-1]).tolist())
-    else:
+    if offsets is None:
         NT = triton.cdiv(T, BT)
+    else:
+        if indices is None:
+            indices = torch.cat([
+                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
+                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
+            ])
+        NT = len(indices)
     g_org, g = g, torch.empty_like(g, dtype=torch.float)
     grid = (NT, B * H)
     if reverse:
@@ -421,6 +434,7 @@ def chunk_local_cumsum_scalar(
             g_org,
             g,
             offsets,
+            indices,
             T=T,
             H=H,
             BT=BT,
@@ -431,6 +445,7 @@ def chunk_local_cumsum_scalar(
             g_org,
             g,
             offsets,
+            indices,
             T=T,
             H=H,
             BT=BT,
@@ -444,6 +459,7 @@ def chunk_local_cumsum_vector(
     chunk_size: int,
     reverse: bool = False,
     offsets: Optional[torch.Tensor] = None,
+    indices: Optional[torch.Tensor] = None,
     head_first: bool = True
 ) -> torch.Tensor:
     if head_first:
@@ -451,11 +467,15 @@ def chunk_local_cumsum_vector(
     else:
         B, T, H, S = g.shape
     BT = chunk_size
-    if offsets is not None:
-        B = len(offsets) - 1
-        NT = sum(triton.cdiv(i, BT) for i in (offsets[1:] - offsets[:-1]).tolist())
-    else:
+    if offsets is None:
         NT = triton.cdiv(T, BT)
+    else:
+        if indices is None:
+            indices = torch.cat([
+                torch.stack([offsets.new_full((n,), i), offsets.new_tensor(range(n))], 1)
+                for i, n in enumerate(triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist())
+            ])
+        NT = len(indices)
     g_org, g = g, torch.empty_like(g, dtype=torch.float)
     def grid(meta): return (triton.cdiv(meta['S'], meta['BS']), NT, B * H)
     # keep cummulative normalizer in fp32
@@ -466,6 +486,7 @@ def chunk_local_cumsum_vector(
             g_org,
             g,
             offsets,
+            indices,
             T=T,
             H=H,
             S=S,
@@ -477,6 +498,7 @@ def chunk_local_cumsum_vector(
             g_org,
             g,
             offsets,
+            indices,
             T=T,
             H=H,
             S=S,
@@ -492,15 +514,16 @@ def chunk_local_cumsum(
     chunk_size: int,
     reverse: bool = False,
     offsets: Optional[torch.Tensor] = None,
+    indices: Optional[torch.Tensor] = None,
     head_first: bool = True
 ) -> torch.Tensor:
     if offsets is not None:
         assert not head_first, "Sequences with variable lengths are not supported for head-first mode"
         assert g.shape[0] == 1, "Only batch size 1 is supported when offsets are provided"
     if len(g.shape) == 3:
-        return chunk_local_cumsum_scalar(g, chunk_size, reverse, offsets, head_first)
+        return chunk_local_cumsum_scalar(g, chunk_size, reverse, offsets, indices, head_first)
     elif len(g.shape) == 4:
-        return chunk_local_cumsum_vector(g, chunk_size, reverse, offsets, head_first)
+        return chunk_local_cumsum_vector(g, chunk_size, reverse, offsets, indices, head_first)
     else:
         raise ValueError(f"Unsupported input shape {g.shape}. "
                          f"which should be (B, H, T, dim) if `head_first=True` "
