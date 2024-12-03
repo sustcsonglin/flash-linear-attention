@@ -858,7 +858,7 @@ class ChunkRWKV6Function(torch.autograd.Function):
         )
         # dq dk in fp32
         dA = chunk_gla_bwd_dA(v=v, do=do, scale=scale, chunk_size=BT)
-        dv = chunk_gla_bwd_dv(k=k, g_cumsum=g_cumsum_inclusive, A=A, do=do, dh=dh, scale=scale, chunk_size=BT)
+        dv = chunk_gla_bwd_dv(k=k, g=g_cumsum_inclusive, A=A, do=do, dh=dh, chunk_size=BT)
         dq, dk = chunk_rwkv6_bwd_dqk_intra(
             q=q,
             k=k,
