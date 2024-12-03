@@ -78,9 +78,6 @@ class GatedSlotAttention(nn.Module):
         self.num_slots = num_slots
         self.norm_first = norm_first
 
-        # Bound the weights to keep the gate safe
-        self.bound_f = 100.0
-
         self.layer_idx = layer_idx
 
         if layer_idx is None:
@@ -184,9 +181,6 @@ class GatedSlotAttention(nn.Module):
         if self.feature_map is not None:
             q, k = map(lambda x: self.feature_map(x), (q, k))
         v = swish(v)
-
-        # Bound the weights to keep the gate safe
-        f = self.bound_f * F.softsign(f / self.bound_f)
 
         f = F.logsigmoid(f) / self.gate_logit_normalizer
         s = (1 - f.exp()).to(f.dtype)
