@@ -33,7 +33,7 @@ from fla.modules.layernorm_gated import RMSNormGated
 
 logger = logging.get_logger(__name__)
 
-with warnings.catch_warnings(category=FutureWarning):
+with warnings.catch_warnings():
     warnings.simplefilter('ignore')
     try:
         from mamba_ssm.ops.triton.selective_state_update import \
