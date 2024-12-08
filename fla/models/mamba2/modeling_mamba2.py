@@ -176,8 +176,10 @@ class Mamba2Cache:
         return self.conv_states[layer_idx]
 
     def reset(self):
-        self.conv_states.zero_()
-        self.ssm_states.zero_()
+        for layer_idx in self.conv_states:
+            self.conv_states[layer_idx].zero_()
+        for layer_idx in self.ssm_states:
+            self.ssm_states[layer_idx].zero_()
 
 
 class Mamba2Mixer(nn.Module):
