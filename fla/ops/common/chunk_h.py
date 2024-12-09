@@ -197,13 +197,8 @@ def chunk_fwd_kernel_h_reduction(
         NT = tl.cdiv(T, BT)
         boh = i_n * NT
 
-    if HEAD_FIRST:
-        p_h = tl.make_block_ptr(h + i_nh * NT * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-    else:
-        p_h = tl.make_block_ptr(h + (boh * H + i_h) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
     # [BK, BV]
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
-
     for i_t in range(NT):
         if HEAD_FIRST:
             p_h = tl.make_block_ptr(h + (i_nh * NT + i_t) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
@@ -374,7 +369,6 @@ def chunk_bwd_kernel_dh_parallel(
 
 @triton.heuristics({
     'STORE_INITIAL_STATE_GRADIENT': lambda args: args['dh0'] is not None,
-    'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
 @triton.autotune(
@@ -393,7 +387,6 @@ def chunk_bwd_kernel_dh_reduction(
     gk,
     gv,
     dh,
-    dht,
     doq0,
     dh0,
     offsets,
@@ -411,7 +404,6 @@ def chunk_bwd_kernel_dh_reduction(
     USE_GK: tl.constexpr,
     USE_GV: tl.constexpr,
     STORE_INITIAL_STATE_GRADIENT: tl.constexpr,
-    USE_FINAL_STATE_GRADIENT: tl.constexpr,
     USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr
 ):
@@ -431,10 +423,6 @@ def chunk_bwd_kernel_dh_reduction(
 
     # [BK, BV]
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
-    if USE_FINAL_STATE_GRADIENT:
-        p_dht = tl.make_block_ptr(dht + i_nh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        b_dh += tl.load(p_dht, boundary_check=(0, 1)).to(tl.float32)
-
     for i_t in range(NT - 1, -1, -1):
         if HEAD_FIRST:
             p_dh = tl.make_block_ptr(dh + (i_nh * NT + i_t) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
@@ -455,7 +443,6 @@ def chunk_bwd_kernel_dh_reduction(
         if USE_GK:
             if HEAD_FIRST:
                 p_gk_last = gk + (i_bg * T + last_idx) * K + i_k * BK + tl.arange(0, BK)
-
             else:
                 p_gk_last = gk + (bos + last_idx) * H*K + i_h * K + i_k * BK + tl.arange(0, BK)
             p_gk_last = tl.max_contiguous(tl.multiple_of(p_gk_last, BK), BK)
@@ -635,7 +622,6 @@ def chunk_bwd_dh(
         gk=gk,
         gv=gv,
         dh=dh,
-        dht=dht,
         doq0=doq0,
         dh0=dh0,
         offsets=offsets,
