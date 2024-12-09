@@ -1,6 +1,6 @@
 <div align="center">
 
-# Flash Linear Attention
+# :boom: Flash Linear Attention
 
 [![hf_model](https://img.shields.io/badge/-Models-gray.svg?logo=huggingface&style=flat-square)](https://huggingface.co/fla-hub)  [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white&style=flat-square)](https://discord.gg/vDaJTmKNcS)
 
@@ -28,15 +28,15 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 
 ## News
 
-- [2024-12]: :loudspeaker: `fla` now officially supports kernels with variable-length inputs.
-- [2024-11]: The inputs are now switched from head-first to seq-first format.
-- [2024-11]: :rocket: `fla` now provides a flexible way for training hybrid models.
-- [2024-10]: :fire: Announcing `flame`, a minimal and scalable framework for training `fla` models. Check out the details [here](training/README.md).
-- [2024-09]: `fla` now includes a fused linear and cross-entropy layer, significantly reducing memory usage during training.
-- [2024-09]: :tada: Add GSA implementation to `fla` ([paper](https://arxiv.org/abs/2409.07146)).
-- [2024-05]: :tada: Add DeltaNet implementation to `fla` ([paper](https://arxiv.org/abs/2102.11174)).
-- [2024-05]: :rocket: `fla` v0.1: a variety of subquadratic kernels/layers/models integrated (RetNet/GLA/Mamba/HGRN/HGRN2/RWKV6, etc., see [Models](#models)).
-- [2023-12]: :tada: Launched `fla`, offering a collection of implementations for state-of-the-art linear attention models.
+- **$\texttt{[2024-12]}$:** :rocket: `fla` now officially supports kernels with variable-length inputs.
+- **$\texttt{[2024-11]}$:** The inputs are now switched from head-first to seq-first format.
+- **$\texttt{[2024-11]}$:** :boom: `fla` now provides a flexible way for training hybrid models.
+- **$\texttt{[2024-10]}$:** :fire: Announcing `flame`, a minimal and scalable framework for training `fla` models. Check out the details [here](training/README.md).
+- **$\texttt{[2024-09]}$:** `fla` now includes a fused linear and cross-entropy layer, significantly reducing memory usage during training.
+- **$\texttt{[2024-09]}$:** :tada: Add GSA implementation to `fla` ([paper](https://arxiv.org/abs/2409.07146)).
+- **$\texttt{[2024-05]}$:** :tada: Add DeltaNet implementation to `fla` ([paper](https://arxiv.org/abs/2102.11174)).
+- **$\texttt{[2024-05]}$:** :boom: `fla` v0.1: a variety of subquadratic kernels/layers/models integrated (RetNet/GLA/Mamba/HGRN/HGRN2/RWKV6, etc., see [Models](#models)).
+- **$\texttt{[2023-12]}$:** :boom: Launched `fla`, offering a collection of implementations for state-of-the-art linear attention models.
 
 ## Models
 
