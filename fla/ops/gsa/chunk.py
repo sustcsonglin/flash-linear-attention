@@ -786,6 +786,7 @@ def chunk_gsa_bwd_k(
             output_final_state=False,
             states_in_fp32=False,
             offsets=offsets,
+            indices=indices,
             head_first=head_first,
             chunk_size=chunk_size
         )
@@ -802,6 +803,7 @@ def chunk_gsa_bwd_k(
         scale=scale,
         states_in_fp32=True,
         offsets=offsets,
+        indices=indices,
         head_first=head_first,
         chunk_size=BT
     )

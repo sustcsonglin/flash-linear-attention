@@ -1213,6 +1213,7 @@ def chunk_gla_fwd(
         output_final_state=output_final_state,
         states_in_fp32=False,
         offsets=offsets,
+        indices=indices,
         head_first=head_first,
         chunk_size=BT
     )
@@ -1277,6 +1278,7 @@ def chunk_gla_bwd(
             output_final_state=False,
             states_in_fp32=True,
             offsets=offsets,
+            indices=indices,
             head_first=head_first,
             chunk_size=BT
         )
@@ -1293,6 +1295,7 @@ def chunk_gla_bwd(
         scale=scale,
         states_in_fp32=True,
         offsets=offsets,
+        indices=indices,
         head_first=head_first,
         chunk_size=BT
     )
