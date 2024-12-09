@@ -322,7 +322,7 @@ def chunk_simple_gla_fwd_o(
         B, H, T, K, V = *q.shape, v.shape[-1]
     else:
         B, T, H, K, V = *q.shape, v.shape[-1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -377,7 +377,7 @@ def chunk_simple_gla_bwd_dqkg(
         B, H, T, K, V = *k.shape, v.shape[-1]
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -437,7 +437,7 @@ def chunk_simple_gla_bwd_dv(
         B, H, T, K, V = *k.shape, do.shape[-1]
     else:
         B, T, H, K, V = *k.shape, do.shape[-1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -609,7 +609,7 @@ class ChunkSimpleGLAFunction(torch.autograd.Function):
         head_first
     ):
         T = q.shape[2] if head_first else q.shape[1]
-        chunk_size = min(64, triton.next_power_of_2(T))
+        chunk_size = min(64, max(16, triton.next_power_of_2(T)))
 
         # 2-d indices denoting the offsets of chunks in each sequence
         # for example, if the passed `offsets` is [0, 100, 356] and `chunk_size` is 64,

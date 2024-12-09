@@ -617,7 +617,7 @@ def chunk_gsa_fwd_k(
         B, H, T, K, V = *k.shape, v.shape[-1]
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -756,7 +756,7 @@ def chunk_gsa_bwd_k(
         B, H, T, K, V = *k.shape, v.shape[-1]
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -1050,7 +1050,7 @@ class ChunkGSAFunction(torch.autograd.Function):
         head_first: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         T = q.shape[2] if head_first else q.shape[1]
-        chunk_size = min(64, triton.next_power_of_2(T))
+        chunk_size = min(64, max(16, triton.next_power_of_2(T)))
 
         # 2-d indices denoting the offsets of chunks in each sequence
         # for example, if the passed `offsets` is [0, 100, 356] and `chunk_size` is 64,

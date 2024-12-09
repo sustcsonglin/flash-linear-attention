@@ -69,10 +69,10 @@ class DeltaNet(nn.Module):
         self.expand_v = expand_v
         self.num_heads = num_heads
         self.use_gate = use_gate
-        self.use_output_norm = use_output_norm
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
         self.conv_bias = conv_bias
+        self.use_output_norm = use_output_norm
 
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
@@ -156,7 +156,7 @@ class DeltaNet(nn.Module):
             )
 
         # change to inference mode.
-        mode = 'fused_recurrent' if hidden_states.shape[1] < 64 else self.mode
+        mode = 'fused_recurrent' if hidden_states.shape[1] <= 64 else self.mode
 
         if self.norm_first:
             hidden_states = self.norm(hidden_states)
@@ -187,7 +187,7 @@ class DeltaNet(nn.Module):
             k = self.k_proj(hidden_states)
             v = self.silu(self.v_proj(hidden_states))
 
-        q, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b t h d', h=self.num_heads), (q, k, v))
+        q, k, v = map(lambda x: rearrange(x, '... (h d) -> ... h d', h=self.num_heads), (q, k, v))
         if self.qk_activation != 'silu':
             if self.qk_activation == 'relu':
                 q, k = q.relu(), k.relu()
@@ -257,7 +257,7 @@ class DeltaNet(nn.Module):
             )
 
         if self.use_gate:
-            g = rearrange(self.g_proj(hidden_states), 'b t (h d) -> b t h d', h=self.num_heads)
+            g = rearrange(self.g_proj(hidden_states), '... (h d) -> ... h d', h=self.num_heads)
             o = self.o_norm(o, g)
         else:
             o = self.o_norm(o)

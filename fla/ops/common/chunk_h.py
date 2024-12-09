@@ -496,7 +496,7 @@ def chunk_fwd_h(
         B, H, T, K, V = *k.shape, v.shape[-1]
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     # N: the actual number of sequences in the batch with either equal or variable lengths
     if offsets is None:
         N, NT, chunk_offsets = B, triton.cdiv(T, BT), None
@@ -583,7 +583,7 @@ def chunk_bwd_dh(
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
         HQ = q.shape[2]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     # N: the actual number of sequences in the batch with either equal or variable lengths
     # NG: number of groups in GQA
     if offsets is None:

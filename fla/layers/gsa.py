@@ -141,7 +141,7 @@ class GatedSlotAttention(nn.Module):
             )
 
         # launching the triton kernel for just one token will actually be slower
-        mode = 'fused_recurrent' if hidden_states.shape[1] == 1 else self.mode
+        mode = 'fused_recurrent' if hidden_states.shape[1] <= 64 else self.mode
 
         if self.norm_first:
             hidden_states = self.norm(hidden_states)

@@ -830,7 +830,7 @@ def chunk_gla_fwd_intra_gk(
         B, H, T, K = k.shape
     else:
         B, T, H, K = k.shape
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -838,7 +838,7 @@ def chunk_gla_fwd_intra_gk(
             indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
             indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         NT = len(indices)
-    BC = min(16, triton.next_power_of_2(T))
+    BC = min(16, BT)
     BK = min(64, triton.next_power_of_2(K))
     NC = triton.cdiv(BT, BC)
 
@@ -941,7 +941,7 @@ def chunk_gla_fwd_o_gk(
         B, H, T, K, V = *q.shape, v.shape[-1]
     else:
         B, T, H, K, V = *q.shape, v.shape[-1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -990,7 +990,7 @@ def chunk_gla_bwd_dA(
         B, H, T, V = v.shape
     else:
         B, T, H, V = v.shape
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -1034,7 +1034,7 @@ def chunk_gla_bwd_dv(
         B, H, T, K, V = *k.shape, do.shape[-1]
     else:
         B, T, H, K, V = *k.shape, do.shape[-1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -1082,7 +1082,7 @@ def chunk_gla_bwd_dqk_intra(
         B, H, T, K = q.shape
     else:
         B, T, H, K = q.shape
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -1090,7 +1090,7 @@ def chunk_gla_bwd_dqk_intra(
             indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
             indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         NT = len(indices)
-    BC = min(16, triton.next_power_of_2(T))
+    BC = min(16, BT)
     BK = min(64, triton.next_power_of_2(K))
     NK = triton.cdiv(K, BK)
     NC = triton.cdiv(BT, BC)
@@ -1139,7 +1139,7 @@ def chunk_gla_bwd_dqkg(
         B, H, T, K, V = *k.shape, v.shape[-1]
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if offsets is None:
         NT = triton.cdiv(T, BT)
     else:
@@ -1199,7 +1199,7 @@ def chunk_gla_fwd(
     chunk_size: int = 64
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     T = q.shape[2] if head_first else q.shape[1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if g_cumsum is None:
         g_cumsum = chunk_local_cumsum(g, BT, offsets=offsets, head_first=head_first)
 
@@ -1263,7 +1263,7 @@ def chunk_gla_bwd(
     chunk_size: int = 64
 ):
     T = q.shape[2] if head_first else q.shape[1]
-    BT = min(chunk_size, triton.next_power_of_2(T))
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
     if g_cumsum is None:
         g_cumsum = chunk_local_cumsum(g, BT, offsets=offsets, head_first=head_first)
 
@@ -1366,7 +1366,7 @@ class ChunkGLAFunction(torch.autograd.Function):
         head_first
     ):
         T = q.shape[2] if head_first else q.shape[1]
-        chunk_size = min(64, triton.next_power_of_2(T))
+        chunk_size = min(64, max(16, triton.next_power_of_2(T)))
 
         # 2-d indices denoting the offsets of chunks in each sequence
         # for example, if the passed `offsets` is [0, 100, 356] and `chunk_size` is 64,
