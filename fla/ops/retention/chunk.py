@@ -10,19 +10,21 @@ import triton.language as tl
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4)
-    ],
-    key=["BT", "BK", "BV"],
-)
 @triton.heuristics({
     'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
     'STORE_FINAL_STATE': lambda args: args['ht'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
+@triton.autotune(
+    configs=[
+        triton.Config({'BK': BK, 'BV': BV}, num_warps=num_warps, num_stages=num_stages)
+        for BK in [32, 64, 128]
+        for BV in [32, 64, 128]
+        for num_warps in [2, 4, 8, 16]
+        for num_stages in [2, 3, 4]
+    ],
+    key=['BT']
+)
 @triton.jit
 def chunk_retention_fwd_kernel_h(
     k,
@@ -31,7 +33,7 @@ def chunk_retention_fwd_kernel_h(
     h0,
     ht,
     offsets,
-    c_offsets,
+    chunk_offsets,
     T: tl.constexpr,
     H: tl.constexpr,
     K: tl.constexpr,
@@ -50,7 +52,7 @@ def chunk_retention_fwd_kernel_h(
         bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
         T = eos - bos
         NT = tl.cdiv(T, BT)
-        boh = tl.load(c_offsets + i_n).to(tl.int32)
+        boh = tl.load(chunk_offsets + i_n).to(tl.int32)
     else:
         bos, eos = i_n * T, i_n * T + T
         NT = tl.cdiv(T, BT)
@@ -174,19 +176,21 @@ def chunk_retention_fwd_kernel_o(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4)
-    ],
-    key=["BT", "BK", "BV"],
-)
 @triton.heuristics({
     'STORE_INITIAL_STATE_GRADIENT': lambda args: args['dh0'] is not None,
     'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
+@triton.autotune(
+    configs=[
+        triton.Config({'BK': BK, 'BV': BV}, num_warps=num_warps, num_stages=num_stages)
+        for BK in [32, 64, 128]
+        for BV in [32, 64, 128]
+        for num_warps in [2, 4, 8, 16]
+        for num_stages in [2, 3, 4]
+    ],
+    key=['BT']
+)
 @triton.jit
 def chunk_retention_bwd_kernel_dh(
     q,
@@ -195,7 +199,7 @@ def chunk_retention_bwd_kernel_dh(
     dh0,
     dht,
     offsets,
-    c_offsets,
+    chunk_offsets,
     scale,
     T: tl.constexpr,
     H: tl.constexpr,
@@ -216,7 +220,7 @@ def chunk_retention_bwd_kernel_dh(
         bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
         T = eos - bos
         NT = tl.cdiv(T, BT)
-        boh = tl.load(c_offsets + i_n).to(tl.int32)
+        boh = tl.load(chunk_offsets + i_n).to(tl.int32)
     else:
         bos, eos = i_n * T, i_n * T + T
         NT = tl.cdiv(T, BT)
@@ -378,7 +382,7 @@ def chunk_retention_fwd_h(
     h0: torch.Tensor,
     output_final_state: bool,
     offsets: Optional[torch.Tensor] = None,
-    c_offsets: Optional[torch.Tensor] = None,
+    chunk_offsets: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -389,15 +393,12 @@ def chunk_retention_fwd_h(
     BT = chunk_size
     # N: the actual number of sequences in the batch with either equal or variable lengths
     if offsets is None:
-        N, NT, c_offsets = B, triton.cdiv(T, BT), None
+        N, NT, chunk_offsets = B, triton.cdiv(T, BT), None
     else:
         N = len(offsets) - 1
-        if c_offsets is None:
-            c_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
-        NT = c_offsets[-1]
-    BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(V), 64)
-    NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
+        if chunk_offsets is None:
+            chunk_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
+        NT = chunk_offsets[-1]
 
     if head_first:
         h = k.new_empty(B, H, NT, K, V, dtype=k.dtype)
@@ -405,7 +406,7 @@ def chunk_retention_fwd_h(
         h = k.new_empty(B, NT, H, K, V, dtype=k.dtype)
     ht = k.new_empty(N, H, K, V, dtype=torch.float32) if output_final_state else None
 
-    grid = (NK, NV, N * H)
+    def grid(meta): return (triton.cdiv(K, meta['BK']), triton.cdiv(V, meta['BV']), N * H)
     chunk_retention_fwd_kernel_h[grid](
         k=k,
         v=v,
@@ -413,14 +414,12 @@ def chunk_retention_fwd_h(
         h0=h0,
         ht=ht,
         offsets=offsets,
-        c_offsets=c_offsets,
+        chunk_offsets=chunk_offsets,
         T=T,
         H=H,
         K=K,
         V=V,
         BT=BT,
-        BK=BK,
-        BV=BV,
         HEAD_FIRST=head_first
     )
     return h, ht
@@ -486,7 +485,7 @@ def chunk_retention_bwd_dh(
     dht: torch.Tensor,
     scale: float,
     offsets: Optional[torch.Tensor] = None,
-    c_offsets: Optional[torch.Tensor] = None,
+    chunk_offsets: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -497,15 +496,12 @@ def chunk_retention_bwd_dh(
     BT = chunk_size
     # N: the actual number of sequences in the batch with either equal or variable lengths
     if offsets is None:
-        N, NT, c_offsets = B, triton.cdiv(T, BT), None
+        N, NT, chunk_offsets = B, triton.cdiv(T, BT), None
     else:
         N = len(offsets) - 1
-        if c_offsets is None:
-            c_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
-        NT = c_offsets[-1]
-    BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(V), 64)
-    NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
+        if chunk_offsets is None:
+            chunk_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
+        NT = chunk_offsets[-1]
 
     if head_first:
         dh = k.new_empty(B, H, NT, K, V, dtype=k.dtype)
@@ -513,7 +509,7 @@ def chunk_retention_bwd_dh(
         dh = k.new_empty(B, NT, H, K, V, dtype=k.dtype)
     dh0 = torch.empty_like(h0, dtype=torch.float32) if h0 is not None else None
 
-    grid = (NK, NV, N * H)
+    def grid(meta): return (triton.cdiv(K, meta['BK']), triton.cdiv(V, meta['BV']), N * H)
     chunk_retention_bwd_kernel_dh[grid](
         q=q,
         do=do,
@@ -521,15 +517,13 @@ def chunk_retention_bwd_dh(
         dh0=dh0,
         dht=dht,
         offsets=offsets,
-        c_offsets=c_offsets,
+        chunk_offsets=chunk_offsets,
         scale=scale,
         T=T,
         H=H,
         K=K,
         V=V,
         BT=BT,
-        BK=BK,
-        BV=BV,
         HEAD_FIRST=head_first
     )
     return dh, dh0
