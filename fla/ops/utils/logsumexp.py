@@ -31,7 +31,7 @@ def logsumexp_fwd_kernel(
     B: tl.constexpr,
     HAS_SCALE: tl.constexpr
 ):
-    i_n, i_d = tl.program_id(0), tl.program_id(1)
+    i_n, i_d = tl.program_id(0).to(tl.int64), tl.program_id(1).to(tl.int64)
     o_d = i_d * B + tl.arange(0, B)
     m_d = o_d < D
 
