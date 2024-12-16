@@ -110,7 +110,7 @@ class Attention(nn.Module):
 
         if self.max_position_embeddings is not None:
             max_seqlen = max(max_seqlen, self.max_position_embeddings)
-        q, k = self.rotary(q, k, seqlen_offset, max_seqlen)
+        q, k = self.rotary(q, k, seqlen_offset=seqlen_offset, max_seqlen=max_seqlen)
 
         if past_key_values is not None:
             k, v = past_key_values.update(

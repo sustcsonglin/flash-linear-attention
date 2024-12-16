@@ -170,7 +170,7 @@ class ABCAttention(nn.Module):
             seqlen_offset = 0
             if past_key_values is not None:
                 seqlen_offset = past_key_values.get_seq_length(self.layer_idx)
-            q, k = self.rotary(q, k, seqlen_offset)
+            q, k = self.rotary(q, k, seqlen_offset=seqlen_offset)
 
         s = rearrange(self.s_proj(hidden_states), '... (h m) -> ... h m', h=self.num_heads)
         s = s.clamp_(self.clamp_min, self.clamp_max)
