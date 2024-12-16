@@ -181,12 +181,10 @@ class RotaryEmbedding(torch.nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.interleaved = interleaved
         self.scale_base = scale_base
-        scale = (
-            (torch.arange(0, dim, 2, device=device,
-             dtype=torch.float32) + 0.4 * dim) / (1.4 * dim)
-            if scale_base is not None
-            else None
-        )
+
+        scale = None
+        if scale_base is not None:
+            scale = (torch.arange(0, dim, 2, device=device, dtype=torch.float32) + 0.4 * dim) / (1.4 * dim)
         self.register_buffer("scale", scale, persistent=False)
 
         self._seq_len_cached = 0
@@ -194,6 +192,16 @@ class RotaryEmbedding(torch.nn.Module):
         self._sin_cached = None
         self._cos_k_cached = None
         self._sin_k_cached = None
+
+    def __repr__(self):
+        s = f"{self.__class__.__name__}("
+        s += f"dim={self.dim}, "
+        s += f"base={self.base}, "
+        s += f"interleaved={self.interleaved}, "
+        if self.scale_base is not None:
+            s += f"scale_base={self.scale_base}, "
+        s += f"pos_idx_in_fp32={self.pos_idx_in_fp32})"
+        return s
 
     def _compute_inv_freq(self, device=None):
         return 1.0 / (
