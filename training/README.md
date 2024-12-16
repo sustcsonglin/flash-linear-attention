@@ -47,7 +47,7 @@ GLA utilizes a subset of Slimpajama for pretraining [in the paper](https://proce
 Given the size of the dataset, the fastest way to download it is using `git lfs` (refer to [this issue](https://huggingface.co/datasets/cerebras/SlimPajama-627B/discussions/2)).
 ```bash
 git lfs install
-git clone https://huggingface.co/datasets/cerebras/SlimPajama-627B
+git clone https://huggingface.co/datasets/cerebras/SlimPajama-627B --depth 1
 python preprocess.py \
   --dataset SlimPajama-627B \
   --split train \
