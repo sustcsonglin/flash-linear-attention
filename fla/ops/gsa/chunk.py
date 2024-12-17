@@ -14,7 +14,19 @@ from fla.ops.utils import chunk_local_cumsum, softmax_bwd, softmax_fwd
 from fla.utils import contiguous
 
 
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
+@triton.autotune(
+    configs=[
+        triton.Config({'BK': BK, 'BV': BV}, num_warps=num_warps, num_stages=num_stages)
+        for BK in [32, 64]
+        for BV in [32, 64]
+        for num_warps in [2, 4, 8]
+        for num_stages in [2, 3, 4]
+    ],
+    key=["BT"]
+)
 @triton.jit
 def chunk_gsa_fwd_k_kernel_inter(
     q,
@@ -98,7 +110,9 @@ def chunk_gsa_fwd_k_kernel_inter(
         tl.store(p_A, b_A.to(p_A.dtype.element_ty), boundary_check=(0, 1))
 
 
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.jit
 def chunk_gsa_fwd_k_kernel_intra(
     v,
@@ -197,7 +211,16 @@ def chunk_gsa_fwd_k_kernel_intra(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [2, 4, 8]
+    ],
+    key=["BT"]
+)
 @triton.jit
 def chunk_gsa_bwd_k_kernel_dA(
     v,
@@ -305,7 +328,17 @@ def chunk_gsa_bwd_k_kernel_dA(
     tl.store(p_dA, b_dA.to(dA.dtype.element_ty), boundary_check=(0, 1))
 
 
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=num_warps, num_stages=num_stages)
+        for num_warps in [2, 4]
+        for num_stages in [2, 3, 4]
+    ],
+    key=["BT"]
+)
 @triton.jit
 def chunk_gsa_bwd_k_kernel_dqkvg(
     q,
@@ -452,7 +485,9 @@ def chunk_gsa_bwd_k_kernel_dqkvg(
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
 
 
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.jit
 def chunk_gsa_bwd_k_kernel_intra_dvg(
     v,
@@ -618,22 +653,12 @@ def chunk_gsa_fwd_k(
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
     BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
-    if offsets is None:
-        NT = triton.cdiv(T, BT)
-    else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
-        NT = len(indices)
     BC = min(16, BT)
-    BK = min(64, triton.next_power_of_2(K))
     BV = min(64, triton.next_power_of_2(V))
     HQ = q.shape[1] if head_first else q.shape[2]
-    NV = triton.cdiv(V, BV)
+    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
     NC = triton.cdiv(BT, BC)
     NG = HQ // H
-    num_warps = 4 if BK == 64 else 2
-    num_stages = 1
 
     h, ht = chunk_fwd_h(
         k=k,
@@ -643,14 +668,14 @@ def chunk_gsa_fwd_k(
         gv=g,
         h0=h0,
         output_final_state=output_final_state,
-        states_in_fp32=False,
         offsets=offsets,
         head_first=head_first,
-        chunk_size=BT
+        chunk_size=BT,
+        states_in_fp32=False
     )
     o = v.new_empty(B, *((HQ, T) if head_first else (T, HQ)), V)
     A = q.new_empty(B, *((HQ, T) if head_first else (T, HQ)), BT)
-    grid = (NV, NT, B * HQ)
+    def grid(meta): return (triton.cdiv(V, meta['BV']), NT, B * HQ)
     chunk_gsa_fwd_k_kernel_inter[grid](
         q,
         k,
@@ -667,14 +692,11 @@ def chunk_gsa_fwd_k(
         K=K,
         V=V,
         BT=BT,
-        BK=BK,
-        BV=BV,
         NG=NG,
-        HEAD_FIRST=head_first,
-        num_warps=num_warps,
-        num_stages=num_stages
+        HEAD_FIRST=head_first
     )
-    grid = (NV, NT * NC, B * HQ)
+
+    def grid(meta): return (triton.cdiv(V, meta['BV']), NT * NC, B * HQ)
     chunk_gsa_fwd_k_kernel_intra[grid](
         v,
         g,
@@ -692,8 +714,8 @@ def chunk_gsa_fwd_k(
         NC=NC,
         NG=NG,
         HEAD_FIRST=head_first,
-        num_warps=num_warps,
-        num_stages=num_stages
+        num_warps=4,
+        num_stages=2
     )
     return A, h, ht, o
 
@@ -757,23 +779,15 @@ def chunk_gsa_bwd_k(
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
     BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
-    if offsets is None:
-        NT = triton.cdiv(T, BT)
-    else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
-        NT = len(indices)
     BC = min(16, BT)
     BK = min(64, triton.next_power_of_2(K))
     BV = min(64, triton.next_power_of_2(V))
     HQ = q.shape[1] if head_first else q.shape[2]
+    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
     NC = triton.cdiv(BT, BC)
     NK = triton.cdiv(K, BK)
     NV = triton.cdiv(V, BV)
     NG = HQ // H
-    num_warps = 4 if BK == 64 else 2
-    num_stages = 1
 
     if h is None:
         h, _ = chunk_fwd_h(
@@ -784,11 +798,11 @@ def chunk_gsa_bwd_k(
             gv=g,
             h0=h0,
             output_final_state=False,
-            states_in_fp32=False,
             offsets=offsets,
             indices=indices,
             head_first=head_first,
-            chunk_size=chunk_size
+            chunk_size=BT,
+            states_in_fp32=False
         )
     dh, dh0 = chunk_bwd_dh(
         q=q,
@@ -801,11 +815,11 @@ def chunk_gsa_bwd_k(
         h0=h0,
         dht=dht,
         scale=scale,
-        states_in_fp32=True,
         offsets=offsets,
         indices=indices,
         head_first=head_first,
-        chunk_size=BT
+        chunk_size=BT,
+        states_in_fp32=True
     )
     dA = q.new_empty(NV, B, *((HQ, T) if head_first else (T, HQ)), BT)
     grid = (NV, NT * NC * NC, B * HQ)
@@ -827,9 +841,7 @@ def chunk_gsa_bwd_k(
         BV=BV,
         NC=NC,
         NG=NG,
-        HEAD_FIRST=head_first,
-        num_warps=num_warps,
-        num_stages=num_stages
+        HEAD_FIRST=head_first
     )
     dA = dA.sum(0, dtype=dA.dtype)
 
@@ -867,15 +879,13 @@ def chunk_gsa_bwd_k(
         BK=BK,
         BV=BV,
         NG=NG,
-        HEAD_FIRST=head_first,
-        num_warps=num_warps,
-        num_stages=num_stages
+        HEAD_FIRST=head_first
     )
     A = A.sum(0, dtype=A.dtype)
     dv = dv.sum(0, dtype=dv.dtype)
     dgv = dgv.sum(0, dtype=dgv.dtype)
 
-    grid = (NV, NT * NC, B * HQ)
+    def grid(meta): return (triton.cdiv(V, meta['BV']), NT * NC, B * HQ)
     chunk_gsa_bwd_k_kernel_intra_dvg[grid](
         v,
         g,
@@ -896,8 +906,8 @@ def chunk_gsa_bwd_k(
         NC=NC,
         NG=NG,
         HEAD_FIRST=head_first,
-        num_warps=num_warps,
-        num_stages=num_stages
+        num_warps=4,
+        num_stages=2
     )
     dg = dgv.add_(chunk_local_cumsum(dg, chunk_size=BT, reverse=True, offsets=offsets, indices=indices, head_first=head_first))
 

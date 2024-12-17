@@ -20,7 +20,7 @@ from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
         triton.Config({'BK': BK, 'BV': BV}, num_warps=num_warps, num_stages=num_stages)
         for BK in [32, 64, 128]
         for BV in [32, 64, 128]
-        for num_warps in [2, 4, 8, 16]
+        for num_warps in [2, 4, 8]
         for num_stages in [2, 3, 4]
     ],
     key=['BT']
@@ -94,15 +94,19 @@ def chunk_retention_fwd_kernel_h(
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4)
+        triton.Config({'BK': BK, 'BV': BV}, num_warps=num_warps, num_stages=num_stages)
+        for BK in [32, 64, 128]
+        for BV in [32, 64, 128]
+        for num_warps in [2, 4]
+        for num_stages in [2, 3, 4]
     ],
-    key=["BT", "BK", "BV"],
+    key=['BT']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_retention_fwd_kernel_o(
     q,
@@ -186,7 +190,7 @@ def chunk_retention_fwd_kernel_o(
         triton.Config({'BK': BK, 'BV': BV}, num_warps=num_warps, num_stages=num_stages)
         for BK in [32, 64, 128]
         for BV in [32, 64, 128]
-        for num_warps in [2, 4, 8, 16]
+        for num_warps in [2, 4, 8]
         for num_stages in [2, 3, 4]
     ],
     key=['BT']
@@ -259,15 +263,18 @@ def chunk_retention_bwd_kernel_dh(
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4)
+        triton.Config({'BV': BV}, num_warps=num_warps, num_stages=num_stages)
+        for BV in [32, 64, 128]
+        for num_warps in [2, 4]
+        for num_stages in [2, 3, 4]
     ],
-    key=["BT", "BK", "BV"],
+    key=['BT']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_retention_bwd_kernel_dqkv(
     q,
@@ -441,19 +448,10 @@ def chunk_retention_fwd_o(
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
     BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
-    if offsets is None:
-        NT = triton.cdiv(T, BT)
-    else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
-        NT = len(indices)
-    BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(V), 64)
-    NV = triton.cdiv(V, BV)
+    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
 
     o = torch.empty_like(v)
-    grid = (NV, NT, B * H)
+    def grid(meta): return (triton.cdiv(V, meta['BV']), NT, B * H)
     chunk_retention_fwd_kernel_o[grid](
         q=q,
         k=k,
@@ -468,8 +466,6 @@ def chunk_retention_fwd_o(
         K=K,
         V=V,
         BT=BT,
-        BK=BK,
-        BV=BV,
         NT=NT,
         HEAD_FIRST=head_first
     )
@@ -547,21 +543,14 @@ def chunk_retention_bwd_dqkv(
     else:
         B, T, H, K, V = *k.shape, v.shape[-1]
     BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
-    if offsets is None:
-        NT = triton.cdiv(T, BT)
-    else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], chunk_size).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
-        NT = len(indices)
     BK = min(64, triton.next_power_of_2(K))
-    BV = min(64, triton.next_power_of_2(V))
+    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
     NK = triton.cdiv(K, BK)
 
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
     dv = v.new_empty(NK, *v.shape)
-    grid = (NK, NT, B * H)
+    def grid(meta): return (triton.cdiv(K, meta['BK']), NT, B * H)
     chunk_retention_bwd_kernel_dqkv[grid](
         q=q,
         k=k,
@@ -582,7 +571,6 @@ def chunk_retention_bwd_dqkv(
         V=V,
         BT=BT,
         BK=BK,
-        BV=BV,
         NT=NT,
         HEAD_FIRST=head_first
     )
