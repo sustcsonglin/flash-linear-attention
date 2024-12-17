@@ -169,8 +169,7 @@ def rotary_embedding_fwdbwd(
 ) -> torch.Tensor:
     """
     Args:
-        x: (batch, seqlen, nheads, headdim) if cu_seqlens is None
-            else (total_seqlen, nheads, headdim).
+        x: (batch, seqlen, nheads, headdim) if cu_seqlens is None else (total_seqlen, nheads, headdim).
         cos: (seqlen_ro, rotary_dim / 2)
         sin: (seqlen_ro, rotary_dim / 2)
         seqlen_offsets: integer or integer tensor of size (batch,)
@@ -184,7 +183,7 @@ def rotary_embedding_fwdbwd(
         batch, seqlen, nheads, headdim = x.shape
     else:
         assert max_seqlen is not None, "If cu_seqlens is passed in, then max_seqlen must be passed"
-        _, nheads, headdim = x.shape
+        *_, nheads, headdim = x.shape
         batch_p_1 = cu_seqlens.shape[0]
         batch = batch_p_1 - 1
         seqlen = max_seqlen
@@ -487,8 +486,8 @@ class RotaryEmbedding(torch.nn.Module):
         max_seqlen: Optional[int] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
-        q: (batch, seqlen, nheads, headdim)
-        k: (batch, seqlen, nheads, headdim)
+        q: (batch_size, seqlen, nheads, headdim) if cu_seqlens is None else (total_seqlen, nheads, headdim)
+        k: (batch_size, seqlen, nheads, headdim) if cu_seqlens is None else (total_seqlen, nheads, headdim)
         seqlen_offset:
             (batch_size,) or int. Each sequence in x is shifted by this amount.
             Most commonly used in inference when we have KV cache.
@@ -497,11 +496,10 @@ class RotaryEmbedding(torch.nn.Module):
         cu_seqlens: (batch + 1,) or None
         max_seqlen: int
         """
-        seqlen = q.shape[1]
         if max_seqlen is not None:
             self._update_cos_sin_cache(max_seqlen, device=q.device, dtype=q.dtype)
         elif isinstance(seqlen_offset, int):
-            self._update_cos_sin_cache(seqlen + seqlen_offset, device=q.device, dtype=q.dtype)
+            self._update_cos_sin_cache(q.shape[1] + seqlen_offset, device=q.device, dtype=q.dtype)
         if self.scale is None:
             q = rotary_embedding(
                 q,
