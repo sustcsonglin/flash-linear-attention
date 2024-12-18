@@ -130,6 +130,7 @@ def parallel_simple_gla_bwd_kernel_dq(
     i_t,
     i_k,
     i_v,
+    i_kv,
     q,
     k,
     v,
@@ -204,11 +205,11 @@ def parallel_simple_gla_bwd_kernel_dq(
         b_ds = tl.where(m_s, tl.dot(b_do, b_v, allow_tf32=False) * tl.exp((b_gq[:, None] - b_gk[None, :])), 0) * scale
         # [BT, BK]
         b_dq += tl.dot(b_ds.to(b_k.dtype), b_k, allow_tf32=False)
-
         o_k += BS
+    
     p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_dq = tl.make_block_ptr(dq + (i_v * B * H + i_bh) * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_dg = tl.make_block_ptr(dg + (i_v * B * H + i_bh) * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
+    p_dg = tl.make_block_ptr(dg + (i_kv * B * H + i_bh) * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
 
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_dg = tl.sum(b_dq * b_q, 1)
@@ -222,6 +223,7 @@ def parallel_simple_gla_bwd_kernel_dkv(
     i_t,
     i_k,
     i_v,
+    i_kv,
     q,
     k,
     v,
@@ -320,7 +322,7 @@ def parallel_simple_gla_bwd_kernel_dkv(
         o_q += BS
     p_dk = tl.make_block_ptr(dk + (i_v * B * H + i_bh) * s_k_h, (T, K), (s_k_t, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     p_dv = tl.make_block_ptr(dv + (i_k * B * H + i_bh) * s_v_h, (T, V), (s_v_t, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_dg = tl.make_block_ptr(dg + (i_v * B * H + i_bh) * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
+    p_dg = tl.make_block_ptr(dg + (i_kv * B * H + i_bh) * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
@@ -367,6 +369,7 @@ def parallel_simple_gla_bwd_kernel(
         i_t,
         i_k,
         i_v,
+        i_kv,
         q,
         k,
         v,
@@ -395,6 +398,7 @@ def parallel_simple_gla_bwd_kernel(
         i_t,
         i_k,
         i_v,
+        i_kv,
         q,
         k,
         v,
@@ -503,7 +507,7 @@ def parallel_simple_gla_bwd(
     dq = torch.empty(NV, B, H, T, K, dtype=q.dtype, device=q.device)
     dk = torch.empty(NV, B, H, T, K, dtype=q.dtype, device=q.device)
     dv = torch.empty(NK, B, H, T, V, dtype=q.dtype, device=q.device)
-    dg = torch.empty(NV, B, H, T, dtype=torch.float, device=q.device)
+    dg = torch.empty(NV * NK, B, H, T, dtype=torch.float, device=q.device)
     grid = (NK * NV, triton.cdiv(T, BT), B * H)
     parallel_simple_gla_bwd_kernel[grid](
         q=q,
