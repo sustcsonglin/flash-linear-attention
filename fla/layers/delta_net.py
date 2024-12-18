@@ -1,16 +1,12 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2024, Songlin Yang, Yu Zhang
 
-# Sect4.2 of Linear Transformers Are Secretly Fast Weight Programmers https://arxiv.org/abs/2102.11174
 from __future__ import annotations
-
 from typing import TYPE_CHECKING, Optional, Tuple
-
 import torch
 import torch.nn as nn
 from einops import rearrange
 from torch.nn import functional as F
-
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.modules.l2norm import l2_norm
 from fla.ops.delta_rule import (chunk_delta_rule, fused_chunk_delta_rule,
@@ -27,29 +23,66 @@ def elu_p1(x):
 def sum_norm(x):
     return (x / x.sum(-1, keepdim=True)).to(x)
 
-# https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
 
 
 class DeltaNet(nn.Module):
+    r"""
+    The layer implementaion for [Parallelizing Linear Transformers with the Delta Rule over Sequence Length](https://arxiv.org/abs/2406.06484).  # noqa: 
+    DeltaNet was originally proposed in [Linear Transformers Are Secretly Fast Weight Programmers](https://arxiv.org/abs/2102.11174). # noqa
+
+    Args:
+        mode (str, Optional):
+            Which DeltaNet kernel to use.
+            Currently available: `chunk`, `fused_recurrent`, and `fused_chunk`.
+            Default: `chunk`. 
+        hidden_size (int, Optional):
+            The hidden size of the input. Default: 1024.
+        expand_k (float, Optional):
+            The expansion ratio for the key dim. Default: 1.0.
+        expand_v (float, Optional):
+            The expansion ratio for the value dim. Default: 1.0.
+        num_heads (int, Optional):
+            The number of heads. Default: 4.
+        use_beta (bool, Optional):
+            Whether to use beta. Default: `True`.
+        use_gate (bool, Optional):
+            Whether to use output gate. Default: `False`.
+        use_short_conv (bool, Optional):
+            Whether to use short convolutions. Default: `True`.
+        conv_size (int, Optional):
+            The kernel size of the short convolution, only used when `use_short_conv` is `True`. Default: 4.
+        conv_bias (bool, Optional):
+            Whether to use bias in the short convolution, only used when `use_short_conv` is `True`. Default: `False`.
+        allow_neg_eigval (bool, Optional):
+            Allow negative eigenvalues. Default: `False`. If set to `True`, the beta will be multiplied by 2. 
+            See reference: [Unlocking State-Tracking in Linear RNNs Through Negative Eigenvalues](https://arxiv.org/abs/2411.12537)
+        layer_idx (int, Optional):
+            The index of the layer. Default: None.
+        norm_eps (float, Optional):
+            The epsilon value for the layernorm/rmsnorm layer. Default: 1e-5.
+        qk_activation (str, Optional):
+            The activation function for the query and key. Default: `silu`.
+        qk_norm (str, Optional):
+            The normalization method for the query and key. Default: `l2`.
+    """
+
     def __init__(
         self,
+        mode: str = 'chunk',
         d_model: int = None,
         hidden_size: int = 1024,
         expand_k: float = 1.0,
         expand_v: float = 1.0,
         num_heads: int = 4,
-        mode: str = 'chunk',
         use_beta: bool = True,
         use_gate: bool = False,
-        use_output_norm: bool = True,
-        use_elu: bool = False,
         use_short_conv: bool = True,
         conv_size: int = 4,
         conv_bias: bool = False,
+        allow_neg_eigval: bool = False,
         layer_idx: int = None,
         qk_activation: str = 'silu',
         qk_norm: str = 'l2',
-        norm_first: bool = False,
         norm_eps: float = 1e-5,
         **kwargs
     ) -> DeltaNet:
@@ -72,13 +105,12 @@ class DeltaNet(nn.Module):
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
         self.conv_bias = conv_bias
-        self.use_output_norm = use_output_norm
+        self.allow_neg_eigval = allow_neg_eigval
 
         self.key_dim = int(hidden_size * expand_k)
         self.value_dim = int(hidden_size * expand_v)
         self.head_qk_dim = self.key_dim // num_heads
         self.head_v_dim = self.value_dim // num_heads
-        self.norm_first = norm_first
         self.layer_idx = layer_idx
 
         self.silu = nn.SiLU()
@@ -87,15 +119,11 @@ class DeltaNet(nn.Module):
         assert self.key_dim % num_heads == 0, f"key dim must be divisible by num_heads of {num_heads}"
         assert self.value_dim % num_heads == 0, f"value dim must be divisible by num_heads of {num_heads}"
 
-        if norm_first:
-            self.norm = RMSNorm(self.hidden_size, eps=norm_eps)
-
         self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.k_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
 
         self.use_beta = use_beta
-        self.use_elu = use_elu
         if self.use_beta:
             self.b_proj = nn.Linear(hidden_size, self.num_heads, bias=False)
         if use_short_conv:
@@ -158,9 +186,6 @@ class DeltaNet(nn.Module):
         # change to inference mode.
         mode = 'fused_recurrent' if hidden_states.shape[1] <= 64 else self.mode
 
-        if self.norm_first:
-            hidden_states = self.norm(hidden_states)
-
         last_state = None
         if past_key_values is not None and len(past_key_values) > self.layer_idx:
             last_state = past_key_values[self.layer_idx]
@@ -185,6 +210,8 @@ class DeltaNet(nn.Module):
         else:
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
+            if self.qk_activation == 'silu':
+                q, k = self.silu(q), self.silu(k)
             v = self.silu(self.v_proj(hidden_states))
 
         q, k, v = map(lambda x: rearrange(x, '... (h d) -> ... h d', h=self.num_heads), (q, k, v))
@@ -210,6 +237,9 @@ class DeltaNet(nn.Module):
             beta = self.b_proj(hidden_states).sigmoid()
         else:
             beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
+        
+        if self.allow_neg_eigval:
+            beta = beta * 2. 
 
         # dealing with padding
         if attention_mask is not None:
