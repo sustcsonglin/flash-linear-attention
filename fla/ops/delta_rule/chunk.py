@@ -12,21 +12,18 @@ from fla.ops.delta_rule.wy_fast import (bwd_prepare_wy_repr,
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-    ],
-    key=['BT', 'BK', 'BV'],
-)
 @triton.heuristics({
     'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
     'STORE_FINAL_STATE': lambda args: args['ht'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4, 8, 16]
+    ],
+    key=['BT', 'BK', 'BV']
+)
 @triton.jit
 def chunk_delta_rule_fwd_kernel_h(
     k,
@@ -37,7 +34,7 @@ def chunk_delta_rule_fwd_kernel_h(
     h0,
     ht,
     offsets,
-    c_offsets,
+    chunk_offsets,
     T: tl.constexpr,
     H: tl.constexpr,
     K: tl.constexpr,
@@ -58,7 +55,7 @@ def chunk_delta_rule_fwd_kernel_h(
         bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
         T = eos - bos
         NT = tl.cdiv(T, BT)
-        boh = tl.load(c_offsets + i_n).to(tl.int32)
+        boh = tl.load(chunk_offsets + i_n).to(tl.int32)
     else:
         bos, eos = i_n * T, i_n * T + T
         NT = tl.cdiv(T, BT)
@@ -107,15 +104,16 @@ def chunk_delta_rule_fwd_kernel_h(
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4]
     ],
-    key=['BT', 'BK', 'BV'],
+    key=['BT', 'BK', 'BV']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_delta_rule_fwd_kernel_o(
     q,
@@ -186,15 +184,18 @@ def chunk_delta_rule_fwd_kernel_o(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
+        triton.Config({'BK': BK, 'BV': BV}, num_warps=num_warps, num_stages=num_stages)
+        for BK, BV in [(32, 64), (64, 32), (64, 64), (64, 128), (128, 64)]
+        for num_warps in [1, 2, 4]
+        for num_stages in [2, 3, 4]
     ],
-    key=['BT', 'BK', 'BV'],
+    key=['BT']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_delta_rule_fwd_kernel_prepare_dv(
     q,
@@ -250,19 +251,18 @@ def chunk_delta_rule_fwd_kernel_prepare_dv(
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4)
-    ],
-    key=['BT', 'BK', 'BV'],
-)
 @triton.heuristics({
     'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None,
     'USE_INITIAL_STATE': lambda args: args['dh0'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4]
+    ],
+    key=['BT', 'BK', 'BV']
+)
 @triton.jit
 def chunk_delta_rule_bwd_kernel_dhu(
     q,
@@ -275,7 +275,7 @@ def chunk_delta_rule_bwd_kernel_dhu(
     dv,
     dv2,
     offsets,
-    c_offsets,
+    chunk_offsets,
     scale,
     T: tl.constexpr,
     H: tl.constexpr,
@@ -296,7 +296,7 @@ def chunk_delta_rule_bwd_kernel_dhu(
         bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
         T = eos - bos
         NT = tl.cdiv(T, BT)
-        boh = tl.load(c_offsets + i_n).to(tl.int32)
+        boh = tl.load(chunk_offsets + i_n).to(tl.int32)
     else:
         bos, eos = i_n * T, i_n * T + T
         NT = tl.cdiv(T, BT)
@@ -353,15 +353,16 @@ def chunk_delta_rule_bwd_kernel_dhu(
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4)
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4]
     ],
-    key=['BT', 'BK', 'BV'],
+    key=['BT', 'BK', 'BV']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_delta_rule_bwd_kernel_dqkw(
     q,
@@ -482,15 +483,7 @@ def chunk_delta_rule_fwd_prepare_dv(
     else:
         B, T, H, K, V = *k.shape, do.shape[-1]
     BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
-    if offsets is None:
-        NT = triton.cdiv(T, BT)
-    else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
-        NT = len(indices)
-    BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(V), 64)
+    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
 
     dv = torch.empty_like(do)
     chunk_delta_rule_fwd_kernel_prepare_dv[(NT, B * H)](
@@ -506,8 +499,6 @@ def chunk_delta_rule_fwd_prepare_dv(
         K=K,
         V=V,
         BT=BT,
-        BK=BK,
-        BV=BV,
         HEAD_FIRST=head_first
     )
     return dv
@@ -520,7 +511,7 @@ def chunk_delta_rule_fwd_h(
     initial_state: Optional[torch.Tensor] = None,
     output_final_state: bool = False,
     offsets: Optional[torch.LongTensor] = None,
-    c_offsets: Optional[torch.Tensor] = None,
+    chunk_offsets: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -531,12 +522,10 @@ def chunk_delta_rule_fwd_h(
     BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     # N: the actual number of sequences in the batch with either equal or variable lengths
     if offsets is None:
-        N, NT, c_offsets = B, triton.cdiv(T, BT), None
+        N, NT, chunk_offsets = B, triton.cdiv(T, BT), None
     else:
         N = len(offsets) - 1
-        if c_offsets is None:
-            c_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
-        NT = c_offsets[-1]
+        NT = chunk_offsets[-1]
     BK = triton.next_power_of_2(K)
     assert BK <= 256, "current kernel does not support head dimension larger than 256."
     # H100 can have larger block size
@@ -572,7 +561,7 @@ def chunk_delta_rule_fwd_h(
         h0=initial_state,
         ht=final_state,
         offsets=offsets,
-        c_offsets=c_offsets,
+        chunk_offsets=chunk_offsets,
         T=T,
         H=H,
         K=K,
@@ -587,6 +576,50 @@ def chunk_delta_rule_fwd_h(
     return h, v_new, final_state
 
 
+def chunk_delta_rule_fwd_o(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v_new: torch.Tensor,
+    h: torch.Tensor,
+    scale: float,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
+    head_first: bool = True,
+    chunk_size: int = 64
+) -> torch.Tensor:
+    if head_first:
+        B, H, T, K, V = *q.shape, v_new.shape[-1]
+    else:
+        B, T, H, K, V = *q.shape, v_new.shape[-1]
+    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
+    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
+    BK = min(triton.next_power_of_2(K), 64)
+    BV = min(triton.next_power_of_2(V), 64)
+    NV = triton.cdiv(V, BV)
+
+    o = torch.empty_like(v_new)
+    grid = (NV, NT, B * H)
+    chunk_delta_rule_fwd_kernel_o[grid](
+        q=q,
+        k=k,
+        v=v_new,
+        h=h,
+        o=o,
+        offsets=offsets,
+        indices=indices,
+        scale=scale,
+        T=T,
+        H=H,
+        K=K,
+        V=V,
+        BT=BT,
+        BK=BK,
+        BV=BV,
+        HEAD_FIRST=head_first
+    )
+    return o
+
+
 def chunk_delta_rule_bwd_dhu(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -597,7 +630,7 @@ def chunk_delta_rule_bwd_dhu(
     dv: torch.Tensor,
     scale: float,
     offsets: Optional[torch.LongTensor] = None,
-    c_offsets: Optional[torch.LongTensor] = None,
+    chunk_offsets: Optional[torch.LongTensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -608,12 +641,9 @@ def chunk_delta_rule_bwd_dhu(
     BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     # N: the actual number of sequences in the batch with either equal or variable lengths
     if offsets is None:
-        N, NT, c_offsets = B, triton.cdiv(T, BT), None
+        N, NT = B, triton.cdiv(T, BT)
     else:
-        N = len(offsets) - 1
-        if c_offsets is None:
-            c_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
-        NT = c_offsets[-1]
+        N, NT = len(offsets) - 1, chunk_offsets[-1]
 
     BK = triton.next_power_of_2(K)
     assert BK <= 256, "current kernel does not support head dimension being larger than 256."
@@ -651,7 +681,7 @@ def chunk_delta_rule_bwd_dhu(
         dv=dv,
         dv2=dv2,
         offsets=offsets,
-        c_offsets=c_offsets,
+        chunk_offsets=chunk_offsets,
         scale=scale,
         T=T,
         H=H,
@@ -664,56 +694,6 @@ def chunk_delta_rule_bwd_dhu(
         HEAD_FIRST=head_first
     )
     return dh, dh0, dv2
-
-
-def chunk_delta_rule_fwd_o(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v_new: torch.Tensor,
-    h: torch.Tensor,
-    scale: float,
-    offsets: Optional[torch.LongTensor] = None,
-    indices: Optional[torch.LongTensor] = None,
-    head_first: bool = True,
-    chunk_size: int = 64
-) -> torch.Tensor:
-    if head_first:
-        B, H, T, K, V = *q.shape, v_new.shape[-1]
-    else:
-        B, T, H, K, V = *q.shape, v_new.shape[-1]
-    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
-    if offsets is None:
-        NT = triton.cdiv(T, BT)
-    else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
-        NT = len(indices)
-    BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(V), 64)
-    NV = triton.cdiv(V, BV)
-
-    o = torch.empty_like(v_new)
-    grid = (NV, NT, B * H)
-    chunk_delta_rule_fwd_kernel_o[grid](
-        q=q,
-        k=k,
-        v=v_new,
-        h=h,
-        o=o,
-        offsets=offsets,
-        indices=indices,
-        scale=scale,
-        T=T,
-        H=H,
-        K=K,
-        V=V,
-        BT=BT,
-        BK=BK,
-        BV=BV,
-        HEAD_FIRST=head_first
-    )
-    return o
 
 
 def chunk_delta_rule_bwd_dqkw(
@@ -736,13 +716,7 @@ def chunk_delta_rule_bwd_dqkw(
     else:
         B, T, H, K, V = *q.shape, v_new.shape[-1]
     BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
-    if offsets is None:
-        NT = triton.cdiv(T, BT)
-    else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
-        NT = len(indices)
+    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
     NK = triton.cdiv(K, BK)
