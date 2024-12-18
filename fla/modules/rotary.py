@@ -36,11 +36,8 @@ def rotary_embedding_ref(x, cos, sin, interleaved=False):
 
 @triton.autotune(
     configs=[
-        triton.Config({"num_warps": 2}),
-        triton.Config({"num_warps": 4}),
-        triton.Config({"num_warps": 8}),
-        triton.Config({"num_warps": 16}),
-        triton.Config({"num_warps": 32}),
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [2, 4, 8, 16, 32]
     ],
     key=["BLOCK_K", "BLOCK_M", "INTERLEAVED"],
 )
