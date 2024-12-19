@@ -11,30 +11,7 @@ from transformers.trainer_callback import (ExportableState, TrainerCallback,
 from transformers.training_args import TrainingArguments
 
 
-class LoggerHandler(logging.Handler):
-    r"""
-    Logger handler used in Web UI.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.log = ""
-
-    def reset(self):
-        self.log = ""
-
-    def emit(self, record):
-        if record.name == "httpx":
-            return
-        log_entry = self.format(record)
-        self.log += log_entry
-        self.log += "\n\n"
-
-
-def get_logger(name: str) -> logging.Logger:
-    r"""
-    Gets a standard logger with a stream hander to stdout.
-    """
+def get_logger(name: str = None) -> logging.Logger:
     formatter = logging.Formatter(
         fmt="%(asctime)s - %(levelname)s - %(name)s - %(message)s", datefmt="%m/%d/%Y %H:%M:%S"
     )
@@ -42,19 +19,11 @@ def get_logger(name: str) -> logging.Logger:
     handler.setFormatter(formatter)
 
     logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-    logger.addHandler(handler)
+    if 'RANK' in os.environ and int(os.environ['RANK']) == 0:
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
 
     return logger
-
-
-def reset_logging() -> None:
-    r"""
-    Removes basic config of root logger. (unused in script)
-    """
-    root = logging.getLogger()
-    list(map(root.removeHandler, root.handlers))
-    list(map(root.removeFilter, root.filters))
 
 
 logger = get_logger(__name__)
