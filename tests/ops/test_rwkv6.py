@@ -4,15 +4,24 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
-from fla.ops.rwkv6.recurrent_naive import (naive_recurrent_rwkv6,
-                                           naive_recurrent_rwkv6_bwd)
+from fla.ops.rwkv6 import chunk_rwkv6
+from fla.ops.rwkv6.recurrent_naive import naive_recurrent_rwkv6
+
+
+def get_abs_err(x, y):
+    return (x-y).flatten().abs().max().item()
 
 
 def get_err_ratio(x, y):
     err = (x-y).flatten().square().mean().sqrt().item()
     base = (x).flatten().square().mean().sqrt().item()
     return err / base
+
+
+def assert_close(prefix, ref, tri, ratio):
+    msg = f"{prefix} diff: {get_abs_err(ref, tri):.6f} ratio: {get_err_ratio(ref, tri):.6f}"
+    print(msg)
+    assert get_err_ratio(ref, tri) < ratio, msg
 
 
 @pytest.mark.parametrize("B", [1])
@@ -39,7 +48,13 @@ def test_chunk(
     h0 = torch.randn((B, H, D, 2*D), dtype=dtype, device='cuda').requires_grad_()
     do = torch.randn_like(v)
     dht = torch.randn((B, H, D, 2*D), dtype=dtype, device='cuda')
-    ref, ref_ht = naive_recurrent_rwkv6(q.clone(), k.clone(), v.clone(), g.clone(), u.clone(), initial_state=h0.clone(), output_final_state=True)
+    ref, ref_ht = naive_recurrent_rwkv6(q.clone(),
+                                        k.clone(),
+                                        v.clone(),
+                                        g.clone(),
+                                        u.clone(),
+                                        initial_state=h0.clone(),
+                                        output_final_state=True)
     ((ref * do).sum() + (ref_ht * dht).sum()).backward()
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
@@ -58,14 +73,11 @@ def test_chunk(
     tri_dh0, h0.grad = h0.grad.clone(), None
     tri_du, u.grad = u.grad.clone(), None
 
-    assert get_err_ratio(tri, ref) < 0.004, f" o diff: {torch.abs(ref - tri).max()}, ref_o_max: {ref.abs().max()}, tri_o_max: {tri.abs().max()}, ratio: {get_err_ratio(ref, tri)}"
-    assert get_err_ratio(tri_ht, ref_ht) < 0.005, f"ht diff: {torch.abs(ref_ht - tri_ht).max()}, ratio: {get_err_ratio(ref_ht, tri_ht)}"
-    assert get_err_ratio(tri_dq, ref_dq) < 0.005, f"dq diff: {torch.abs(ref_dq - tri_dq).max()}, ratio: {get_err_ratio(ref_dq, tri_dq)}"
-    assert get_err_ratio(tri_dk, ref_dk) < 0.005, f"dk diff: {torch.abs(ref_dk - tri_dk).max()}, ratio: {get_err_ratio(ref_dk, tri_dk)}"
-    assert get_err_ratio(tri_dv, ref_dv) < 0.005, f"dv diff: {torch.abs(ref_dv - tri_dv).max()}, ratio: {get_err_ratio(ref_dv, tri_dv)}"
-    assert get_err_ratio(tri_dg, ref_dg) < 0.005, f"dg diff: {torch.abs(ref_dg - tri_dg).max()}, ref_dg_max: {ref_dg.abs().max()}, tri_dg_max: {tri_dg.abs().max()},  ratio: {get_err_ratio(ref_dg, tri_dg)}"
-    assert get_err_ratio(tri_dh0, ref_dh0) < 0.005, f"dh0 diff: {torch.abs(ref_dh0 - tri_dh0).max()}, ref_dho_max: {ref_dh0.abs().max()}, tri_dh0_max: {tri_dh0.abs().max()}, ratio: {get_err_ratio(ref_dh0, tri_dh0)}"
-    assert get_err_ratio(tri_du, ref_du) < 0.005, f"du diff: {torch.abs(ref_du - tri_du).max()}, ref_du_max: {ref_du.abs().max()}, tri_du_max: {tri_du.abs().max()}, ratio: {get_err_ratio(ref_du, tri_du)}"
-
-
-
+    assert_close('  o', tri, ref, 0.004)
+    assert_close(' ht', tri_ht, ref_ht, 0.005)
+    assert_close(' dq', tri_dq, ref_dq, 0.005)
+    assert_close(' dk', tri_dk, ref_dk, 0.005)
+    assert_close(' dv', tri_dv, ref_dv, 0.005)
+    assert_close(' dg', tri_dg, ref_dg, 0.005)
+    assert_close(' du', tri_du, ref_du, 0.005)
+    assert_close('dh0', tri_dh0, ref_dh0, 0.005)
