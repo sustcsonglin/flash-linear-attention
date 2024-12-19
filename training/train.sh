@@ -69,6 +69,7 @@ params="--model_name_or_path $model \
     --gradient_accumulation_steps $update \
     --seed $seed \
     --logging_steps $logging \
+    --log_level info \
     --bf16"
 
 if [ $steps -gt 0 ]; then
