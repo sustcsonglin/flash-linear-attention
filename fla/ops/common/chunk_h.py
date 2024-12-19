@@ -277,11 +277,11 @@ def chunk_fwd_h(
     gv: torch.Tensor,
     h0: torch.Tensor,
     output_final_state: bool,
-    states_in_fp32: bool = False,
     offsets: Optional[torch.Tensor] = None,
     indices: Optional[torch.Tensor] = None,
     head_first: bool = True,
-    chunk_size: int = 64
+    chunk_size: int = 64,
+    states_in_fp32: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if head_first:
         B, H, T, K, V = *k.shape, v.shape[-1]
@@ -298,7 +298,10 @@ def chunk_fwd_h(
         N, NT = len(offsets) - 1, len(indices)
         chunk_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
 
-    h = k.new_empty(B, H, NT, K, V) if head_first else k.new_empty(B, NT, H, K, V)
+    if head_first:
+        h = k.new_empty(B, H, NT, K, V, dtype=k.dtype if not states_in_fp32 else torch.float)
+    else:
+        h = k.new_empty(B, NT, H, K, V, dtype=k.dtype if not states_in_fp32 else torch.float)
     ht = k.new_empty(N, H, K, V, dtype=torch.float) if output_final_state else None
     def grid(meta): return (triton.cdiv(K, meta['BK']), triton.cdiv(V, meta['BV']), N * H)
     chunk_fwd_kernel_h[grid](
@@ -336,11 +339,11 @@ def chunk_bwd_dh(
     h0: torch.Tensor,
     dht: torch.Tensor,
     scale: float,
-    states_in_fp32: bool = False,
     offsets: Optional[torch.Tensor] = None,
     indices: Optional[torch.Tensor] = None,
     head_first: bool = True,
-    chunk_size: int = 64
+    chunk_size: int = 64,
+    states_in_fp32: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if head_first:
         B, H, T, K, V = *k.shape, v.shape[-1]
