@@ -397,7 +397,7 @@ class FusedRecurrentGSAFunction(torch.autograd.Function):
                 scale=scale,
                 head_first=head_first
             )
-            return o, (hkt, hvt)
+            return o, hkt, hvt
         ok, hkt, qv, ov, hvt = fused_recurrent_gsa_fwd(
             q=q,
             k=k,
