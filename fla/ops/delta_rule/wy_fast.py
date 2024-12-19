@@ -1,4 +1,6 @@
+
 # -*- coding: utf-8 -*-
+# Copyright (c) 2024, Songlin Yang, Yu Zhang
 
 from typing import Optional, Tuple
 
@@ -458,8 +460,6 @@ def fwd_prepare_wy_repr(
     BC = min(BT, 32)
     BK = min(triton.next_power_of_2(K), 64)
 
-    u = torch.empty_like(v)
-    w = torch.empty_like(k)
     A = torch.empty(B, *((H, T) if head_first else (T, H)), BT, device=k.device, dtype=k.dtype)
     fwd_fn = fwd_prepare_wy_repr_kernel_chunk64 if BT == 64 else fwd_prepare_wy_repr_kernel_chunk32
     fwd_fn[(NT, B * H)](
