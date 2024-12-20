@@ -417,6 +417,104 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_intra_merge(
 
 
 @triton.heuristics({
+    'STORE_INITIAL_STATE_GRADIENT': lambda args: args['dh0'] is not None,
+    'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None,
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
+@triton.autotune(
+    configs=[
+        triton.Config({'BK': BK, 'BV': BV}, num_warps=num_warps, num_stages=num_stages)
+        for BK in [32, 64]
+        for BV in [32, 64]
+        for num_warps in [1, 2, 4, 8]
+        for num_stages in [2, 3, 4]
+    ],
+    key=['BT']
+)
+@triton.jit
+def chunk_rwkv6_bwd_kernel_dh(
+    q,
+    gi,
+    ge,
+    do,
+    dh,
+    dht,
+    dh0,
+    offsets,
+    chunk_offsets,
+    scale,
+    T: tl.constexpr,
+    HQ: tl.constexpr,
+    H: tl.constexpr,
+    K: tl.constexpr,
+    V: tl.constexpr,
+    BT: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
+    NG: tl.constexpr,
+    STORE_INITIAL_STATE_GRADIENT: tl.constexpr,
+    USE_FINAL_STATE_GRADIENT: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
+    HEAD_FIRST: tl.constexpr
+):
+    i_k, i_v, i_nh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_bg = i_nh // NG
+    i_n, i_hq = i_nh // HQ, i_nh % HQ
+    i_h = i_hq // NG
+    if USE_OFFSETS:
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
+        NT = tl.cdiv(T, BT)
+        boh = tl.load(chunk_offsets + i_n).to(tl.int32)
+    else:
+        bos, eos = i_n * T, i_n * T + T
+        NT = tl.cdiv(T, BT)
+        boh = i_n * NT
+
+    # [BK, BV]
+    b_dh = tl.zeros([BK, BV], dtype=tl.float32)
+    if USE_FINAL_STATE_GRADIENT:
+        p_dht = tl.make_block_ptr(dht + i_nh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        b_dh += tl.load(p_dht, boundary_check=(0, 1)).to(tl.float32)
+
+    for i_t in range(NT - 1, -1, -1):
+        if HEAD_FIRST:
+            p_dh = tl.make_block_ptr(dh + (i_nh * NT + i_t) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        else:
+            p_dh = tl.make_block_ptr(dh + ((boh+i_t) * H + i_h) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
+        last_idx = min(i_t * BT + BT, T) - 1
+        # [BK, BT]
+        if HEAD_FIRST:
+            p_q = tl.make_block_ptr(q + i_nh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+            p_do = tl.make_block_ptr(do + i_nh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        else:
+            p_q = tl.make_block_ptr(q + (bos*HQ + i_hq) * K, (K, T), (1, HQ*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+            p_do = tl.make_block_ptr(do + (bos*HQ + i_hq) * V, (T, V), (HQ*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        b_q = tl.load(p_q, boundary_check=(0, 1))
+        # [BT, BV]
+        b_do = tl.load(p_do, boundary_check=(0, 1))
+
+        if HEAD_FIRST:
+            p_gk = tl.make_block_ptr(ge + i_bg * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+            p_gk_last = gi + (i_bg * T + last_idx) * K + i_k * BK + tl.arange(0, BK)
+        else:
+            p_gk = tl.make_block_ptr(ge + (bos*H + i_h) * K, (K, T), (1, H*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+            p_gk_last = gi + (bos + last_idx) * H*K + i_h * K + i_k * BK + tl.arange(0, BK)
+        p_gk_last = tl.max_contiguous(tl.multiple_of(p_gk_last, BK), BK)
+
+        b_gk = tl.load(p_gk, boundary_check=(0, 1))
+        b_q = (b_q * tl.exp(b_gk) * scale).to(b_q.dtype)
+        b_gk_last = tl.load(p_gk_last, mask=(i_k * BK + tl.arange(0, BK) < K), other=0.)
+        b_dh *= tl.exp(b_gk_last)[:, None]
+        b_dh += tl.dot(b_q, b_do)
+
+    if STORE_INITIAL_STATE_GRADIENT:
+        p_dh0 = tl.make_block_ptr(dh0 + i_nh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
+
+
+@triton.heuristics({
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
 @triton.autotune(
@@ -723,9 +821,6 @@ def chunk_rwkv6_bwd_kernel_inter(
     p_du = tl.make_block_ptr(du + (i_tg * H + i_h) * K, (K,), (1,), (i_k * BK,), (BK,), (0,))
     tl.store(p_du, b_du, boundary_check=(0,))
 
-    # Buggy due to strange triton compiler issue.
-    # m_s = tl.where(tl.arange(0, BT)[:, None] <= tl.arange(0, BT)[None, :], 1., 0.)
-    # b_dg = tl.dot(m_s, b_dg, allow_tf32=False) + b_dgk[None, :]
     if HEAD_FIRST:
         p_dq = tl.make_block_ptr(dq2 + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dk = tl.make_block_ptr(dk2 + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
@@ -847,214 +942,6 @@ def chunk_rwkv6_fwd_intra(
     return A
 
 
-def chunk_rwkv6_bwd_dqk_intra(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    gi: torch.Tensor,
-    ge: torch.Tensor,
-    dA: torch.Tensor,
-    offsets: Optional[torch.LongTensor] = None,
-    indices: Optional[torch.LongTensor] = None,
-    head_first: bool = True,
-    chunk_size: int = 64
-):
-    if head_first:
-        B, H, T, K = q.shape
-    else:
-        B, T, H, K = q.shape
-    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
-    BC = min(16, BT)
-    BK = min(64, triton.next_power_of_2(K))
-    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
-    NC = triton.cdiv(BT, BC)
-    NK = triton.cdiv(K, BK)
-
-    dq = torch.empty_like(q, dtype=torch.float)
-    dk = torch.empty_like(k, dtype=torch.float)
-    grid = (NK, NT * NC, B * H)
-    chunk_rwkv6_bwd_kernel_intra[grid](
-        q,
-        k,
-        gi,
-        ge,
-        dA,
-        dq,
-        dk,
-        offsets,
-        indices,
-        T=T,
-        H=H,
-        K=K,
-        BT=BT,
-        BC=BC,
-        BK=BK,
-        NC=NC,
-        HEAD_FIRST=head_first
-    )
-    return dq, dk
-
-
-def chunk_rwkv6_bwd_dqkgu(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    h: torch.Tensor,
-    gi: torch.Tensor,
-    ge: torch.Tensor,
-    u: torch.Tensor,
-    do: torch.Tensor,
-    dh: torch.Tensor,
-    dA: torch.Tensor,
-    dq: torch.Tensor,
-    dk: torch.Tensor,
-    scale: float,
-    offsets: Optional[torch.LongTensor] = None,
-    indices: Optional[torch.LongTensor] = None,
-    head_first: bool = True,
-    chunk_size: int = 64
-):
-    if head_first:
-        B, H, T, K, V = *k.shape, v.shape[-1]
-    else:
-        B, T, H, K, V = *k.shape, v.shape[-1]
-    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
-    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
-
-    dg = torch.empty_like(gi)
-    # work around triton compiler bugs.
-    dq2 = torch.empty_like(dq)
-    dk2 = torch.empty_like(dk)
-    du = u.new_empty(B * NT, H, K, dtype=torch.float)
-    def grid(meta): return (triton.cdiv(K, meta['BK']), NT, B * H)
-    chunk_rwkv6_bwd_kernel_inter[grid](
-        q,
-        k,
-        v,
-        h,
-        gi,
-        ge,
-        u,
-        do,
-        dh,
-        dA,
-        dq,
-        dk,
-        dq2,
-        dk2,
-        dg,
-        du,
-        offsets,
-        indices,
-        scale,
-        T=T,
-        H=H,
-        K=K,
-        V=V,
-        BT=BT,
-        HEAD_FIRST=head_first
-    )
-    du = du.sum(0)
-    return dq2, dk2, dg, du
-
-
-@triton.heuristics({
-    'STORE_INITIAL_STATE_GRADIENT': lambda args: args['dh0'] is not None,
-    'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None,
-    'USE_OFFSETS': lambda args: args['offsets'] is not None
-})
-@triton.autotune(
-    configs=[
-        triton.Config({'BK': BK, 'BV': BV}, num_warps=num_warps, num_stages=num_stages)
-        for BK in [32, 64]
-        for BV in [32, 64]
-        for num_warps in [1, 2, 4, 8]
-        for num_stages in [2, 3, 4]
-    ],
-    key=['BT']
-)
-@triton.jit
-def chunk_rwkv6_bwd_kernel_dh(
-    q,
-    gi,
-    ge,
-    do,
-    dh,
-    dht,
-    dh0,
-    offsets,
-    chunk_offsets,
-    scale,
-    T: tl.constexpr,
-    HQ: tl.constexpr,
-    H: tl.constexpr,
-    K: tl.constexpr,
-    V: tl.constexpr,
-    BT: tl.constexpr,
-    BK: tl.constexpr,
-    BV: tl.constexpr,
-    NG: tl.constexpr,
-    STORE_INITIAL_STATE_GRADIENT: tl.constexpr,
-    USE_FINAL_STATE_GRADIENT: tl.constexpr,
-    USE_OFFSETS: tl.constexpr,
-    HEAD_FIRST: tl.constexpr
-):
-    i_k, i_v, i_nh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    i_bg = i_nh // NG
-    i_n, i_hq = i_nh // HQ, i_nh % HQ
-    i_h = i_hq // NG
-    if USE_OFFSETS:
-        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
-        T = eos - bos
-        NT = tl.cdiv(T, BT)
-        boh = tl.load(chunk_offsets + i_n).to(tl.int32)
-    else:
-        bos, eos = i_n * T, i_n * T + T
-        NT = tl.cdiv(T, BT)
-        boh = i_n * NT
-
-    # [BK, BV]
-    b_dh = tl.zeros([BK, BV], dtype=tl.float32)
-    if USE_FINAL_STATE_GRADIENT:
-        p_dht = tl.make_block_ptr(dht + i_nh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        b_dh += tl.load(p_dht, boundary_check=(0, 1)).to(tl.float32)
-
-    for i_t in range(NT - 1, -1, -1):
-        if HEAD_FIRST:
-            p_dh = tl.make_block_ptr(dh + (i_nh * NT + i_t) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        else:
-            p_dh = tl.make_block_ptr(dh + ((boh+i_t) * H + i_h) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
-        last_idx = min(i_t * BT + BT, T) - 1
-        # [BK, BT]
-        if HEAD_FIRST:
-            p_q = tl.make_block_ptr(q + i_nh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-            p_do = tl.make_block_ptr(do + i_nh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        else:
-            p_q = tl.make_block_ptr(q + (bos*HQ + i_hq) * K, (K, T), (1, HQ*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-            p_do = tl.make_block_ptr(do + (bos*HQ + i_hq) * V, (T, V), (HQ*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        b_q = tl.load(p_q, boundary_check=(0, 1))
-        # [BT, BV]
-        b_do = tl.load(p_do, boundary_check=(0, 1))
-
-        if HEAD_FIRST:
-            p_gk = tl.make_block_ptr(ge + i_bg * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-            p_gk_last = gi + (i_bg * T + last_idx) * K + i_k * BK + tl.arange(0, BK)
-        else:
-            p_gk = tl.make_block_ptr(ge + (bos*H + i_h) * K, (K, T), (1, H*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-            p_gk_last = gi + (bos + last_idx) * H*K + i_h * K + i_k * BK + tl.arange(0, BK)
-        p_gk_last = tl.max_contiguous(tl.multiple_of(p_gk_last, BK), BK)
-
-        b_gk = tl.load(p_gk, boundary_check=(0, 1))
-        b_q = (b_q * tl.exp(b_gk) * scale).to(b_q.dtype)
-        b_gk_last = tl.load(p_gk_last, mask=(i_k * BK + tl.arange(0, BK) < K), other=0.)
-        b_dh *= tl.exp(b_gk_last)[:, None]
-        b_dh += tl.dot(b_q, b_do)
-
-    if STORE_INITIAL_STATE_GRADIENT:
-        p_dh0 = tl.make_block_ptr(dh0 + i_nh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
-
-
 def chunk_rwkv6_bwd_dh(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -1115,6 +1002,116 @@ def chunk_rwkv6_bwd_dh(
         HEAD_FIRST=head_first
     )
     return dh, dh0
+
+
+def chunk_rwkv6_bwd_dqk_intra(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    gi: torch.Tensor,
+    ge: torch.Tensor,
+    dA: torch.Tensor,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
+    head_first: bool = True,
+    chunk_size: int = 64
+):
+    if head_first:
+        B, H, T, K = q.shape
+    else:
+        B, T, H, K = q.shape
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
+    BC = min(16, BT)
+    BK = min(64, triton.next_power_of_2(K))
+    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
+    NC = triton.cdiv(BT, BC)
+    NK = triton.cdiv(K, BK)
+
+    dq = torch.empty_like(q, dtype=torch.float)
+    dk = torch.empty_like(k, dtype=torch.float)
+    grid = (NK, NT * NC, B * H)
+    chunk_rwkv6_bwd_kernel_intra[grid](
+        q,
+        k,
+        gi,
+        ge,
+        dA,
+        dq,
+        dk,
+        offsets,
+        indices,
+        T=T,
+        H=H,
+        K=K,
+        BT=BT,
+        BC=BC,
+        BK=BK,
+        NC=NC,
+        HEAD_FIRST=head_first
+    )
+    return dq, dk
+
+
+def chunk_rwkv6_bwd_dqkgu(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    h: torch.Tensor,
+    g: torch.Tensor,
+    gi: torch.Tensor,
+    ge: torch.Tensor,
+    u: torch.Tensor,
+    do: torch.Tensor,
+    dh: torch.Tensor,
+    dA: torch.Tensor,
+    dq: torch.Tensor,
+    dk: torch.Tensor,
+    scale: float,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
+    head_first: bool = True,
+    chunk_size: int = 64
+):
+    if head_first:
+        B, H, T, K, V = *k.shape, v.shape[-1]
+    else:
+        B, T, H, K, V = *k.shape, v.shape[-1]
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
+    NT = triton.cdiv(T, BT) if offsets is None else len(indices)
+
+    dq2 = torch.empty_like(dq)
+    dk2 = torch.empty_like(dk)
+    dg = torch.empty_like(g)
+    du = u.new_empty(B * NT, H, K, dtype=torch.float)
+    def grid(meta): return (triton.cdiv(K, meta['BK']), NT, B * H)
+    chunk_rwkv6_bwd_kernel_inter[grid](
+        q,
+        k,
+        v,
+        h,
+        gi,
+        ge,
+        u,
+        do,
+        dh,
+        dA,
+        dq,
+        dk,
+        dq2,
+        dk2,
+        dg,
+        du,
+        offsets,
+        indices,
+        scale,
+        T=T,
+        H=H,
+        K=K,
+        V=V,
+        BT=BT,
+        HEAD_FIRST=head_first
+    )
+    du = du.sum(0)
+    return dq2, dk2, dg, du
 
 
 def chunk_rwkv6_fwd(
@@ -1262,6 +1259,7 @@ def chunk_rwkv6_bwd(
         k=k,
         v=v,
         h=h,
+        g=g,
         gi=gi,
         ge=ge,
         u=u,
