@@ -549,12 +549,11 @@ def chunk_rwkv6_bwd_kernel_intra(
         for i_j in range(i_i + 1, NC):
             if HEAD_FIRST:
                 p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-                p_ge = tl.make_block_ptr(ge + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-                p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (BT, T), (1, BT), (i_i*BC, i_t*BT + i_j*BC), (BC, BC), (0, 1))
+                p_ge = tl.make_block_ptr(ge + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k*BK), (BC, BK), (1, 0))
+                p_dA = tl.make_block_ptr(dA + i_bh * T*BT, (BT, T), (1, BT), (i_i*BC, i_t*BT + i_j*BC), (BC, BC), (0, 1))
             else:
-                p_q = tl.make_block_ptr(q + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-                p_ge = tl.make_block_ptr(ge + (bos*H+i_h)*K, (T, K), (H*K, 1),
-                                         (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+                p_q = tl.make_block_ptr(q + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k*BK), (BC, BK), (1, 0))
+                p_ge = tl.make_block_ptr(ge + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k*BK), (BC, BK), (1, 0))
                 p_dA = tl.make_block_ptr(dA + (bos*H+i_h)*BT, (BT, T), (1, H*BT), (i_i*BC, i_t*BT + i_j*BC), (BC, BC), (0, 1))
             # [BC, BK]
             b_q = tl.load(p_q, boundary_check=(0, 1))
@@ -567,7 +566,7 @@ def chunk_rwkv6_bwd_kernel_intra(
             b_dk += tl.dot(b_dA, b_qg)
         b_dk *= tl.exp(b_gn[None, :] - b_gk)
     if HEAD_FIRST:
-        o_dA = i_bh * T * BT + (i_t * BT + i_i * BC) * BT + i_i * BC + tl.arange(0, BC)
+        o_dA = i_bh * T*BT + (i_t * BT + i_i * BC) * BT + i_i * BC + tl.arange(0, BC)
         p_qj = tl.max_contiguous(tl.multiple_of(q + (i_bh * T + i_t * BT + i_i * BC) * K + o_k, BK), BK)
         p_gqj = tl.max_contiguous(tl.multiple_of(ge + (i_bh * T + i_t * BT + i_i * BC) * K + o_k, BK), BK)
         p_dk = tl.make_block_ptr(dk + i_bh*T*K, (T, K), (K, 1), (i_t * BT + i_i * BC, i_k * BK), (BC, BK), (1, 0))
@@ -697,13 +696,13 @@ def chunk_rwkv6_bwd_kernel_inter(
         p_k = tl.make_block_ptr(k + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dq = tl.make_block_ptr(dq + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dk = tl.make_block_ptr(dk + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dA_dig = dA + i_bh * T*BT + (i_t * BT + o_i) * BT + o_i
+        p_dA_dig = dA + (i_bh * T + i_t * BT + o_i) * BT + o_i
     else:
         p_q = tl.make_block_ptr(q + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_k = tl.make_block_ptr(k + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dq = tl.make_block_ptr(dq + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
         p_dk = tl.make_block_ptr(dk + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dA_dig = dA + i_b * T*H*BT + ((i_t * BT + o_i) * H + i_h) * BT + o_i
+        p_dA_dig = dA + ((bos + i_t * BT + o_i) * H + i_h) * BT + o_i
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_k = tl.load(p_k, boundary_check=(0, 1))
     b_dgk += tl.sum(b_dk * b_k, axis=0)
@@ -721,7 +720,7 @@ def chunk_rwkv6_bwd_kernel_inter(
     b_dq += (b_dA_dig[:, None] * b_u[None, :] * b_k)
     b_dk += (b_dA_dig[:, None] * b_u[None, :] * b_q)
     b_du = tl.sum(b_dA_dig[:, None] * b_q * b_k, axis=0)
-    p_du = tl.make_block_ptr(du + ((i_b * NT + i_t) * H + i_h) * K, (K,), (1,), (i_k * BK,), (BK,), (0,))
+    p_du = tl.make_block_ptr(du + (i_tg * H + i_h) * K, (K,), (1,), (i_k * BK,), (BK,), (0,))
     tl.store(p_du, b_du, boundary_check=(0,))
 
     # Buggy due to strange triton compiler issue.
@@ -925,7 +924,7 @@ def chunk_rwkv6_bwd_dqkgu(
     # work around triton compiler bugs.
     dq2 = torch.empty_like(dq)
     dk2 = torch.empty_like(dk)
-    du = u.new_empty(B, NT, H, K, dtype=torch.float)
+    du = u.new_empty(B * NT, H, K, dtype=torch.float)
     def grid(meta): return (triton.cdiv(K, meta['BK']), NT, B * H)
     chunk_rwkv6_bwd_kernel_inter[grid](
         q,
@@ -954,7 +953,7 @@ def chunk_rwkv6_bwd_dqkgu(
         BT=BT,
         HEAD_FIRST=head_first
     )
-    du = du.sum([0, 1])
+    du = du.sum(0)
     return dq2, dk2, dg, du
 
 
@@ -1040,7 +1039,6 @@ def chunk_rwkv6_bwd_kernel_dh(
         if HEAD_FIRST:
             p_gk = tl.make_block_ptr(ge + i_bg * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
             p_gk_last = gi + (i_bg * T + last_idx) * K + i_k * BK + tl.arange(0, BK)
-
         else:
             p_gk = tl.make_block_ptr(ge + (bos*H + i_h) * K, (K, T), (1, H*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
             p_gk_last = gi + (bos + last_idx) * H*K + i_h * K + i_k * BK + tl.arange(0, BK)
