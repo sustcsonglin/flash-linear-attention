@@ -18,7 +18,7 @@ from fla.models.rwkv6 import RWKV6Config, RWKV6ForCausalLM, RWKV6Model
 from fla.models.samba import SambaConfig, SambaForCausalLM, SambaModel
 from fla.models.transformer import (TransformerConfig, TransformerForCausalLM,
                                     TransformerModel)
-
+from fla.models.gated_deltanet import GatedDeltaNetConfig, GatedDeltaNetForCausalLM, GatedDeltaNetModel
 __all__ = [
     'ABCConfig', 'ABCForCausalLM', 'ABCModel',
     'BitNetConfig', 'BitNetForCausalLM', 'BitNetModel',
@@ -33,5 +33,6 @@ __all__ = [
     'RetNetConfig', 'RetNetForCausalLM', 'RetNetModel',
     'RWKV6Config', 'RWKV6ForCausalLM', 'RWKV6Model',
     'SambaConfig', 'SambaForCausalLM', 'SambaModel',
-    'TransformerConfig', 'TransformerForCausalLM', 'TransformerModel'
+    'TransformerConfig', 'TransformerForCausalLM', 'TransformerModel',
+    'GatedDeltaNetConfig', 'GatedDeltaNetForCausalLM', 'GatedDeltaNetModel'
 ]
