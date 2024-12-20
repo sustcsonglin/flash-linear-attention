@@ -68,7 +68,7 @@ class RWKV6FeedForward(nn.Module):
             shifted = state[self.layer_idx]['ffn_state'].unsqueeze(1)
         else:
             shifted = self.time_shift(x)
-            if state[self.layer_idx]['ffn_state'] is not None:
+            if state is not None and state[self.layer_idx]['ffn_state'] is not None:
                 shifted[:, 0] = state[self.layer_idx]['ffn_state'][-1]
         delta = shifted - x
         key = self.act_fn(self.key(x, delta))
