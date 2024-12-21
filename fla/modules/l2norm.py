@@ -96,7 +96,7 @@ def _l2_norm_bwd_kernel(
 
 
 def _l2_norm_fwd(
-    x, eps=1e-6
+    x, eps=1e-6, output_dtype=None
 ):
     x_shape_og = x.shape
     x = x.reshape(-1, x.shape[-1])
@@ -105,7 +105,10 @@ def _l2_norm_fwd(
         M, N = x.shape
     assert x.stride(-1) == 1
     # allocate output
-    y = torch.empty_like(x)
+    if output_dtype is None:
+        y = torch.empty_like(x)
+    else:
+        y = torch.empty_like(x, dtype=output_dtype)
     assert y.stride(-1) == 1
     N = x.shape[-1]
     M = x.shape[0]
@@ -176,9 +179,10 @@ class L2NormFunction(torch.autograd.Function):
         ctx,
         x,
         eps=1e-6,
+        output_dtype=None,
     ):
         # reshape input data into 2D tensor
-        y = _l2_norm_fwd(x, eps)
+        y = _l2_norm_fwd(x, eps, output_dtype)
         ctx.eps = eps
         ctx.x_dtype = x.dtype
         ctx.save_for_backward(x)
@@ -198,4 +202,5 @@ class L2NormFunction(torch.autograd.Function):
         )
 
 
-l2_norm = L2NormFunction.apply
+def l2_norm(x, eps=1e-6, output_dtype=None):
+    return L2NormFunction.apply(x, eps, output_dtype)
