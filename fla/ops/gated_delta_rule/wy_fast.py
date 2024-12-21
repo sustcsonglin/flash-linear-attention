@@ -2,26 +2,29 @@
 # Copyright (c) 2024, Songlin Yang, Yu Zhang
 
 from typing import Optional, Tuple
+
 import torch
 import triton
 import triton.language as tl
 
+
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [2, 4, 8]
     ],
     key=["BK"],
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def fwd_prepare_wy_repr_kernel_chunk32(
     k,
     g,
-    beta, 
+    beta,
     Aw,
-    Au, 
+    Au,
     offsets,
     indices,
     T: tl.constexpr,
@@ -41,13 +44,13 @@ def fwd_prepare_wy_repr_kernel_chunk32(
         T = eos - bos
     else:
         bos, eos = i_b * T, i_b * T + T
-    
+
     b_Aw = tl.zeros([BC, BC], dtype=tl.float32)
     if HEAD_FIRST:
         p_beta = tl.make_block_ptr(beta + i_bh*T, (T,), (1,), (i_t * BT,), (BT,), (0,))
     else:
         p_beta = tl.make_block_ptr(beta + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
-        
+
     b_beta = tl.load(p_beta, boundary_check=(0,))
 
     for i_k in range(tl.cdiv(K, BK)):
@@ -67,7 +70,7 @@ def fwd_prepare_wy_repr_kernel_chunk32(
         p_g = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
 
     b_g = tl.load(p_g, boundary_check=(0,))
-    
+
     b_Au = b_Aw * tl.exp(b_g[:, None] - b_g[None, :])
 
     for i in range(1, BC):
@@ -93,22 +96,23 @@ def fwd_prepare_wy_repr_kernel_chunk32(
     tl.store(p_Au, b_Au.to(p_Au.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [2, 4, 8]
     ],
     key=["BK"],
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def fwd_prepare_wy_repr_kernel_chunk64(
     k,
     g,
-    beta, 
+    beta,
     Aw,
-    Au, 
+    Au,
     offsets,
     indices,
     T: tl.constexpr,
@@ -128,7 +132,7 @@ def fwd_prepare_wy_repr_kernel_chunk64(
         T = eos - bos
     else:
         bos, eos = i_b * T, i_b * T + T
-    
+
     b_Aw = tl.zeros([BC, BC], dtype=tl.float32)
     b_Aw2 = tl.zeros([BC, BC], dtype=tl.float32)
     b_Aw3 = tl.zeros([BC, BC], dtype=tl.float32)
@@ -138,7 +142,7 @@ def fwd_prepare_wy_repr_kernel_chunk64(
     else:
         p_beta = tl.make_block_ptr(beta + bos * H + i_h, (T,), (H,), (i_t * BT,), (BC,), (0,))
         p_beta2 = tl.make_block_ptr(beta + bos * H + i_h, (T,), (H,), (i_t * BT + BC,), (BC,), (0,))
-        
+
     b_beta = tl.load(p_beta, boundary_check=(0,))
     b_beta2 = tl.load(p_beta2, boundary_check=(0,))
 
@@ -168,7 +172,7 @@ def fwd_prepare_wy_repr_kernel_chunk64(
         p_g2 = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT + BC,), (BC,), (0,))
     b_g = tl.load(p_g, boundary_check=(0,))
     b_g2 = tl.load(p_g2, boundary_check=(0,))
-    
+
     b_Au = b_Aw * tl.exp(b_g[:, None] - b_g[None, :])
     b_Au2 = b_Aw2 * tl.exp(b_g2[:, None] - b_g2[None, :])
     b_Au3 = b_Aw3 * tl.exp(b_g2[:, None] - b_g[None, :])
@@ -226,15 +230,16 @@ def fwd_prepare_wy_repr_kernel_chunk64(
     tl.store(p_Au4, tl.zeros([BC, BC], dtype=tl.float32).to(p_Au4.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [2, 4, 8]
     ],
-    key=["BT", "BK", "BV"], 
+    key=["BT", "BK", "BV"],
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def fwd_recompute_w_u_kernel(
     k,
@@ -330,12 +335,12 @@ def fwd_prepare_wy_repr(
         NT = len(indices)
     BC = min(BT, 32)
     BK = min(triton.next_power_of_2(K), 64)
-    # bf16 should be good enough. 
+    # bf16 should be good enough.
     Aw = torch.empty(B, *((H, T) if head_first else (T, H)), BT, device=k.device, dtype=k.dtype)
     Au = torch.empty(B, *((H, T) if head_first else (T, H)), BT, device=k.device, dtype=k.dtype)
 
     fwd_fn = fwd_prepare_wy_repr_kernel_chunk64 if BT == 64 else fwd_prepare_wy_repr_kernel_chunk32
-    fwd_fn[(NT, B*H)](      
+    fwd_fn[(NT, B*H)](
         k=k,
         g=g,
         beta=beta,
@@ -363,6 +368,7 @@ def fwd_prepare_wy_repr(
         chunk_size=chunk_size
     )
     return w, u, Aw, Au
+
 
 def fwd_recompute_w_u(
     k: torch.Tensor,
@@ -414,19 +420,20 @@ def fwd_recompute_w_u(
     return w, u
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4)
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4]
     ],
     key=["BT", "BK", "BV"],
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def bwd_prepare_wy_repr_kernel(
-    k, v, beta, g, Aw, Au, 
-    dw, du, dk, dv, dbeta, dg, 
+    k, v, beta, g, Aw, Au,
+    dw, du, dk, dv, dbeta, dg,
     offsets, indices,
     T: tl.constexpr,
     H: tl.constexpr,
@@ -446,14 +453,14 @@ def bwd_prepare_wy_repr_kernel(
         T = eos - bos
     else:
         bos, eos = i_b * T, i_b * T + T
-    
+
     b_dbeta = tl.zeros([BT], dtype=tl.float32)
     b_dA = tl.zeros([BT, BT], dtype=tl.float32)
     if HEAD_FIRST:
         p_beta = tl.make_block_ptr(beta + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
         p_A = tl.make_block_ptr(Aw + i_bh * T * BT, (BT, T), (1, BT), (0, i_t * BT), (BT, BT), (0, 1))
     else:
-        p_beta = tl.make_block_ptr(beta + (bos * H + i_h), (T,), (H,), (i_t * BT,), (BT,), (0,))    
+        p_beta = tl.make_block_ptr(beta + (bos * H + i_h), (T,), (H,), (i_t * BT,), (BT,), (0,))
         p_A = tl.make_block_ptr(Aw + (bos*H + i_h) * BT, (BT, T), (1, H*BT), (0, i_t * BT), (BT, BT), (0, 1))
 
     b_A = tl.load(p_A, boundary_check=(0, 1))
@@ -516,12 +523,12 @@ def bwd_prepare_wy_repr_kernel(
     else:
         p_g = tl.make_block_ptr(g + (bos*H + i_h), (T,), (H,), (i_t * BT,), (BT,), (0,))
     b_g = tl.load(p_g, boundary_check=(0,))
-    
+
     b_dA += b_dA2 * tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], tl.exp(b_g[:, None] - b_g[None, :]), 0)
-    
+
     b_dA = b_dA.to(k.dtype.element_ty)
     b_A = tl.zeros([BT, BT], dtype=tl.float32)
-    
+
     for i_k in range(tl.cdiv(K, BK)):
         if HEAD_FIRST:
             p_k = tl.make_block_ptr(k + i_bh * T * K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
@@ -549,6 +556,7 @@ def bwd_prepare_wy_repr_kernel(
         p_dbeta = tl.make_block_ptr(dbeta + (bos*H + i_h), (T,), (H,), (i_t * BT,), (BT,), (0,))
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0,))
     tl.store(p_dbeta, b_dbeta.to(p_dbeta.dtype.element_ty), boundary_check=(0,))
+
 
 def bwd_prepare_wy_repr(
     k: torch.Tensor,

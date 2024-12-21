@@ -18,6 +18,11 @@ from fla.utils import contiguous
 #       meta-parameters (e.g., `BM`) and compilation options (e.g., `num_warps`) to try
 #   - An auto-tuning *key* whose change in values will trigger evaluation of all the
 #       provided configs
+@triton.heuristics({
+    'HAS_INPUT': lambda args: args['input'] is not None,
+    'HAS_ALPHA': lambda args: args['alpha'] is not None,
+    'HAS_BETA': lambda args: args['beta'] is not None
+})
 @triton.autotune(
     configs=[
         triton.Config({'BM': 128, 'BK': 64, 'BN': 256, 'G': 4}, num_stages=3, num_warps=8),
@@ -38,13 +43,8 @@ from fla.utils import contiguous
         triton.Config({'BM': 64, 'BK': 64, 'BN': 128, 'G': 4}, num_stages=4, num_warps=4),
         triton.Config({'BM': 128, 'BK': 64, 'BN': 32, 'G': 4}, num_stages=4, num_warps=4)
     ],
-    key=['M', 'N', 'K'],
+    key=['M', 'N', 'K']
 )
-@triton.heuristics({
-    'HAS_INPUT': lambda args: args['input'] is not None,
-    'HAS_ALPHA': lambda args: args['alpha'] is not None,
-    'HAS_BETA': lambda args: args['beta'] is not None
-})
 @triton.jit
 def matmul_kernel(
     # Pointers to matrices

@@ -6,24 +6,26 @@ from typing import Optional, Tuple
 import torch
 import triton
 import triton.language as tl
-from fla.ops.utils import chunk_local_cumsum
+
 from fla.ops.gated_delta_rule.wy_fast import (bwd_prepare_wy_repr,
-                                        fwd_prepare_wy_repr, fwd_recompute_w_u)
+                                              fwd_prepare_wy_repr,
+                                              fwd_recompute_w_u)
+from fla.ops.utils import chunk_local_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-    ],
-    key=['BT', 'BK', 'BV'],
-)
 @triton.heuristics({
     'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
     'STORE_FINAL_STATE': lambda args: args['ht'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [2, 4, 8]
+    ],
+    key=['BT', 'BK', 'BV'],
+)
 @triton.jit
 def chunk_gated_delta_rule_fwd_kernel_h(
     k,
@@ -115,13 +117,15 @@ def chunk_gated_delta_rule_fwd_kernel_h(
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=4),
     ],
-    key=['BT', 'BK', 'BV'],
+    key=['BT', 'BK', 'BV']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gated_delta_rule_fwd_kernel_o(
     q,
@@ -196,14 +200,16 @@ def chunk_gated_delta_rule_fwd_kernel_o(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [2, 4]
     ],
     key=['BT', 'BK', 'BV'],
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gated_delta_rule_fwd_kernel_prepare_dv(
     q,
@@ -245,12 +251,12 @@ def chunk_gated_delta_rule_fwd_kernel_prepare_dv(
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_A += tl.dot(b_k, b_q, allow_tf32=False)
-    
+
     if HEAD_FIRST:
         p_g = tl.make_block_ptr(g + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
     else:
         p_g = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
-        
+
     b_g = tl.load(p_g, boundary_check=(0,))
     b_A = b_A * tl.exp(b_g[None, :] - b_g[:, None]) * scale
     b_A = tl.where(tl.arange(0, BT)[:, None] <= tl.arange(0, BT)[None, :], b_A, 0).to(do.dtype.element_ty)
@@ -267,19 +273,18 @@ def chunk_gated_delta_rule_fwd_kernel_prepare_dv(
         tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4)
-    ],
-    key=['BT', 'BK', 'BV'],
-)
 @triton.heuristics({
     'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None,
     'USE_INITIAL_STATE': lambda args: args['dh0'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4]
+    ],
+    key=['BT', 'BK', 'BV'],
+)
 @triton.jit
 def chunk_gated_delta_rule_bwd_kernel_dhu(
     q,
@@ -332,7 +337,7 @@ def chunk_gated_delta_rule_bwd_kernel_dhu(
         else:
             p_dh = tl.make_block_ptr(dh + ((boh+i_t) * H + i_h) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
-        b_dh_tmp = tl.zeros([BK, BV], dtype=tl.float32) 
+        b_dh_tmp = tl.zeros([BK, BV], dtype=tl.float32)
         last_idx = min((i_t + 1) * BT, T) - 1
         if HEAD_FIRST:
             bg_last = tl.load(g + i_nh * T + last_idx)
@@ -372,7 +377,7 @@ def chunk_gated_delta_rule_bwd_kernel_dhu(
             # [BK, BV]
             b_dh_tmp += tl.dot(b_q, b_do.to(b_q.dtype), allow_tf32=False)
             b_dh_tmp -= tl.dot(b_d, b_dv.to(b_q.dtype), allow_tf32=False)
-        b_dh *= tl.exp(bg_last) 
+        b_dh *= tl.exp(bg_last)
         b_dh += b_dh_tmp
 
     if USE_INITIAL_STATE:
@@ -380,14 +385,16 @@ def chunk_gated_delta_rule_bwd_kernel_dhu(
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4)
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [2, 4]
     ],
-    key=['BT', 'BK', 'BV'],
+    key=['BT', 'BK', 'BV']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_gated_delta_rule_bwd_kernel_dqkw(
     q,
@@ -470,7 +477,7 @@ def chunk_gated_delta_rule_bwd_kernel_dqkw(
         b_h = tl.load(p_h, boundary_check=(0, 1))
         # [BK, BV]
         b_dh = tl.load(p_dh, boundary_check=(0, 1))
-        # [BT]        
+        # [BT]
         b_dg_last += (tl.sum(b_h * b_dh))
         # [BT, BT]
         b_ds += tl.dot(b_do, tl.trans(b_v), allow_tf32=False)
@@ -867,7 +874,6 @@ def chunk_gated_delta_rule_fwd(
     head_first: bool = True,
     chunk_size: int = 64
 ):
-    T = q.shape[2] if head_first else q.shape[1]
     BT = chunk_size
     g = chunk_local_cumsum(g, chunk_size, offsets=offsets, head_first=head_first)
     # obtain WY representation. u is actually the new v.
@@ -902,11 +908,11 @@ def chunk_gated_delta_rule_fwd(
         h=h,
         g=g,
         scale=scale,
-        offsets=offsets,    
+        offsets=offsets,
         indices=indices,
         head_first=head_first,
         chunk_size=BT
-    )   
+    )
     return g, o, Aw, Au, final_state
 
 
@@ -917,7 +923,7 @@ def chunk_gated_delta_rule_bwd(
     g: torch.Tensor,
     beta: torch.Tensor,
     Aw: torch.Tensor,
-    Au: torch.Tensor,            
+    Au: torch.Tensor,
     scale: float,
     initial_state: torch.Tensor,
     do: torch.Tensor,
@@ -996,7 +1002,7 @@ def chunk_gated_delta_rule_bwd(
         k=k,
         v=v,
         beta=beta,
-        g=g,    
+        g=g,
         Aw=Aw,
         Au=Au,
         dw=dw,
@@ -1014,6 +1020,7 @@ def chunk_gated_delta_rule_bwd(
 
 
 class ChunkDeltaRuleFunction(torch.autograd.Function):
+
     @staticmethod
     @contiguous
     @autocast_custom_fwd
@@ -1030,7 +1037,6 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
         offsets: Optional[torch.LongTensor] = None,
         head_first: bool = True
     ):
-        T = q.shape[2] if head_first else q.shape[1]
         chunk_size = 64
 
         # 2-d indices denoting the offsets of chunks in each sequence
@@ -1090,7 +1096,7 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
             head_first=ctx.head_first,
             chunk_size=ctx.chunk_size
         )
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), db.to(beta.dtype), None, dh0, None, None, None, None
+        return dq.to(q), dk.to(k), dv.to(v), dg.to(g), db.to(beta), None, dh0, None, None, None, None
 
 
 def chunk_gated_delta_rule(
@@ -1156,22 +1162,22 @@ def chunk_gated_delta_rule(
         >>> g = F.logsigmoid(torch.rand(B, T, H, dtype=torch.bfloat16, device='cuda'))
         >>> h0 = torch.randn(B, H, K, V, dtype=torch.bfloat16, device='cuda')
         >>> o, ht = chunk_gated_delta_rule(q, k, v, g, beta,
-                                     initial_state=h0,
-                                     output_final_state=True,
-                                     head_first=False)
+                                           initial_state=h0,
+                                           output_final_state=True,
+                                           head_first=False)
         # for variable-length inputs, the batch size `B` is expected to be 1 and `offsets` is required
         >>> q, k, v, beta, g = map(lambda x: rearrange(x, 'b t ... -> 1 (b t) ...'), (q, k, v, beta, g))
         # for a batch with 4 sequences, offsets with 5 start/end positions are expected
         >>> offsets = q.new_tensor([0, 2048, 4096, 6144, 8192], dtype=torch.long)
         >>> o_var, ht_var = chunk_gated_delta_rule(q, k, v, g, beta,
-                                             initial_state=h0,
-                                             output_final_state=True,
-                                             offsets=offsets,
-                                             head_first=False)
+                                                   initial_state=h0,
+                                                   output_final_state=True,
+                                                   offsets=offsets,
+                                                   head_first=False)
     """
     assert q.dtype == k.dtype == v.dtype
     assert q.dtype != torch.float32, "ChunkDeltaRuleFunction does not support float32. Please use bfloat16."
-    assert len(beta.shape) == 3, "beta must be of shape (batch size, num of head, seq len) if head_first=True, or (batch size, seq len, num of head) if head_first=False."
+    assert len(beta.shape) == 3, "beta must be of shape [B, H, T] if head_first=True, or [B, T, H] if head_first=False."
 
     if offsets is not None:
         if q.shape[0] != 1:

@@ -10,16 +10,16 @@ import triton.language as tl
 from fla.utils import contiguous
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4, 8]
     ],
     key=['BT']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_local_cumsum_scalar_kernel(
     s,
@@ -53,16 +53,16 @@ def chunk_local_cumsum_scalar_kernel(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4, 8]
     ],
     key=['BT']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_local_reversed_cumsum_scalar_kernel(
     s,
@@ -97,21 +97,17 @@ def chunk_local_reversed_cumsum_scalar_kernel(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({'BS': 16}, num_warps=2),
-        triton.Config({'BS': 16}, num_warps=4),
-        triton.Config({'BS': 16}, num_warps=8),
-        triton.Config({'BS': 32}, num_warps=2),
-        triton.Config({'BS': 32}, num_warps=4),
-        triton.Config({'BS': 32}, num_warps=8),
-        triton.Config({'BS': 64}, num_warps=2),
-        triton.Config({'BS': 64}, num_warps=4),
-        triton.Config({'BS': 64}, num_warps=8),
+        triton.Config({'BS': BS}, num_warps=num_warps)
+        for BS in [16, 32, 64]
+        for num_warps in [2, 4, 8]
     ],
     key=['S', 'BT']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_local_cumsum_vector_kernel(
     s,
@@ -150,21 +146,17 @@ def chunk_local_cumsum_vector_kernel(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({'BS': 16}, num_warps=2),
-        triton.Config({'BS': 16}, num_warps=4),
-        triton.Config({'BS': 16}, num_warps=8),
-        triton.Config({'BS': 32}, num_warps=2),
-        triton.Config({'BS': 32}, num_warps=4),
-        triton.Config({'BS': 32}, num_warps=8),
-        triton.Config({'BS': 64}, num_warps=2),
-        triton.Config({'BS': 64}, num_warps=4),
-        triton.Config({'BS': 64}, num_warps=8),
+        triton.Config({'BS': BS}, num_warps=num_warps)
+        for BS in [16, 32, 64]
+        for num_warps in [2, 4, 8]
     ],
     key=['S', 'BT']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_local_reversed_cumsum_vector_kernel(
     s,
@@ -203,6 +195,9 @@ def chunk_local_reversed_cumsum_vector_kernel(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
         triton.Config({'BT': 16}, num_warps=2),
@@ -213,7 +208,6 @@ def chunk_local_reversed_cumsum_vector_kernel(
     ],
     key=[]
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_global_cumsum_scalar_kernel(
     s,
@@ -247,6 +241,9 @@ def chunk_global_cumsum_scalar_kernel(
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
         triton.Config({'BT': 16}, num_warps=2),
@@ -257,7 +254,6 @@ def chunk_global_cumsum_scalar_kernel(
     ],
     key=[]
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_global_reversed_cumsum_scalar_kernel(
     s,
@@ -292,21 +288,17 @@ def chunk_global_reversed_cumsum_scalar_kernel(
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({'BT': 16}, num_warps=2),
-        triton.Config({'BT': 16}, num_warps=4),
-        triton.Config({'BT': 16}, num_warps=8),
-        triton.Config({'BT': 32}, num_warps=2),
-        triton.Config({'BT': 32}, num_warps=4),
-        triton.Config({'BT': 32}, num_warps=8),
-        triton.Config({'BT': 64}, num_warps=2),
-        triton.Config({'BT': 64}, num_warps=4),
-        triton.Config({'BT': 64}, num_warps=8),
+        triton.Config({'BT': BT}, num_warps=num_warps)
+        for BT in [16, 32, 64]
+        for num_warps in [2, 4, 8]
     ],
     key=['S']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_global_cumsum_vector_kernel(
     s,
@@ -347,21 +339,17 @@ def chunk_global_cumsum_vector_kernel(
             b_z += tl.sum(b_s, 0)
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({'BT': 16}, num_warps=2),
-        triton.Config({'BT': 16}, num_warps=4),
-        triton.Config({'BT': 16}, num_warps=8),
-        triton.Config({'BT': 32}, num_warps=2),
-        triton.Config({'BT': 32}, num_warps=4),
-        triton.Config({'BT': 32}, num_warps=8),
-        triton.Config({'BT': 64}, num_warps=2),
-        triton.Config({'BT': 64}, num_warps=4),
-        triton.Config({'BT': 64}, num_warps=8),
+        triton.Config({'BT': BT}, num_warps=num_warps)
+        for BT in [16, 32, 64]
+        for num_warps in [2, 4, 8]
     ],
     key=['S']
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_global_reversed_cumsum_vector_kernel(
     s,

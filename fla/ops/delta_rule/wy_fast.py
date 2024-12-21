@@ -13,17 +13,16 @@ from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
 # Inspired by "THE WY REPRESENTATION FOR PRODUCTS OF HOUSEHOLDER MATRICES" https://epubs.siam.org/doi/pdf/10.1137/0908009
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16)
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4, 8, 16]
     ],
     key=["BK"]
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def fwd_prepare_wy_repr_kernel_chunk32(
     k,
@@ -81,17 +80,16 @@ def fwd_prepare_wy_repr_kernel_chunk32(
     b_A = b_A.to(k.dtype.element_ty)
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16)
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4, 8, 16]
     ],
-    key=["BK"],
+    key=["BK"]
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def fwd_prepare_wy_repr_kernel_chunk64(
     k,
@@ -182,16 +180,16 @@ def fwd_prepare_wy_repr_kernel_chunk64(
     tl.store(p_A4, tl.zeros([BC, BC], dtype=tl.float32).to(p_A4.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4, 8]
     ],
-    key=["BT", "BK", "BV"],
+    key=["BT", "BK", "BV"]
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def fwd_recompute_w_u_kernel(
     k,
@@ -255,16 +253,16 @@ def fwd_recompute_w_u_kernel(
         tl.store(p_w, b_w.to(p_w.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8)
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4, 8]
     ],
     key=["BT", "BK"],
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def fwd_recompute_w_kernel(
     k,
@@ -313,17 +311,16 @@ def fwd_recompute_w_kernel(
         tl.store(p_w, b_w.to(p_w.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16)
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4, 8, 16]
     ],
-    key=["BT", "BK", "BV"],
+    key=["BT", "BK", "BV"]
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def bwd_prepare_wy_repr_kernel(
     k,

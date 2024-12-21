@@ -10,28 +10,19 @@ import triton.language as tl
 from fla.utils import contiguous
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({'BD': 32}, num_warps=1),
-        triton.Config({'BD': 32}, num_warps=2),
-        triton.Config({'BD': 32}, num_warps=4),
-        triton.Config({'BD': 32}, num_warps=8),
-        triton.Config({'BD': 64}, num_warps=1),
-        triton.Config({'BD': 64}, num_warps=2),
-        triton.Config({'BD': 64}, num_warps=4),
-        triton.Config({'BD': 64}, num_warps=8),
-        triton.Config({'BD': 128}, num_warps=1),
-        triton.Config({'BD': 128}, num_warps=2),
-        triton.Config({'BD': 128}, num_warps=4),
-        triton.Config({'BD': 128}, num_warps=8),
-    ],
-    key=['D']
-)
 @triton.heuristics({
     'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
     'STORE_FINAL_STATE': lambda args: args['ht'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
+@triton.autotune(
+    configs=[
+        triton.Config({'BD': BD}, num_warps=num_warps)
+        for BD in [32, 64, 128]
+        for num_warps in [1, 2, 4, 8]
+    ],
+    key=['D']
+)
 @triton.jit
 def fused_recurrent_hgrn_fwd_kernel(
     x,
@@ -80,28 +71,19 @@ def fused_recurrent_hgrn_fwd_kernel(
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask)
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({'BD': 32}, num_warps=1),
-        triton.Config({'BD': 32}, num_warps=2),
-        triton.Config({'BD': 32}, num_warps=4),
-        triton.Config({'BD': 32}, num_warps=8),
-        triton.Config({'BD': 64}, num_warps=1),
-        triton.Config({'BD': 64}, num_warps=2),
-        triton.Config({'BD': 64}, num_warps=4),
-        triton.Config({'BD': 64}, num_warps=8),
-        triton.Config({'BD': 128}, num_warps=1),
-        triton.Config({'BD': 128}, num_warps=2),
-        triton.Config({'BD': 128}, num_warps=4),
-        triton.Config({'BD': 128}, num_warps=8),
-    ],
-    key=['D']
-)
 @triton.heuristics({
     'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
     'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
+@triton.autotune(
+    configs=[
+        triton.Config({'BD': BD}, num_warps=num_warps)
+        for BD in [32, 64, 128]
+        for num_warps in [1, 2, 4, 8]
+    ],
+    key=['D']
+)
 @triton.jit
 def fused_recurrent_hgrn_bwd_kernel(
     g,

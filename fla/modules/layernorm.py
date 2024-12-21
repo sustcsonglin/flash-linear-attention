@@ -79,10 +79,8 @@ def rms_norm_ref(
     ],
     key=["N", "HAS_RESIDUAL", "STORE_RESIDUAL_OUT", "IS_RMS_NORM", "HAS_BIAS"],
 )
-# @triton.heuristics({"HAS_BIAS": lambda args: args["B"] is not None})
-# @triton.heuristics({"HAS_RESIDUAL": lambda args: args["RESIDUAL"] is not None})
 @triton.jit
-def _layer_norm_fwd_1pass_kernel(
+def layer_norm_fwd_kernel(
     X,  # pointer to the input
     Y,  # pointer to the output
     W,  # pointer to the weights
@@ -147,16 +145,16 @@ def _layer_norm_fwd_1pass_kernel(
     tl.store(Y + cols, y, mask=mask)
 
 
-def _layer_norm_fwd(
-    x,
-    weight,
-    bias,
-    eps,
-    residual=None,
-    out_dtype=None,
-    residual_dtype=None,
-    is_rms_norm=False,
-    num_groups=1
+def layer_norm_fwd(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float,
+    residual: torch.Tensor = None,
+    out_dtype: torch.dtype = None,
+    residual_dtype: torch.dtype = None,
+    is_rms_norm: bool = False,
+    num_groups: int = 1
 ):
     if residual is not None:
         residual_dtype = residual.dtype
@@ -182,7 +180,7 @@ def _layer_norm_fwd(
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
     # heuristics for number of warps
     with torch.cuda.device(x.device.index):
-        _layer_norm_fwd_1pass_kernel[(M,)](
+        layer_norm_fwd_kernel[(M,)](
             x,
             y,
             weight,
@@ -209,6 +207,9 @@ def _layer_norm_fwd(
     return y, mean, rstd, residual_out if residual_out is not None else x
 
 
+@triton.heuristics({
+    "RECOMPUTE_OUTPUT": lambda args: args["Y"] is not None
+})
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=1),
@@ -220,12 +221,8 @@ def _layer_norm_fwd(
     ],
     key=["N", "HAS_DRESIDUAL", "STORE_DRESIDUAL", "IS_RMS_NORM", "HAS_BIAS"],
 )
-# @triton.heuristics({"HAS_BIAS": lambda args: args["B"] is not None})
-# @triton.heuristics({"HAS_DRESIDUAL": lambda args: args["DRESIDUAL"] is not None})
-# @triton.heuristics({"STORE_DRESIDUAL": lambda args: args["DRESIDUAL_IN"] is not None})
-@triton.heuristics({"RECOMPUTE_OUTPUT": lambda args: args["Y"] is not None})
 @triton.jit
-def _layer_norm_bwd_kernel(
+def layer_norm_bwd_kernel(
     X,  # pointer to the input
     W,  # pointer to the weights
     B,  # pointer to the biases
@@ -316,20 +313,20 @@ def _layer_norm_bwd_kernel(
         tl.store(DB + row_block_id * N + cols, db, mask=mask)
 
 
-def _layer_norm_bwd(
-    dy,
-    x,
-    weight,
-    bias,
-    eps,
-    mean,
-    rstd,
-    dresidual=None,
-    has_residual=False,
-    is_rms_norm=False,
-    x_dtype=None,
-    recompute_output=False,
-    num_groups=1
+def layer_norm_bwd(
+    dy: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float,
+    mean: torch.Tensor,
+    rstd: torch.Tensor,
+    dresidual: torch.Tensor = None,
+    has_residual: bool = False,
+    is_rms_norm: bool = False,
+    x_dtype: torch.dtype = None,
+    recompute_output: bool = False,
+    num_groups: int = 1
 ):
     M, N, G = *x.shape, num_groups
     assert dy.shape == (M, N)
@@ -357,7 +354,7 @@ def _layer_norm_bwd(
     programs_per_group = S // G
     grid = (S,)
     with torch.cuda.device(x.device.index):
-        _layer_norm_bwd_kernel[grid](
+        layer_norm_bwd_kernel[grid](
             x,
             weight,
             bias,
@@ -426,8 +423,12 @@ class LayerNormFunction(torch.autograd.Function):
             if residual is not None
             else (torch.float32 if residual_in_fp32 else None)
         )
-        y, mean, rstd, residual_out = _layer_norm_fwd(
-            x, weight, bias, eps, residual,
+        y, mean, rstd, residual_out = layer_norm_fwd(
+            x,
+            weight,
+            bias,
+            eps,
+            residual,
             residual_dtype=residual_dtype,
             is_rms_norm=is_rms_norm,
             num_groups=num_groups
@@ -455,7 +456,7 @@ class LayerNormFunction(torch.autograd.Function):
             assert dresidual.shape == x.shape
         else:
             dresidual = None
-        dx, dw, db, dresidual_in = _layer_norm_bwd(
+        dx, dw, db, dresidual_in = layer_norm_bwd(
             dy,
             x,
             weight,
@@ -713,7 +714,7 @@ class LayerNormLinearFunction(torch.autograd.Function):
             if residual is not None
             else (torch.float32 if residual_in_fp32 else None)
         )
-        y, mean, rstd, residual_out = _layer_norm_fwd(
+        y, mean, rstd, residual_out = layer_norm_fwd(
             x,
             norm_weight,
             norm_bias,
@@ -756,7 +757,7 @@ class LayerNormLinearFunction(torch.autograd.Function):
             assert dresidual.shape == x.shape
         else:
             dresidual = None
-        dx, dnorm_weight, dnorm_bias, dresidual_in, y = _layer_norm_bwd(
+        dx, dnorm_weight, dnorm_bias, dresidual_in, y = layer_norm_bwd(
             dy,
             x,
             norm_weight,

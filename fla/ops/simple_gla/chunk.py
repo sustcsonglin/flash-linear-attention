@@ -12,13 +12,15 @@ from fla.ops.utils import chunk_local_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=4),
     ],
     key=["BT", "BK", "BV"],
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_simple_gla_fwd_kernel_o(
     q,
@@ -95,6 +97,9 @@ def chunk_simple_gla_fwd_kernel_o(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=4),
@@ -102,7 +107,6 @@ def chunk_simple_gla_fwd_kernel_o(
     ],
     key=["BT", "BK", "BV"],
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_simple_gla_bwd_kernel_dqkg(
     q,
@@ -214,16 +218,16 @@ def chunk_simple_gla_bwd_kernel_dqkg(
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0,))
 
 
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None
+})
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [2, 4, 8]
     ],
     key=["BT", "BK", "BV"],
 )
-@triton.heuristics({'USE_OFFSETS': lambda args: args['offsets'] is not None})
 @triton.jit
 def chunk_simple_gla_bwd_kernel_dv(
     q,

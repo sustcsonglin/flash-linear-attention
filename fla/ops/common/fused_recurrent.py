@@ -11,19 +11,18 @@ from fla.ops.utils import chunk_global_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-    ],
-    key=["BK", "BV", "USE_GK", "USE_GV", "USE_G"],
-)
 @triton.heuristics({
     'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
     'STORE_FINAL_STATE': lambda args: args['ht'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4]
+    ],
+    key=["BK", "BV", "USE_GK", "USE_GV", "USE_G"],
+)
 @triton.jit
 def fused_recurrent_fwd_kernel(
     q,  # query [B, H, T, K]/[B, T, H, K]
@@ -129,21 +128,19 @@ def fused_recurrent_fwd_kernel(
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask_h)
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-    ],
-    key=["BK", "BV", "USE_GK", "USE_GV", "USE_G"],
-)
 @triton.heuristics({
     'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
     'STORE_INITIAL_STATE_GRADIENT': lambda args: args['dh0'] is not None,
     'USE_FINAL_STATE_GRADIENT': lambda args: args['dht'] is not None,
     'USE_OFFSETS': lambda args: args['offsets'] is not None
 })
-# Similar to Algorithm1 of https://arxiv.org/abs/2006.16236
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4]
+    ],
+    key=["BK", "BV", "USE_GK", "USE_GV", "USE_G"],
+)
 @triton.jit
 def fused_recurrent_bwd_kernel(
     q,  # query [B, H, T, K]/[B, T, H, K]

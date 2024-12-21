@@ -36,10 +36,12 @@ def rms_norm_ref(x, weight, bias, z=None, eps=1e-6, group_size=None, norm_before
     return out.to(dtype)
 
 
-@triton.heuristics({"HAS_BIAS": lambda args: args["B"] is not None})
-@triton.heuristics({"HAS_Z": lambda args: args["Z"] is not None})
+@triton.heuristics({
+    "HAS_BIAS": lambda args: args["B"] is not None,
+    "HAS_Z": lambda args: args["Z"] is not None,
+})
 @triton.jit
-def _layer_norm_fwd_1pass_kernel(
+def layer_norm_fwd_kernel(
     X,  # pointer to the input
     Y,  # pointer to the output
     W,  # pointer to the weights
@@ -102,7 +104,17 @@ def _layer_norm_fwd_1pass_kernel(
     tl.store(Y + cols, y, mask=mask)
 
 
-def _layer_norm_fwd(x, weight, bias, eps, z=None, out=None, group_size=None, norm_before_gate=True, is_rms_norm=False):
+def layer_norm_fwd(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float,
+    z: torch.Tensor = None,
+    out: torch.Tensor = None,
+    group_size: int = None,
+    norm_before_gate: bool = True,
+    is_rms_norm: bool = False,
+):
     M, N = x.shape
     if group_size is None:
         group_size = N
@@ -134,21 +146,35 @@ def _layer_norm_fwd(x, weight, bias, eps, z=None, out=None, group_size=None, nor
     num_warps = min(max(BLOCK_N // 256, 1), 8)
     grid = (M, ngroups)
     with torch.cuda.device(x.device.index):
-        _layer_norm_fwd_1pass_kernel[grid](x, out, weight, bias, z, mean, rstd,
-                                           x.stride(0), out.stride(0), z.stride(0) if z is not None else 0,
-                                           M, group_size, eps,
-                                           BLOCK_N=BLOCK_N,
-                                           NORM_BEFORE_GATE=norm_before_gate,
-                                           IS_RMS_NORM=is_rms_norm,
-                                           num_warps=num_warps)
+        layer_norm_fwd_kernel[grid](
+            x,
+            out,
+            weight,
+            bias,
+            z,
+            mean,
+            rstd,
+            x.stride(0),
+            out.stride(0),
+            z.stride(0) if z is not None else 0,
+            M,
+            group_size,
+            eps,
+            BLOCK_N=BLOCK_N,
+            NORM_BEFORE_GATE=norm_before_gate,
+            IS_RMS_NORM=is_rms_norm,
+            num_warps=num_warps
+        )
     return out, mean, rstd
 
 
-@triton.heuristics({"HAS_BIAS": lambda args: args["B"] is not None})
-@triton.heuristics({"HAS_Z": lambda args: args["Z"] is not None})
-@triton.heuristics({"RECOMPUTE_OUTPUT": lambda args: args["Y"] is not None})
+@triton.heuristics({
+    "HAS_BIAS": lambda args: args["B"] is not None,
+    "HAS_Z": lambda args: args["Z"] is not None,
+    "RECOMPUTE_OUTPUT": lambda args: args["Y"] is not None,
+})
 @triton.jit
-def _layer_norm_bwd_kernel(
+def layer_norm_bwd_kernel(
     X,   # pointer to the input
     W,   # pointer to the weights
     B,   # pointer to the biases
@@ -264,8 +290,22 @@ def _layer_norm_bwd_kernel(
         tl.store(DB + row_block_id * stride_db_row + group * N + cols, db, mask=mask)
 
 
-def _layer_norm_bwd(dy, x, weight, bias, eps, mean, rstd, z=None, group_size=None,
-                    norm_before_gate=True, is_rms_norm=False, recompute_output=False, dz=None, out=None):
+def layer_norm_bwd(
+    dy: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float,
+    mean: torch.Tensor,
+    rstd: torch.Tensor,
+    z: torch.Tensor = None,
+    group_size: int = None,
+    norm_before_gate: bool = True,
+    is_rms_norm: bool = False,
+    recompute_output: bool = False,
+    dz: torch.Tensor = None,
+    out: torch.Tensor = None,
+):
     M, N = x.shape
     if group_size is None:
         group_size = N
@@ -311,21 +351,34 @@ def _layer_norm_bwd(dy, x, weight, bias, eps, mean, rstd, z=None, group_size=Non
     rows_per_program = math.ceil(M / nrow_groups)
     grid = (nrow_groups, ngroups)
     with torch.cuda.device(x.device.index):
-        _layer_norm_bwd_kernel[grid](x, weight, bias, z, out if recompute_output else None,
-                                     dy, dx, _dw, _db, dz, mean, rstd,
-                                     x.stride(0),
-                                     z.stride(0) if z is not None else 0,
-                                     0 if not recompute_output else out.stride(0),
-                                     dy.stride(0), dx.stride(0),
-                                     dz.stride(0) if dz is not None else 0,
-                                     _dw.stride(0),
-                                     _db.stride(0) if _db is not None else 0,
-                                     M, group_size, eps,
-                                     rows_per_program,
-                                     BLOCK_N=BLOCK_N,
-                                     NORM_BEFORE_GATE=norm_before_gate,
-                                     IS_RMS_NORM=is_rms_norm,
-                                     num_warps=num_warps)
+        layer_norm_bwd_kernel[grid](
+            x,
+            weight,
+            bias,
+            z,
+            out if recompute_output else None,
+            dy,
+            dx,
+            _dw,
+            _db,
+            dz,
+            mean,
+            rstd,
+            x.stride(0),
+            z.stride(0) if z is not None else 0,
+            0 if not recompute_output else out.stride(0),
+            dy.stride(0),
+            dx.stride(0),
+            dz.stride(0) if dz is not None else 0,
+            _dw.stride(0),
+            _db.stride(0) if _db is not None else 0,
+            M, group_size, eps,
+            rows_per_program,
+            BLOCK_N=BLOCK_N,
+            NORM_BEFORE_GATE=norm_before_gate,
+            IS_RMS_NORM=is_rms_norm,
+            num_warps=num_warps
+        )
     dw = _dw.sum(0).to(weight.dtype)
     db = _db.sum(0).to(bias.dtype) if bias is not None else None
     return (dx, dw, db, dz) if not recompute_output else (dx, dw, db, dz, out)
@@ -352,8 +405,16 @@ class LayerNormFn(torch.autograd.Function):
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        y, mean, rstd = _layer_norm_fwd(x, weight, bias, eps, z=z, group_size=group_size,
-                                        norm_before_gate=norm_before_gate, is_rms_norm=is_rms_norm)
+        y, mean, rstd = layer_norm_fwd(
+            x,
+            weight,
+            bias,
+            eps,
+            z=z,
+            group_size=group_size,
+            norm_before_gate=norm_before_gate,
+            is_rms_norm=is_rms_norm,
+        )
         ctx.save_for_backward(x, weight, bias, mean, rstd, z)
         ctx.x_shape_og = x_shape_og
         ctx.eps = eps
@@ -369,7 +430,7 @@ class LayerNormFn(torch.autograd.Function):
         if dy.stride(-1) != 1:
             dy = dy.contiguous()
         assert dy.shape == x.shape
-        dx, dw, db, dz = _layer_norm_bwd(
+        dx, dw, db, dz = layer_norm_bwd(
             dy,
             x,
             weight,
