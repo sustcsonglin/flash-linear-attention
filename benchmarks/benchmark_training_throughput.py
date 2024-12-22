@@ -26,10 +26,31 @@ def sizeof_fmt(num, suffix='B'):
     return f'{num:.2f}Yi{suffix}'
 
 
+def prepare_inputs(
+    batch_size: int,
+    seq_len: int,
+    varlen: bool,
+    vocab_size: int,
+    device: torch.device
+):
+    if varlen:
+        tokens = torch.randint(high=vocab_size, size=(1, batch_size * seq_len), device=device)
+        offsets = torch.cat([
+            torch.tensor([0], dtype=torch.long, device=device),
+            torch.randperm(batch_size * seq_len - 16, device=device)[:batch_size-1] + 16,
+            torch.tensor([batch_size * seq_len], dtype=torch.long, device=device)
+        ], 0).sort()[0]
+    else:
+        tokens = torch.randint(high=vocab_size, size=(batch_size, seq_len), device=device)
+        offsets = None
+    return tokens, offsets
+
+
 def profile(
     name: str,
     batch_size: int = 8,
     seq_len: int = 2048,
+    varlen: bool = False,
     warmup_steps: int = 16,
     steps: int = 32,
     total_steps: int = 1024,
@@ -63,8 +84,14 @@ def profile(
     torch.cuda.synchronize(device)
     for _ in bar:
         # forward pass
-        tokens = torch.randint(high=config.vocab_size, size=(batch_size, seq_len)).cuda()
-        outputs = model(tokens, labels=tokens)
+        tokens, offsets = prepare_inputs(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            varlen=varlen,
+            vocab_size=config.vocab_size,
+            device=device
+        )
+        outputs = model(tokens, labels=tokens, offsets=offsets)
         # backward pass
         accelerator.backward(outputs.loss)
         optimizer.step()
@@ -77,8 +104,14 @@ def profile(
     torch.cuda.synchronize(device)
     for _ in bar:
         # forward pass
-        tokens = torch.randint(high=config.vocab_size, size=(batch_size, seq_len), device=device)
-        outputs = model(tokens, labels=tokens)
+        tokens, offsets = prepare_inputs(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            varlen=varlen,
+            vocab_size=config.vocab_size,
+            device=device
+        )
+        outputs = model(tokens, labels=tokens, offsets=offsets)
         # backward pass
         accelerator.backward(outputs.loss)
         optimizer.step()
@@ -95,7 +128,15 @@ if __name__ == "__main__":
     parser.add_argument("--name", default='retnet')
     parser.add_argument("--batch_size", default=8, type=int)
     parser.add_argument("--seq_len", default=2048, type=int)
+    parser.add_argument("--varlen", action='store_true')
     parser.add_argument("--warmup_steps", default=16, type=int)
     parser.add_argument("--steps", default=32, type=int)
     args = parser.parse_args()
-    profile(args.name, args.batch_size, args.seq_len, args.warmup_steps, args.steps)
+    profile(
+        name=args.name,
+        batch_size=args.batch_size,
+        seq_len=args.seq_len,
+        varlen=args.varlen,
+        warmup_steps=args.warmup_steps,
+        steps=args.steps
+    )
