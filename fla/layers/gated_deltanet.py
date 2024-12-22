@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
@@ -11,15 +12,17 @@ from einops import rearrange
 from torch.nn import functional as F
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
-from fla.modules.l2norm import l2_norm
-from fla.ops.gated_delta_rule import (chunk_gated_delta_rule, fused_recurrent_gated_delta_rule)
-import math
+from fla.modules.l2norm import l2norm
+from fla.ops.gated_delta_rule import (chunk_gated_delta_rule,
+                                      fused_recurrent_gated_delta_rule)
 
 if TYPE_CHECKING:
     from fla.models.utils import Cache
 
+
 def elu_p1(x):
     return (F.elu(x, 1., False) + 1.).to(x)
+
 
 def sum_norm(x):
     return (x / x.sum(-1, keepdim=True)).to(x)
@@ -27,22 +30,24 @@ def sum_norm(x):
 # https://github.com/IDSIA/recurrent-fwp/blob/master/algorithmic/layers.py#L86C1-L146C1
 
 
-
 class GatedDeltaNet(nn.Module):
     """
-    The layer implementaion for [Gated Delta Networks: Improving Mamba2 with Delta Rule](https://arxiv.org/abs/2412.06464).  # noqa: 
+    The layer implementaion for [Gated Delta Networks: Improving Mamba2 with Delta Rule](https://arxiv.org/abs/2412.06464).  # noqa
+
     Similar to Mamba2, each layer contains around 6*hidden_size*hidden_size parameters.
-    Parameter alloation when use_gate=True: 
+    Parameter alloation when use_gate=True:
         - 0.75 * hidden_size * hidden_size for the q_proj and k_proj each
-        - 1.5 * hidden_size * hidden_size for the v_proj, g_proj and o_proj each 
+        - 1.5 * hidden_size * hidden_size for the v_proj, g_proj and o_proj each
         - Others are ignorably small.
         - In total = 0.75 * 2 + 1.5 * 3 = 6 * hidden_size * hidden_size
-    Note: num_heads * head_dim = 0.75 * hidden_size, please make sure to set the correct num_heads and head_dim.
+    NOTE: num_heads * head_dim = 0.75 * hidden_size, please make sure to set the correct num_heads and head_dim.
+
     Parameter allocation when use_gate=False:
         - 1 * hidden_size * hidden_size for the q_proj and k_proj each
-        - 2 * hidden_size * hidden_size for the v_proj and o_proj each 
+        - 2 * hidden_size * hidden_size for the v_proj and o_proj each
         - Others are ignorably small.
         - In total = 1 * 2 + 2 * 2 = 6 * hidden_size * hidden_size
+
     Args:
         hidden_size (int, Optional):
             The hidden size of the input. Default: 2048.
@@ -103,12 +108,12 @@ class GatedDeltaNet(nn.Module):
         self.num_heads = num_heads
 
         self.key_dim = self.num_heads * self.head_dim
-        self.value_dim = self.key_dim * self.expand_v  
+        self.value_dim = self.key_dim * self.expand_v
         self.head_qk_dim = head_dim
         self.head_v_dim = head_dim * self.expand_v
         self.layer_idx = layer_idx
         self.silu = nn.SiLU()
-        
+
         assert mode in ['chunk', 'fused_recurrent'], f"Not suppoerted mode `{mode}`."
 
         self.q_proj = nn.Linear(hidden_size, self.key_dim, bias=False)
@@ -123,9 +128,9 @@ class GatedDeltaNet(nn.Module):
         self.D = nn.Parameter(torch.ones(self.num_heads))
         self.D._no_weight_decay = True
         # hard coded for now
-        dt_min=0.001
-        dt_max=0.1
-        dt_init_floor=1e-4
+        dt_min = 0.001
+        dt_max = 0.1
+        dt_init_floor = 1e-4
         dt = torch.exp(
             torch.rand(self.num_heads) * (math.log(dt_max) - math.log(dt_min))
             + math.log(dt_min)
@@ -196,7 +201,7 @@ class GatedDeltaNet(nn.Module):
         mode = 'fused_recurrent' if hidden_states.shape[1] <= 64 else self.mode
         if self.training:
             assert mode == 'chunk', "Only chunk mode is supported in training."
-        
+
         last_state = None
         if past_key_values is not None and len(past_key_values) > self.layer_idx:
             last_state = past_key_values[self.layer_idx]
@@ -224,11 +229,11 @@ class GatedDeltaNet(nn.Module):
             v = self.silu(self.v_proj(hidden_states))
 
         q, k, v = map(lambda x: rearrange(x, 'b t (h d) -> b t h d', h=self.num_heads), (q, k, v))
-        q = l2_norm(q)
-        k = l2_norm(k)
+        q = l2norm(q)
+        k = l2norm(k)
         beta = self.b_proj(hidden_states).sigmoid()
         g = -self.A_log.float().exp() * F.softplus(self.a_proj(hidden_states).float() + self.dt_bias)
-        
+
         # dealing with padding
         if attention_mask is not None:
             beta = beta.mul(attention_mask[:, -beta.shape[-2]:, None])

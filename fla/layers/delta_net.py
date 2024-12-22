@@ -2,13 +2,16 @@
 # Copyright (c) 2024, Songlin Yang, Yu Zhang
 
 from __future__ import annotations
+
 from typing import TYPE_CHECKING, Optional, Tuple
+
 import torch
 import torch.nn as nn
 from einops import rearrange
 from torch.nn import functional as F
+
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
-from fla.modules.l2norm import l2_norm
+from fla.modules.l2norm import l2norm
 from fla.ops.delta_rule import (chunk_delta_rule, fused_chunk_delta_rule,
                                 fused_recurrent_delta_rule)
 
@@ -24,17 +27,16 @@ def sum_norm(x):
     return (x / x.sum(-1, keepdim=True)).to(x)
 
 
-
 class DeltaNet(nn.Module):
     r"""
-    The layer implementaion for [Parallelizing Linear Transformers with the Delta Rule over Sequence Length](https://arxiv.org/abs/2406.06484).  # noqa: 
+    The layer implementaion for [Parallelizing Linear Transformers with the Delta Rule over Sequence Length](https://arxiv.org/abs/2406.06484).  # noqa:
     DeltaNet was originally proposed in [Linear Transformers Are Secretly Fast Weight Programmers](https://arxiv.org/abs/2102.11174). # noqa
 
     Args:
         mode (str, Optional):
             Which DeltaNet kernel to use.
             Currently available: `chunk`, `fused_recurrent`, and `fused_chunk`.
-            Default: `chunk`. 
+            Default: `chunk`.
         hidden_size (int, Optional):
             The hidden size of the input. Default: 1024.
         expand_k (float, Optional):
@@ -54,7 +56,7 @@ class DeltaNet(nn.Module):
         conv_bias (bool, Optional):
             Whether to use bias in the short convolution, only used when `use_short_conv` is `True`. Default: `False`.
         allow_neg_eigval (bool, Optional):
-            Allow negative eigenvalues. Default: `False`. If set to `True`, the beta will be multiplied by 2. 
+            Allow negative eigenvalues. Default: `False`. If set to `True`, the beta will be multiplied by 2.
             See reference: [Unlocking State-Tracking in Linear RNNs Through Negative Eigenvalues](https://arxiv.org/abs/2411.12537)
         layer_idx (int, Optional):
             The index of the layer. Default: None.
@@ -227,8 +229,8 @@ class DeltaNet(nn.Module):
 
         if self.qk_norm is not None:
             if self.qk_norm == 'l2':
-                q = l2_norm(q)
-                k = l2_norm(k)
+                q = l2norm(q)
+                k = l2norm(k)
             elif self.qk_norm == 'sum':
                 q = sum_norm(q).to(q)
                 k = sum_norm(k).to(k)
@@ -237,9 +239,9 @@ class DeltaNet(nn.Module):
             beta = self.b_proj(hidden_states).sigmoid()
         else:
             beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
-        
+
         if self.allow_neg_eigval:
-            beta = beta * 2. 
+            beta = beta * 2.
 
         # dealing with padding
         if attention_mask is not None:
