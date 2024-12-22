@@ -191,7 +191,7 @@ class L2NormFunction(torch.autograd.Function):
         return dx, None, None
 
 
-def l2norm(
+def l2_norm(
     x: torch.Tensor,
     eps: float = 1e-6,
     output_dtype: Optional[torch.dtype] = None

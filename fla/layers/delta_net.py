@@ -11,7 +11,7 @@ from einops import rearrange
 from torch.nn import functional as F
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
-from fla.modules.l2norm import l2norm
+from fla.modules.l2norm import l2_norm
 from fla.ops.delta_rule import (chunk_delta_rule, fused_chunk_delta_rule,
                                 fused_recurrent_delta_rule)
 
@@ -229,8 +229,8 @@ class DeltaNet(nn.Module):
 
         if self.qk_norm is not None:
             if self.qk_norm == 'l2':
-                q = l2norm(q)
-                k = l2norm(k)
+                q = l2_norm(q)
+                k = l2_norm(k)
             elif self.qk_norm == 'sum':
                 q = sum_norm(q).to(q)
                 k = sum_norm(k).to(k)
