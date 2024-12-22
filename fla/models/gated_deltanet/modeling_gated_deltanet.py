@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -14,11 +14,13 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast)
 from transformers.modeling_utils import PreTrainedModel
+from transformers.processing_utils import Unpack
 from transformers.utils import logging
 
 from fla.layers.attn import Attention
 from fla.layers.gated_deltanet import GatedDeltaNet
-from fla.models.gated_deltanet.configuration_gated_deltanet import GatedDeltaNetConfig
+from fla.models.gated_deltanet.configuration_gated_deltanet import \
+    GatedDeltaNetConfig
 from fla.models.utils import Cache
 from fla.modules import (FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss,
                          RMSNorm)
@@ -60,7 +62,11 @@ class GatedDeltaNetMLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
-    def forward(self, x):
+    def forward(
+        self,
+        x: torch.Tensor,
+        **kwargs: Unpack[Dict],
+    ) -> torch.Tensor:
         if self.norm_first:
             x = rms_norm_linear(x, self.norm.weight, self.norm.bias, self.gate_proj.weight, self.gate_proj.bias)
         else:
@@ -89,7 +95,6 @@ class GatedDeltaNetBlock(nn.Module):
             self.attn = GatedDeltaNet(
                 mode=config.attn_mode,
                 hidden_size=config.hidden_size,
-                # expand_k=config.expand_k,
                 expand_v=config.expand_v,
                 head_dim=config.head_dim,
                 num_heads=config.num_heads,
@@ -118,9 +123,8 @@ class GatedDeltaNetBlock(nn.Module):
         past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
-        **kwargs
+        **kwargs: Unpack[Dict]
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-
         residual = hidden_states
         if hasattr(self, 'attn_norm'):
             hidden_states = self.attn_norm(hidden_states)
@@ -129,14 +133,15 @@ class GatedDeltaNetBlock(nn.Module):
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            output_attentions=output_attentions
+            output_attentions=output_attentions,
+            **kwargs
         )
         if hasattr(self, 'mlp_norm'):
             hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
         else:
             hidden_states = residual + hidden_states
             residual = hidden_states
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, **kwargs)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states, attentions, past_key_values)
@@ -217,7 +222,8 @@ class GatedDeltaNetModel(GatedDeltaNetPreTrainedModel):
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None
+        return_dict: Optional[bool] = None,
+        **kwargs: Unpack[Dict]
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         if output_attentions:
             warnings.warn("`GatedDeltaNetModel` does not `output_attentions` now, setting it to `False`.")
@@ -257,7 +263,8 @@ class GatedDeltaNetModel(GatedDeltaNetPreTrainedModel):
                     attention_mask,
                     past_key_values,
                     use_cache,
-                    output_attentions
+                    output_attentions,
+                    **kwargs
                 )
             else:
                 hidden_states, attentions, past_key_values = layer(
@@ -265,7 +272,8 @@ class GatedDeltaNetModel(GatedDeltaNetPreTrainedModel):
                     attention_mask=attention_mask,
                     past_key_values=past_key_values,
                     use_cache=use_cache,
-                    output_attentions=output_attentions
+                    output_attentions=output_attentions,
+                    **kwargs
                 )
 
             if output_attentions:
@@ -277,12 +285,11 @@ class GatedDeltaNetModel(GatedDeltaNetPreTrainedModel):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = past_key_values
         if not return_dict:
-            return tuple(x for x in [hidden_states, next_cache, all_hidden_states, all_attns] if x is not None)
+            return tuple(i for i in [hidden_states, past_key_values, all_hidden_states, all_attns] if i is not None)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
-            past_key_values=next_cache,
+            past_key_values=past_key_values,
             hidden_states=all_hidden_states,
             attentions=all_attns
         )
@@ -347,7 +354,6 @@ class GatedDeltaNetForCausalLM(GatedDeltaNetPreTrainedModel, GenerationMixin):
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
-
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
             model_inputs = {'inputs_embeds': inputs_embeds}
@@ -380,7 +386,8 @@ class GatedDeltaNetForCausalLM(GatedDeltaNetPreTrainedModel, GenerationMixin):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        num_logits_to_keep: Optional[int] = 0
+        num_logits_to_keep: Optional[int] = 0,
+        **kwargs: Unpack[Dict]
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -396,7 +403,8 @@ class GatedDeltaNetForCausalLM(GatedDeltaNetPreTrainedModel, GenerationMixin):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict
+            return_dict=return_dict,
+            **kwargs
         )
 
         hidden_states = outputs[0]

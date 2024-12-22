@@ -4,12 +4,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
+from transformers.processing_utils import Unpack
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.modules.activations import ACT2FN
@@ -162,7 +163,7 @@ class GatedLinearAttention(nn.Module):
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
-        **kwargs
+        **kwargs: Unpack[Dict]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         if attention_mask is not None:
             assert len(attention_mask.shape) == 2, (
@@ -216,6 +217,7 @@ class GatedLinearAttention(nn.Module):
             gk = torch.clamp_min(gk, self.clamp_min)
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
+        offsets = kwargs.get('offsets', None)
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_gla(
                 q=q,
@@ -224,6 +226,7 @@ class GatedLinearAttention(nn.Module):
                 gk=gk,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
+                offsets=offsets,
                 head_first=False
             )
         elif mode == 'fused_chunk':
@@ -244,6 +247,7 @@ class GatedLinearAttention(nn.Module):
                 g=gk,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
+                offsets=offsets,
                 head_first=False
             )
         else:

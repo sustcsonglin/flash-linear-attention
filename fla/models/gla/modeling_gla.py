@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -14,6 +14,7 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast)
 from transformers.modeling_utils import PreTrainedModel
+from transformers.processing_utils import Unpack
 from transformers.utils import logging
 
 from fla.layers.attn import Attention
@@ -53,7 +54,11 @@ class GLAMLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
-    def forward(self, x):
+    def forward(
+        self,
+        x: torch.Tensor,
+        **kwargs: Unpack[Dict],
+    ) -> torch.Tensor:
         y = self.gate_proj(x)
         gate, y = y.chunk(2, -1)
         return swiglu_linear(gate, y, self.down_proj.weight, self.down_proj.bias)
@@ -108,7 +113,7 @@ class GLABlock(nn.Module):
         past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
-        **kwargs,
+        **kwargs: Unpack[Dict]
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
         hidden_states = self.attn_norm(hidden_states)
@@ -117,10 +122,11 @@ class GLABlock(nn.Module):
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            output_attentions=output_attentions
+            output_attentions=output_attentions,
+            **kwargs
         )
         hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, **kwargs)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states, attentions, past_key_values)
@@ -201,7 +207,8 @@ class GLAModel(GLAPreTrainedModel):
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None
+        return_dict: Optional[bool] = None,
+        **kwargs: Unpack[Dict]
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         if output_attentions:
             warnings.warn("`GLAModel` does not `output_attentions` now, setting it to `False`.")
@@ -241,7 +248,8 @@ class GLAModel(GLAPreTrainedModel):
                     attention_mask,
                     past_key_values,
                     use_cache,
-                    output_attentions
+                    output_attentions,
+                    **kwargs
                 )
             else:
                 hidden_states, attentions, past_key_values = layer(
@@ -249,7 +257,8 @@ class GLAModel(GLAPreTrainedModel):
                     attention_mask=attention_mask,
                     past_key_values=past_key_values,
                     use_cache=use_cache,
-                    output_attentions=output_attentions
+                    output_attentions=output_attentions,
+                    **kwargs
                 )
 
             if output_attentions:
@@ -362,7 +371,8 @@ class GLAForCausalLM(GLAPreTrainedModel, GenerationMixin):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        num_logits_to_keep: Optional[int] = 0
+        num_logits_to_keep: Optional[int] = 0,
+        **kwargs: Unpack[Dict]
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -378,7 +388,8 @@ class GLAForCausalLM(GLAPreTrainedModel, GenerationMixin):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict
+            return_dict=return_dict,
+            **kwargs
         )
 
         hidden_states = outputs[0]

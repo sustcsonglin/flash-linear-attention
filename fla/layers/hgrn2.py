@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from transformers.processing_utils import Unpack
 
 from fla.modules import RMSNorm, ShortConvolution
 from fla.modules.activations import swish
@@ -97,7 +98,7 @@ class HGRN2Attention(nn.Module):
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
         lower_bound: Optional[torch.Tensor] = None,
-        **kwargs
+        **kwargs: Unpack[Dict]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         if attention_mask is not None:
             assert len(attention_mask.shape) == 2, (
@@ -154,6 +155,7 @@ class HGRN2Attention(nn.Module):
         q, k, i, g = map(lambda x: rearrange(x, '... (h d) -> ... h d', h=self.num_heads), (q, k.to(i), i, g))
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
+        offsets = kwargs.get('offsets', None)
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_gla(
                 q=q,
@@ -162,6 +164,7 @@ class HGRN2Attention(nn.Module):
                 gk=g,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
+                offsets=offsets,
                 head_first=False
             )
         elif mode == 'fused_chunk':
@@ -182,6 +185,7 @@ class HGRN2Attention(nn.Module):
                 g=g,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
+                offsets=offsets,
                 head_first=False
             )
         else:

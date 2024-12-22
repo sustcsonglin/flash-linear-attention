@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from transformers.processing_utils import Unpack
 
 from fla.modules import RMSNorm, ShortConvolution
 from fla.modules.activations import swish
@@ -131,7 +132,7 @@ class GatedSlotAttention(nn.Module):
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
-        **kwargs
+        **kwargs: Unpack[Dict]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         if attention_mask is not None:
             assert len(attention_mask.shape) == 2, (
@@ -190,6 +191,7 @@ class GatedSlotAttention(nn.Module):
             v = v.mul_(attention_mask[:, -v.shape[1]:, None, None])
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
+        offsets = kwargs.get('offsets', None)
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_gsa(
                 q=q,
@@ -200,6 +202,7 @@ class GatedSlotAttention(nn.Module):
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
                 scale=self.scale,
+                offsets=offsets,
                 head_first=False
             )
         elif mode == 'chunk':
@@ -212,6 +215,7 @@ class GatedSlotAttention(nn.Module):
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
                 scale=self.scale,
+                offsets=offsets,
                 head_first=False
             )
         else:

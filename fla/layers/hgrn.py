@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers.processing_utils import Unpack
 
 from fla.modules import FusedRMSNormSwishGate, ShortConvolution
 from fla.modules.activations import swiglu
@@ -80,7 +81,7 @@ class HGRNAttention(nn.Module):
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
         lower_bound: Optional[torch.Tensor] = None,
-        **kwargs
+        **kwargs: Unpack[Dict]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         if attention_mask is not None:
             assert len(attention_mask.shape) == 2, (
@@ -128,7 +129,7 @@ class HGRNAttention(nn.Module):
         if mode == 'chunk':
             o, recurrent_state = chunk_hgrn(i, f, recurrent_state, use_cache)
         elif mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_hgrn(i, f, recurrent_state, use_cache)
+            o, recurrent_state = fused_recurrent_hgrn(i, f, recurrent_state, use_cache, offsets=kwargs.get('offsets', None))
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 

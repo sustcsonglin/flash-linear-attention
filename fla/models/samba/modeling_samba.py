@@ -12,6 +12,7 @@ from torch import nn
 from transformers.activations import ACT2FN
 from transformers.generation import GenerationMixin
 from transformers.modeling_utils import PreTrainedModel
+from transformers.processing_utils import Unpack
 from transformers.utils import ModelOutput, logging
 
 from fla.layers.attn import Attention
@@ -48,7 +49,11 @@ class SambaMLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
-    def forward(self, x):
+    def forward(
+        self,
+        x: torch.Tensor,
+        **kwargs: Unpack[Dict],
+    ) -> torch.Tensor:
         y = self.gate_proj(x)
         gate, y = y.chunk(2, -1)
         return swiglu_linear(gate, y, self.down_proj.weight, self.down_proj.bias)
@@ -85,17 +90,17 @@ class SambaBlock(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cache_params: Optional[Tuple[torch.Tensor]] = None,
-        **kwargs,
+        **kwargs: Unpack[Dict]
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
         residual = hidden_states
         hidden_states = self.mixer_norm(hidden_states)
         if isinstance(self.mixer, MambaMixer):
-            hidden_states = self.mixer(hidden_states, cache_params=cache_params)
+            hidden_states = self.mixer(hidden_states, cache_params=cache_params, **kwargs)
         else:
-            hidden_states, _, cache_params = self.mixer(hidden_states=hidden_states, past_key_values=cache_params)
+            hidden_states, _, cache_params = self.mixer(hidden_states=hidden_states, past_key_values=cache_params, **kwargs)
         hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, **kwargs)
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -240,7 +245,7 @@ class SambaModel(SambaPreTrainedModel):
         use_cache: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        **kwargs,  # `attention_mask` is passed by the tokenizer and we don't want it
+        **kwargs: Unpack[Dict]
     ) -> Union[Tuple, SambaOutput]:
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -268,9 +273,18 @@ class SambaModel(SambaPreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         for mixer_block in self.layers:
             if self.gradient_checkpointing and self.training:
-                hidden_states = self._gradient_checkpointing_func(mixer_block.__call__, hidden_states, cache_params)
+                hidden_states = self._gradient_checkpointing_func(
+                    mixer_block.__call__,
+                    hidden_states,
+                    cache_params,
+                    **kwargs
+                )
             else:
-                hidden_states = mixer_block(hidden_states, cache_params=cache_params)
+                hidden_states = mixer_block(
+                    hidden_states,
+                    cache_params=cache_params,
+                    **kwargs
+                )
 
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
@@ -331,7 +345,7 @@ class SambaForCausalLM(SambaPreTrainedModel, GenerationMixin):
         attention_mask=None,
         use_cache: Optional[bool] = True,
         num_logits_to_keep: Optional[int] = None,
-        **kwargs
+        **kwargs: Unpack[Dict]
     ):
         # only last token for inputs_ids if the state is passed along.
         if cache_params is not None:
@@ -364,7 +378,7 @@ class SambaForCausalLM(SambaPreTrainedModel, GenerationMixin):
         return_dict: Optional[bool] = None,
         use_cache: Optional[bool] = None,
         num_logits_to_keep: Optional[int] = 0,
-        **kwargs,  # for now we need this for generation
+        **kwargs: Unpack[Dict]
     ) -> Union[Tuple, SambaCausalLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -381,6 +395,7 @@ class SambaForCausalLM(SambaPreTrainedModel, GenerationMixin):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             use_cache=use_cache,
+            **kwargs
         )
         hidden_states = samba_outputs[0]
         fuse_linear_and_cross_entropy = self.config.fuse_cross_entropy and self.training

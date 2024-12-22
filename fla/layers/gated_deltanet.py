@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from einops import rearrange
 from torch.nn import functional as F
+from transformers.processing_utils import Unpack
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.modules.l2norm import l2_norm
@@ -189,7 +190,7 @@ class GatedDeltaNet(nn.Module):
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
-        **kwargs
+        **kwargs: Unpack[Dict]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         if attention_mask is not None:
             assert len(attention_mask.shape) == 2, (
@@ -238,8 +239,9 @@ class GatedDeltaNet(nn.Module):
         if attention_mask is not None:
             beta = beta.mul(attention_mask[:, -beta.shape[-2]:, None])
             g = g.mul(attention_mask[:, -g.shape[-2]:, None])
-        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
 
+        recurrent_state = last_state['recurrent_state'] if last_state is not None else None
+        offsets = kwargs.get('offsets', None)
         if mode == 'chunk':
             o, recurrent_state = chunk_gated_delta_rule(
                 q=q,
@@ -249,6 +251,7 @@ class GatedDeltaNet(nn.Module):
                 beta=beta,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
+                offsets=offsets,
                 head_first=False
             )
         elif mode == 'fused_recurrent':
@@ -260,6 +263,7 @@ class GatedDeltaNet(nn.Module):
                 beta=beta,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
+                offsets=offsets,
                 head_first=False
             )
         if past_key_values is not None:
