@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -14,6 +14,7 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast)
 from transformers.modeling_utils import PreTrainedModel
+from transformers.processing_utils import Unpack
 from transformers.utils import logging
 
 from fla.layers.attn import Attention
@@ -59,7 +60,11 @@ class TransformerMLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
-    def forward(self, x):
+    def forward(
+        self,
+        x: torch.Tensor,
+        **kwargs: Unpack[Any]
+    ) -> torch.Tensor:
         if self.norm_first:
             x = rms_norm_linear(x, self.norm.weight, self.norm.bias, self.gate_proj.weight, self.gate_proj.bias)
         else:
@@ -106,7 +111,7 @@ class TransformerBlock(nn.Module):
         past_key_values: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
-        **kwargs,
+        **kwargs: Unpack[Any]
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
         residual = hidden_states
@@ -117,14 +122,15 @@ class TransformerBlock(nn.Module):
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            output_attentions=output_attentions
+            output_attentions=output_attentions,
+            **kwargs
         )
         if hasattr(self, 'mlp_norm'):
             hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
         else:
             hidden_states = residual + hidden_states
             residual = hidden_states
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, **kwargs)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -183,7 +189,10 @@ class TransformerPreTrainedModel(PreTrainedModel):
 
 class TransformerModel(TransformerPreTrainedModel):
 
-    def __init__(self, config: TransformerConfig):
+    def __init__(
+        self,
+        config: TransformerConfig
+    ) -> TransformerModel:
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -211,7 +220,8 @@ class TransformerModel(TransformerPreTrainedModel):
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None
+        return_dict: Optional[bool] = None,
+        **kwargs: Unpack[Any]
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         if output_attentions:
             warnings.warn(
@@ -260,7 +270,8 @@ class TransformerModel(TransformerPreTrainedModel):
                     attention_mask,
                     past_key_values,
                     output_attentions,
-                    use_cache
+                    use_cache,
+                    **kwargs
                 )
             else:
                 layer_outputs = layer(
@@ -268,7 +279,8 @@ class TransformerModel(TransformerPreTrainedModel):
                     attention_mask=attention_mask,
                     past_key_values=past_key_values,
                     output_attentions=output_attentions,
-                    use_cache=use_cache
+                    use_cache=use_cache,
+                    **kwargs
                 )
 
             hidden_states = layer_outputs[0]
@@ -372,7 +384,8 @@ class TransformerForCausalLM(TransformerPreTrainedModel, GenerationMixin):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        num_logits_to_keep: Optional[int] = 0
+        num_logits_to_keep: Optional[int] = 0,
+        **kwargs: Unpack[Any]
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -388,7 +401,8 @@ class TransformerForCausalLM(TransformerPreTrainedModel, GenerationMixin):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict
+            return_dict=return_dict,
+            **kwargs
         )
 
         hidden_states = outputs[0]
