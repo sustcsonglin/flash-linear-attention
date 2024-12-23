@@ -55,19 +55,19 @@ def preprocess(
 
     Args:
         dataset:
-            Path or name of the dataset.
+            Path or name of the dataset. Default: 'HuggingFaceFW/fineweb-edu'.
         name:
-            Name of the dataset configuration.
+            Name of the dataset configuration. Default: `None`.
         split:
-            Dataset split to process.
+            Dataset split to process. Default: 'train'.
         output:
-            Output directory.
+            Output directory. Default: 'data'.
         model:
-            Model name for tokenizer.
+            Model name for tokenizer. Default: 'mistralai/Mistral-7B-v0.1'.
         num_proc:
-            Number of processes for parallel processing.
+            Number of processes for parallel processing. Default: 64.
         context_length:
-            Context length for tokenization.
+            Context length for tokenization. Default: 8192.
     """
     tokenized_path = f'{output}/{dataset}/{name}/{split}' if name is not None else f'{output}/{dataset}/{split}'
 
@@ -95,7 +95,7 @@ def preprocess(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Preprocess and tokenize dataset")
     parser.add_argument("--dataset", default="HuggingFaceFW/fineweb-edu", help="Path or name of the dataset")
-    parser.add_argument("--name", default="sample-10BT", help="Name of the dataset configuration")
+    parser.add_argument("--name", default=None, help="Name of the dataset configuration")
     parser.add_argument("--split", default="train", help="Dataset split to process")
     parser.add_argument("--output", default="data", help="Output directory")
     parser.add_argument("--model", default="mistralai/Mistral-7B-v0.1", help="Model name for tokenizer")
