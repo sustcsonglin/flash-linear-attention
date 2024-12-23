@@ -9,7 +9,7 @@ import triton.language as tl
 
 from fla.ops.common.chunk_h import chunk_bwd_dh, chunk_fwd_h
 from fla.ops.utils import chunk_local_cumsum
-from fla.utils import contiguous
+from fla.utils import contiguous, tensor_cache
 
 
 @triton.heuristics({
@@ -1317,6 +1317,16 @@ def chunk_gla_bwd(
     return dq, dk, dv, dg, dh0
 
 
+@tensor_cache
+def prepare_varlen_inputs(
+    offsets: torch.LongTensor,
+    chunk_size: int
+) -> Tuple[torch.LongTensor, torch.LongTensor]:
+    indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], chunk_size).tolist()])
+    indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
+    return indices
+
+
 class ChunkGLAFunction(torch.autograd.Function):
 
     @staticmethod
@@ -1340,11 +1350,7 @@ class ChunkGLAFunction(torch.autograd.Function):
         # for example, if the passed `offsets` is [0, 100, 356] and `chunk_size` is 64,
         # then there are 2 and 4 chunks in the 1st and 2nd sequences respectively, and `indices` will be
         # [[0, 0], [0, 1], [1, 0], [1, 1], [1, 2], [1, 3]]
-        indices = None
-        if offsets is not None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], chunk_size).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
-
+        indices = prepare_varlen_inputs(offsets, chunk_size) if offsets is not None else None
         g_cumsum, A, h, ht, o = chunk_gla_fwd(
             q=q,
             k=k,

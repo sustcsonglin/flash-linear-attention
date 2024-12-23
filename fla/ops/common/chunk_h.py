@@ -7,6 +7,8 @@ import torch
 import triton
 import triton.language as tl
 
+from fla.utils import tensor_cache
+
 
 @triton.heuristics({
     'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
@@ -269,6 +271,14 @@ def chunk_bwd_kernel_dh(
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
 
+@tensor_cache
+def prepare_varlen_inputs(
+    offsets: torch.Tensor,
+    chunk_size: int
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], chunk_size)]).cumsum(-1)
+
+
 def chunk_fwd_h(
     k: torch.Tensor,
     v: torch.Tensor,
@@ -292,11 +302,8 @@ def chunk_fwd_h(
     if offsets is None:
         N, NT, chunk_offsets = B, triton.cdiv(T, BT), None
     else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         N, NT = len(offsets) - 1, len(indices)
-        chunk_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
+        chunk_offsets = prepare_varlen_inputs(offsets, BT)
 
     if head_first:
         h = k.new_empty(B, H, NT, K, V, dtype=k.dtype if not states_in_fp32 else torch.float)
@@ -361,7 +368,7 @@ def chunk_bwd_dh(
             indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
             indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         N, NT = len(offsets) - 1, len(indices)
-        chunk_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
+        chunk_offsets = prepare_varlen_inputs(offsets, BT)
     NG = HQ // H
 
     if head_first:
