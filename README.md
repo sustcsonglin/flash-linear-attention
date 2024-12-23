@@ -49,7 +49,7 @@ Roughly sorted according to the timeline supported in `fla`
 | 2024| ACL| Rebased        | Linear Transformers with Learnable Kernel Functions are Better In-Context Models                          |                [link](https://arxiv.org/abs/2402.10644)                 |                          [official](https://github.com/corl-team/rebased/)                           |       [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/rebased.py)        |
 |2024| NeurIPS | DeltaNet       | Parallelizing Linear Transformers with Delta Rule  over Sequence Length                                                       |                [link](https://arxiv.org/abs/2406.06484)                 | [official](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/delta_net.py) |      [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/delta_net.py)       |
 |2022| ACL | ABC            | Attention with Bounded-memory Control                                                                     |                [link](https://arxiv.org/abs/2110.02488)                 |                                                                                                      |         [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/abc.py)          |
- |2024| NeurIPS | HGRN           | Hierarchically Gated Recurrent Neural Network for Sequence Modeling                                       |         [link](https://openreview.net/forum?id=P1TCHxJwLB)         |                            [official](https://github.com/OpenNLPLab/HGRN)                            |         [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/hgrn.py)         |
+ |2023| NeurIPS | HGRN           | Hierarchically Gated Recurrent Neural Network for Sequence Modeling                                       |         [link](https://openreview.net/forum?id=P1TCHxJwLB)         |                            [official](https://github.com/OpenNLPLab/HGRN)                            |         [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/hgrn.py)         |
 |2024| COLM  | HGRN2          | HGRN2: Gated Linear RNNs with State Expansion                                                             |                [link](https://arxiv.org/abs/2404.07904)                 |                           [official](https://github.com/OpenNLPLab/HGRN2)                            |        [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/hgrn2.py)         |
 |2024| COLM  | RWKV6          | Eagle and Finch: RWKV with Matrix-Valued States and Dynamic Recurrence                                    |                [link](https://arxiv.org/abs/2404.05892)                 |                             [official](https://github.com/RWKV/RWKV-LM)                              |        [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/rwkv6.py)         |
 |2024|   | Samba          | Samba: Simple Hybrid State Space Models for Efficient Unlimited Context Language Modeling                 |                [link](https://arxiv.org/abs/2406.07522)                 |                            [official](https://github.com/microsoft/Samba)                            |          [code](https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/models/samba)          |
@@ -440,3 +440,12 @@ If you find this repo useful, please consider citing our works:
   year      = {2024}
 }
 ```
+
+
+## Star History
+
+[![Stargazers repo roster for @sustcsonglin/flash-linear-attention](https://bytecrank.com/nastyox/reporoster/php/stargazersSVG.php?user=sustcsonglin&repo=flash-linear-attention)](https://github.com/sustcsonglin/flash-linear-attention/stargazers)
+
+
+[![Star History Chart](https://api.star-history.com/svg?repos=sustcsonglin/flash-linear-attention&type=Date)](https://star-history.com/#sustcsonglin/flash-linear-attention&Date)
+
