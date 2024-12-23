@@ -43,7 +43,9 @@ def main():
     logger.info(f"{dataset}")
     logger.info(f"Shuffling the dataset with seed {args.seed}")
     dataset = dataset.shuffle(seed=args.seed)
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer)
+    logger.info("Creating the data collator")
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, varlen=args.varlen)
+    logger.info(f"{data_collator}")
 
     if args.lr_scheduler_type == 'cosine_with_min_lr':
         args.lr_scheduler_kwargs = {'min_lr_rate': 0.1}

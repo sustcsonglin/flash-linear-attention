@@ -70,6 +70,10 @@ class TrainingArguments(TrainingArguments):
         default=2048,
         metadata={"help": "The context length of the tokenized inputs in the dataset."},
     )
+    varlen: bool = field(
+        default=False,
+        metadata={"help": "Enable training with variable length inputs."},
+    )
 
 
 def get_train_args():
