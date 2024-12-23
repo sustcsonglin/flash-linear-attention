@@ -10,6 +10,7 @@ echo "type:             ${type:=gla}"
 echo "data:             ${data:=}"
 echo "name:             ${name:=}"
 echo "cache:            ${cache:=}"
+echo "varlen:           ${varlen:=false}"
 echo "seed:             ${seed:=42}"
 echo "context:          ${context:=2048}"
 echo "steps:            ${steps:=0}"
@@ -81,6 +82,9 @@ if [ "$name" != "" ]; then
 fi
 if [ "$cache" != "" ]; then
   params+=" --cache_dir $cache"
+fi
+if [ "$varlen" == "true" ]; then
+  params+=" --varlen"
 fi
 if [ "$checkpoint" != "" ]; then
   params+=" --resume_from_checkpoint $checkpoint"
