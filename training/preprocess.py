@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import argparse
-import logging
 from itertools import chain
 from typing import Any, Dict, List, Optional
 
 from datasets import load_dataset
 from transformers import AutoTokenizer
+from transformers.utils import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.get_logger(__name__)
 
 
 def tokenize(
@@ -71,15 +71,15 @@ def preprocess(
     """
     tokenized_path = f'{output}/{dataset}/{name}/{split}' if name is not None else f'{output}/{dataset}/{split}'
 
-    logging.info(f'Initializing tokenizer of {model}')
-    tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
-    logging.info(f'Tokenizer initialized: {tokenizer}')
+    logger.info(f'Initializing tokenizer of {model}')
+    tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True, add_bos_token=True)
+    logger.info(f'Tokenizer initialized: {tokenizer}')
 
-    logging.info(f'Loading dataset: {dataset}')
+    logger.info(f'Loading dataset: {dataset}')
     dataset = load_dataset(dataset, name=name, split=split)
 
     remove_columns = list(next(iter(dataset)).keys())
-    logging.info('Tokenizing and processing dataset')
+    logger.info('Tokenizing and processing dataset')
     dataset = dataset.map(
         lambda examples: tokenize(examples, tokenizer, context_length),
         batched=True,
@@ -88,7 +88,7 @@ def preprocess(
         desc="Running tokenizer on dataset"
     )
 
-    logging.info(f'Saving processed dataset to {tokenized_path}')
+    logger.info(f'Saving processed dataset to {tokenized_path}')
     dataset.save_to_disk(tokenized_path, num_proc=num_proc)
 
 
