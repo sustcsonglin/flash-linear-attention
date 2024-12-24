@@ -633,10 +633,10 @@ def fused_chunk_gla(
         scale = q.shape[-1] ** -0.5
     if initial_state is not None:
         initial_state = initial_state.detach()
-    seq_len = q.shape[-2]
-    q, k, v, g = map(lambda x: pad(x), [q, k, v, g])
     if not head_first:
         q, k, v, g = map(lambda x: x.transpose(1, 2), (q, k, v, g))
+    seq_len = q.shape[-2]
+    q, k, v, g = map(lambda x: pad(x), [q, k, v, g])
     o, final_state = FusedChunkGLAFunction.apply(q, k, v, g, scale, initial_state, output_final_state)
     o = o[..., :seq_len, :]
     if not head_first:
