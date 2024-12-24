@@ -39,7 +39,7 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 
 ## Models
 
-Roughly sorted according to the timeline supported in `fla`
+Roughly sorted according to the timeline supported in `fla`. The recommended training mode is `chunk` when available.
 
 |Year | Venue |  Model          | Title                                                                                                     |                                  Paper                                   |                                                 Code                                                 |                                                 `fla` impl                                                  |
 |:--- |:----------------------- | :------------- | :-------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------: |
@@ -61,8 +61,10 @@ Roughly sorted according to the timeline supported in `fla`
 
 The following requirements should be satisfied 
 - [PyTorch](https://pytorch.org/) >= 2.0
-- [Triton](https://github.com/openai/triton) >=2.2
+- [Triton](https://github.com/openai/triton) >=3.0
 - [einops](https://einops.rocks/)
+- [transformers](https://github.com/huggingface/transformers) >=4.45.0
+- [datasets](https://github.com/huggingface/datasets) >=2.11.0
 
 As `fla` is actively developed now, no released packages are provided at this time.
 If you do need to use `fla` ops/modules and contemplate further explorations, an alternative way is to install the package from source
@@ -74,14 +76,6 @@ or manage `fla` with submodules
 git submodule add https://github.com/sustcsonglin/flash-linear-attention.git 3rdparty/flash-linear-attention
 ln -s 3rdparty/flash-linear-attention/fla fla
 ```
-
-> [!CAUTION]
-> If you're not working with Triton v2.2 or its nightly release, it's important to be aware of potential issues with the `FusedChunk` implementation, detailed in this [issue](https://github.com/openai/triton/issues/2852). 
-You can run the test `python tests/test_fused_chunk.py` to check if your version is affected by similar compiler problems. 
-While we offer some fixes for Triton<=2.1, be aware that these may result in reduced performance.
->
-> For both Triton 2.2 and earlier versions (up to 2.1), you can reliably use the `Chunk` version (with hidden states materialized into HBMs).
-> After careful optimization, this version generally delivers high performance in most scenarios.
 
 ## Usage
 

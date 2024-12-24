@@ -128,7 +128,7 @@ setup(
     ],
     python_requires='>=3.7',
     install_requires=[
-        'triton>=2.2',
+        'triton>=3.0',
         'transformers',
         'datasets',
         'einops',
