@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔥 Flame
+# 🔥 Flame: Flash linear attention made easy
 
 </div>
 
@@ -67,6 +67,8 @@ bash train.sh \
   update=1 \
   warmup=1024 \
   context=2048 \
+  gpus=8 \  
+  nodes=1 \
   path=exp/gla-340M-10B \
   project=fla \
   model=configs/gla_340M.json \
@@ -74,6 +76,30 @@ bash train.sh \
   name=sample-10BT \
   cache=data/HuggingFaceFW/fineweb-edu/sample-10BT/train
 ```
+
+
+The total number of tokens processed per batch is calculated as:
+
+```
+
+Total Tokens = batch_size × gradient_accumulation_steps × context_length × num_gpus_per_node × num_nodes
+
+```
+
+With default parameters:
+
+- Batch size (`batch`): 32
+
+- Gradient accumulation steps (`update`): 1  
+
+- Training context length (`context`): 2048
+
+- Number of GPUs per node (`gpus`): 8
+
+- Number of nodes (`nodes`): 1
+
+Total tokens = 32 × 1 × 2048 × 8 × 1 = 524,288 (0.5M) tokens. Monitor this value when modifying any of these hyperparameters!!
+
 
 `flame` also supports resuming interrupted training by specifying the checkpoint path. 
 Simply use the following command to resume training:
@@ -87,6 +113,8 @@ bash train.sh \
   update=1 \
   warmup=1024 \
   context=2048 \
+  gpus=8 \  
+  nodes=1 \
   path=exp/gla-340M-10B \
   project=fla \
   model=configs/gla_340M.json \
