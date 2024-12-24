@@ -448,9 +448,10 @@ def chunk_gla_bwd_kernel_intra(
     b_dq = tl.zeros([BC, BK], dtype=tl.float32)
     if i_i > 0:
         if HEAD_FIRST:
-            p_gn = tl.max_contiguous(tl.multiple_of(g + (i_bh * T + i_t * BT + i_i * BC) * K + o_k, BK), BK)
+            p_gn = g + (i_bh * T + i_t * BT + i_i * BC) * K + o_k
         else:
-            p_gn = tl.max_contiguous(tl.multiple_of(g + (bos + i_t * BT + i_i * BC) * H*K + i_h*K + o_k, BK), BK)
+            p_gn = g + (bos + i_t * BT + i_i * BC) * H*K + i_h*K + o_k
+        p_gn = tl.max_contiguous(tl.multiple_of(p_gn, BK), BK)
         # [BK,]
         b_gn = tl.load(p_gn, mask=m_k, other=0)
         for i_j in range(0, i_i):
@@ -516,24 +517,27 @@ def chunk_gla_bwd_kernel_intra(
     NC = min(NC, tl.cdiv(T - i_t * BT, BC))
     if i_i < NC - 1:
         if HEAD_FIRST:
-            p_gn = tl.max_contiguous(tl.multiple_of(g + i_bh*T*K + (i_t * BT + i_i * BC + BC - 1)*K + o_k, BK), BK)
+            p_gn = g + (i_bh * T + min(i_t * BT + i_i * BC + BC, T) - 1) * K + o_k
         else:
-            p_gn = tl.max_contiguous(tl.multiple_of(g + bos*H*K + (i_t * BT + i_i * BC + BC - 1)*H*K + i_h*K + o_k, BK), BK)
+            p_gn = g + (bos + min(i_t * BT + i_i * BC + BC, T) - 1) * H*K + i_h * K + o_k
+        p_gn = tl.max_contiguous(tl.multiple_of(p_gn, BK), BK)
         # [BK,]
         b_gn = tl.load(p_gn, mask=m_k, other=0)
         for i_j in range(i_i + 1, NC):
+            o_j = i_t * BT + i_j * BC + o_i
+            m_j = o_j < T
             if HEAD_FIRST:
                 p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-                p_g = tl.make_block_ptr(g + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+                p_gq = g + i_bh * T*K + o_j[:, None] * K + o_k
                 p_dA = tl.make_block_ptr(dA + i_bh * T * BT, (BT, T), (1, BT), (i_i*BC, i_t*BT + i_j*BC), (BC, BC), (0, 1))
             else:
                 p_q = tl.make_block_ptr(q + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-                p_g = tl.make_block_ptr(g + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
+                p_gq = g + (bos + o_j[:, None]) * H*K + i_h * K + o_k
                 p_dA = tl.make_block_ptr(dA + (bos*H+i_h)*BT, (BT, T), (1, H*BT), (i_i*BC, i_t*BT + i_j*BC), (BC, BC), (0, 1))
             # [BC, BK]
             b_q = tl.load(p_q, boundary_check=(0, 1))
-            b_g = tl.load(p_g, boundary_check=(0, 1))
-            b_qg = (b_q * tl.exp(b_g - b_gn[None, :]))
+            b_gq = tl.load(p_gq, mask=(m_j[:, None] & m_k), other=float('-inf'))
+            b_qg = (b_q * tl.exp(b_gq - b_gn[None, :]))
             # [BC, BC]
             b_dA = tl.load(p_dA, boundary_check=(0, 1))
             # [BC, BK]
