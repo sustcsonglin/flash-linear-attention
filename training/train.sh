@@ -50,7 +50,6 @@ params="--model_name_or_path $model \
     --preprocessing_num_workers $preprocessing \
     --dataloader_num_workers $workers \
     --dataloader_prefetch_factor 2 \
-    --ignore_data_skip \
     --output_dir $path \
     --overwrite_output_dir \
     --logging_steps $logging \
