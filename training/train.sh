@@ -39,6 +39,7 @@ echo "rank:             ${rank:=}"
 echo "ip:               ${ip:=}"
 echo "port:             ${port:=}"
 echo "nodes:            ${nodes:=1}"
+echo "gpus:            ${gpus:=8}"
 
 params="--model_name_or_path $model \
     --tokenizer $tokenizer \
@@ -95,12 +96,11 @@ else
   params+=" --report_to none"
 fi
 
-NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
 echo "Launching training..."
 accelerate_params=""
 if [ "$rank" != "" ]; then
   accelerate_params+=" --machine_rank $rank  \
-    --num_processes $((nodes * $NUM_GPUS)) \
+    --num_processes $((nodes * gpus)) \
     --num_machines $nodes \
     --main_process_ip $ip \
     --main_process_port $port \
@@ -138,7 +138,7 @@ deepspeed_config:
 machine_rank: 0
 main_training_function: main
 num_machines: 1
-num_processes: $NUM_GPUS
+num_processes: $gpus
 use_cpu: false
 EOF
 fi
@@ -160,7 +160,7 @@ machine_rank: 0
 main_training_function: main
 mixed_precision: bf16
 num_machines: $nodes
-num_processes: $((nodes * $NUM_GPUS))
+num_processes: $((nodes * gpus))
 rdzv_backend: static
 same_network: true
 tpu_env: []
