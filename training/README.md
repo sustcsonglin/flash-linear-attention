@@ -77,32 +77,24 @@ bash train.sh \
   cache=data/HuggingFaceFW/fineweb-edu/sample-10BT/train
 ```
 
+Key parameters:
 
-The total number of tokens processed per batch is calculated as:
+|         | Description                   | Default |
+| :------ | :---------------------------- | ------- |
+| batch   | `batch_size`                  | $32$    |
+| update  | `gradient_accumulation_steps` | $1$     |
+| context | `context_length`              | $2048$  |
+| gpus    | `num_gpus_per_node`           | $8$     |
+| nodes   | `num_nodes`                   | $1$     |
 
-```
+The total number of tokens processed per batch, i.e. `global_batch_size`, is calculated as
+`batch_size × gradient_accumulation_steps × context_length × num_gpus_per_node × num_nodes`.
+For the 340M model example, the `global_batch_size` calculates to $32 \times 1 \times 2048 \times 8 \times 1 = 524,288$ (0.5M). 
 
-Total Tokens = batch_size × gradient_accumulation_steps × context_length × num_gpus_per_node × num_nodes
-
-```
-
-With default parameters:
-
-- Batch size (`batch`): 32
-
-- Gradient accumulation steps (`update`): 1  
-
-- Training context length (`context`): 2048
-
-- Number of GPUs per node (`gpus`): 8
-
-- Number of nodes (`nodes`): 1
-
-Total tokens = 32 × 1 × 2048 × 8 × 1 = 524,288 (0.5M) tokens. Monitor this value when modifying any of these hyperparameters!!
-
+:warning: Monitor this value when modifying any of these hyperparameters!!
 
 `flame` also supports resuming interrupted training by specifying the checkpoint path. 
-Simply use the following command to resume training:
+Simply use the following command:
 
 ```bash
 bash train.sh \
