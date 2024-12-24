@@ -63,7 +63,7 @@ bash train.sh \
   type=gla \
   lr=3e-4 \
   steps=20480 \
-  batch=8 \
+  batch=32 \
   update=1 \
   warmup=1024 \
   context=2048 \
@@ -83,7 +83,7 @@ bash train.sh \
   type=gla \
   lr=3e-4 \
   steps=20480 \
-  batch=8 \
+  batch=32 \
   update=1 \
   warmup=1024 \
   context=2048 \
