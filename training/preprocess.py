@@ -46,7 +46,7 @@ def preprocess(
     name: Optional[str] = None,
     split: str = 'train',
     output: str = 'data',
-    model: str = 'mistralai/Mistral-7B-v0.1',
+    model: str = 'fla-hub/gla-1.3B-100B',
     num_proc: int = 64,
     context_length: int = 8192
 ) -> None:
@@ -63,7 +63,7 @@ def preprocess(
         output:
             Output directory. Default: 'data'.
         model:
-            Model name for tokenizer. Default: 'mistralai/Mistral-7B-v0.1'.
+            Model name for tokenizer. Default: 'fla-hub/gla-1.3B-100B'.
         num_proc:
             Number of processes for parallel processing. Default: 64.
         context_length:
@@ -98,7 +98,7 @@ if __name__ == "__main__":
     parser.add_argument("--name", default=None, help="Name of the dataset configuration")
     parser.add_argument("--split", default="train", help="Dataset split to process")
     parser.add_argument("--output", default="data", help="Output directory")
-    parser.add_argument("--model", default="mistralai/Mistral-7B-v0.1", help="Model name for tokenizer")
+    parser.add_argument("--model", default="fla-hub/gla-1.3B-100B", help="Model name for tokenizer")
     parser.add_argument("--num_proc", type=int, default=64, help="Number of processes for parallel processing")
     parser.add_argument("--context_length", type=int, default=8192, help="Context length for tokenization")
     args = parser.parse_args()

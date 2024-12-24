@@ -23,7 +23,7 @@ class TrainingArguments(TrainingArguments):
         },
     )
     tokenizer: str = field(
-        default="mistralai/Mistral-7B-v0.1",
+        default="fla-hub/gla-1.3B-100B",
         metadata={"help": "Name of the tokenizer to use."}
     )
     use_fast_tokenizer: bool = field(
