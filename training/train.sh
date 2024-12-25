@@ -18,6 +18,7 @@ echo "save:             ${save:=2048}"
 echo "limit:            ${limit:=1}"
 echo "preprocessing:    ${preprocessing:=32}"
 echo "workers:          ${workers:=32}"
+echo "prefetch:         ${prefetch:=2}"
 echo "logging:          ${logging:=32}"
 echo "config:           ${config:=configs/deepspeed.yaml}"
 
@@ -30,7 +31,7 @@ echo "beta1:            ${beta1:=0.9}"
 echo "beta2:            ${beta2:=0.95}"
 echo "norm:             ${norm:=1.0}"
 echo "batch:            ${batch:=32}"
-echo "update:           ${update:=4}"
+echo "update:           ${update:=1}"
 echo "warmup:           ${warmup:=512}"
 echo "path:             ${path:=}"
 echo "checkpoint:       ${checkpoint:=}"
@@ -39,7 +40,7 @@ echo "rank:             ${rank:=}"
 echo "ip:               ${ip:=}"
 echo "port:             ${port:=}"
 echo "nodes:            ${nodes:=1}"
-echo "gpus:            ${gpus:=8}"
+echo "gpus:             ${gpus:=8}"
 
 params="--model_name_or_path $model \
     --tokenizer $tokenizer \
@@ -47,10 +48,9 @@ params="--model_name_or_path $model \
     --do_train \
     --dataset $data \
     --context_length $context \
-    --streaming \
     --preprocessing_num_workers $preprocessing \
     --dataloader_num_workers $workers \
-    --dataloader_prefetch_factor 2 \
+    --dataloader_prefetch_factor $prefetch \
     --output_dir $path \
     --overwrite_output_dir \
     --logging_steps $logging \
