@@ -62,10 +62,11 @@ To train your 340M model from scratch, execute the following command:
 bash train.sh \
   type=gla \
   lr=3e-4 \
-  steps=20480 \
+  scheduler=cosine_with_min_lr \
   batch=32 \
   update=1 \
   warmup=1024 \
+  steps=20480 \
   context=2048 \
   gpus=8 \  
   nodes=1 \
@@ -79,19 +80,30 @@ bash train.sh \
 
 Key parameters:
 
-|         | Description                   | Default |
-| :------ | :---------------------------- | ------- |
-| batch   | `batch_size`                  | $32$    |
-| update  | `gradient_accumulation_steps` | $1$     |
-| context | `context_length`              | $2048$  |
-| gpus    | `num_gpus_per_node`           | $8$     |
-| nodes   | `num_nodes`                   | $1$     |
+|           | Description                   | Default              |
+| :-------- | :---------------------------- | -------------------- |
+| lr        | `learning_rate`               | `3e-4`               |
+| scheduler | `lr_scheduler_type`           | `cosine_with_min_lr` |
+| batch     | `batch_size`                  | `32`                 |
+| update    | `gradient_accumulation_steps` | `1`                  |
+| context   | `context_length`              | `2048`               |
+| gpus      | `num_gpus_per_node`           | `8`                  |
+| nodes     | `num_nodes`                   | `1`                  |
+| warmup    | `warmup_steps`                | `1024`               |
+| steps     | `max_steps`                   | `20480`              |
 
-The total number of tokens processed per batch, i.e. `global_batch_size`, is calculated as
+The learning rate is set to `3e-4` by default, equipped with a cosine scheduler.
+Other scheduler types like WSD (`warmup_stable_decay`)[^2] are also supported.
+
+The total number of tokens processed per batch, referred to as `global_batch_size`, is calculated as
 `batch_size × gradient_accumulation_steps × context_length × num_gpus_per_node × num_nodes`.
-For the 340M model example, the `global_batch_size` calculates to $32 \times 1 \times 2048 \times 8 \times 1 = 524,288$ (0.5M). 
+For instance, in the 340M model example, the `global_batch_size` calculates to $32 \times 1 \times 2048 \times 8 \times 1 = 524,288$ (0.5M tokens). 
 
-:warning: Monitor this value when modifying any of these hyperparameters!!
+The `warmup_steps` parameter indicates the number of steps for the learning rate warmup phase, while `max_steps` represents the maximum number of training steps.
+Each step processes `global_batch_size` tokens. 
+Consequently, `512` and `20480` correspond to processing 0.5B and 10B tokens, respectively.
+
+:warning: Monitor the value of `global_batch_size`, `warmup_steps`, and `max_steps` carefully when modifying any of the hyperparameters!!
 
 `flame` also supports resuming interrupted training by specifying the checkpoint path. 
 Simply use the following command:
@@ -158,3 +170,4 @@ If available, consider leveraging multi-node GPUs for optimal performance.
 You can find guidance on how to launch a multi-node job in the [accelerate tutorial](https://github.com/huggingface/accelerate/blob/main/examples/slurm/submit_multinode.sh).
 
 [^1]: The `accelerate` library supports various distributed frameworks, like `deepspeed` and `megatron` for large-scale training. We use `deepspeed` in our case.
+[^2]: https://arxiv.org/abs/2404.06395
