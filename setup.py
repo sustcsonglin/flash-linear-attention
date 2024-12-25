@@ -128,8 +128,9 @@ setup(
     ],
     python_requires='>=3.7',
     install_requires=[
+        'torch>=2.3',
+        'transformers>=4.40.0',
         'triton>=3.0',
-        'transformers',
         'datasets',
         'einops',
         'ninja'
