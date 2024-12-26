@@ -173,9 +173,13 @@ def fwd_prepare_wy_repr_kernel_chunk64(
     b_g = tl.load(p_g, boundary_check=(0,))
     b_g2 = tl.load(p_g2, boundary_check=(0,))
 
-    b_Au = b_Aw * tl.exp(b_g[:, None] - b_g[None, :])
-    b_Au2 = b_Aw2 * tl.exp(b_g2[:, None] - b_g2[None, :])
-    b_Au3 = b_Aw3 * tl.exp(b_g2[:, None] - b_g[None, :])
+    mask_c = tl.arange(0, BC)[:, None] >= tl.arange(0, BC)[None, :]
+    mask_g = i_t * BT + tl.arange(0, BC) < T
+    mask_g2 = i_t * BT + BC + tl.arange(0, BC) < T
+
+    b_Au = tl.where(mask_g[None, :] & mask_c, b_Aw * tl.exp(b_g[:, None] - b_g[None, :]), 0)
+    b_Au2 = tl.where(mask_g2[None, :] & mask_c, b_Aw2 * tl.exp(b_g2[:, None] - b_g2[None, :]), 0)
+    b_Au3 = tl.where(mask_g[None, :], b_Aw3 * tl.exp(b_g2[:, None] - b_g[None, :]), 0)
 
     for i in range(1, BC):
         mask = tl.arange(0, BC) == i
