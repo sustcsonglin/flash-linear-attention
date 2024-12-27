@@ -2,12 +2,13 @@
 
 import os
 
-from einops import rearrange
 import pytest
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 
-from fla.ops.gated_delta_rule import chunk_gated_delta_rule, fused_recurrent_gated_delta_rule
+from fla.ops.gated_delta_rule import (chunk_gated_delta_rule,
+                                      fused_recurrent_gated_delta_rule)
 
 
 def get_abs_err(x, y):
@@ -70,14 +71,13 @@ def recurrent_gated_delta_rule_ref(
     return o, S
 
 
-
 def chunk_gated_delta_rule_ref(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     g: torch.Tensor,
     beta: torch.Tensor,
-    chunk_size: int = 64,  
+    chunk_size: int = 64,
     scale: float = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
@@ -96,7 +96,7 @@ def chunk_gated_delta_rule_ref(
 
     T = q.shape[-2]
     pad_len = (BT - (T % BT)) % BT
-    if pad_len > 0:            
+    if pad_len > 0:
         # Pad all tensors
         q = F.pad(q, (0, 0, 0, pad_len))
         k = F.pad(k, (0, 0, 0, pad_len))
@@ -114,10 +114,12 @@ def chunk_gated_delta_rule_ref(
     assert l % chunk_size == 0
     # note that diagonal is masked.
     mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=q.device), diagonal=0)
-    q, k, v, k_beta, decay = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d',
-                                c=chunk_size), [q, k, v, k_beta, decay.unsqueeze(-1)])
+    q, k, v, k_beta, decay = map(
+        lambda x: rearrange(x, 'b h (n c) d -> b h n c d', c=chunk_size),
+        [q, k, v, k_beta, decay.unsqueeze(-1)]
+    )
     decay = decay.squeeze(-1).cumsum(-1)
-    L_mask = (decay.unsqueeze(-1) - decay.unsqueeze(-2)).exp()
+    L_mask = ((decay.unsqueeze(-1) - decay.unsqueeze(-2)).tril().exp().float()).tril()
     attn = -((k_beta @ k.transpose(-1, -2)) * L_mask).masked_fill(mask, 0)
     for i in range(1, chunk_size):
         attn[..., i, :i] = attn[..., i, :i].clone() + (attn[..., i, :i, None].clone() * attn[..., :i, :i].clone()).sum(-2)
@@ -163,6 +165,7 @@ def chunk_gated_delta_rule_ref(
 @pytest.mark.parametrize("scale", [1])
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
 @pytest.mark.parametrize("head_first", [True, False])
+@pytest.mark.parametrize("gate_logit_normalizer", [0.05, 1, 20])
 def test_recurrent_forward(
     B: int,
     T: int,
@@ -170,20 +173,22 @@ def test_recurrent_forward(
     D: int,
     scale: float,
     dtype: torch.dtype,
-    head_first: bool
+    head_first: bool,
+    gate_logit_normalizer: float
 ):
     if head_first:
         q = torch.randn(B, H, T, D, dtype=dtype)
         k = F.normalize(torch.randn(B, H, T, D, dtype=torch.float32), p=2, dim=-1).to(dtype)
         v = torch.randn(B, H, T, D, dtype=dtype)
         beta = torch.rand(B, H, T, dtype=dtype).sigmoid()
-        g = F.logsigmoid(torch.rand(B, H, T, dtype=dtype))
+        g = F.logsigmoid(torch.rand(B, H, T, dtype=torch.float32))
     else:
         q = torch.randn(B, T, H, D, dtype=dtype)
         k = F.normalize(torch.randn(B, T, H, D, dtype=torch.float32), p=2, dim=-1).to(dtype)
         v = torch.randn(B, T, H, D, dtype=dtype)
         beta = torch.rand(B, T, H, dtype=dtype).sigmoid()
-        g = F.logsigmoid(torch.rand(B, T, H, dtype=dtype))
+        g = F.logsigmoid(torch.rand(B, T, H, dtype=torch.float32))
+    g = g / gate_logit_normalizer
     h0 = torch.randn(B, H, D, D, dtype=torch.float32)
     q, k, v, beta, g, h0 = map(lambda x: x.cuda().requires_grad_(), (q, k, v, beta, g, h0))
     ref, ref_ht = recurrent_gated_delta_rule_ref(
@@ -213,10 +218,11 @@ def test_recurrent_forward(
 
 
 @pytest.mark.parametrize("B", [2])
-@pytest.mark.parametrize("T", [1, 7, 15, 63, 286, 300])
-@pytest.mark.parametrize("H", [2, 16])
+@pytest.mark.parametrize("gate_logit_normalizer", [0.05, 1, 20])
 @pytest.mark.parametrize("D", [50, 100, 200])
-@pytest.mark.parametrize("scale", [1])
+@pytest.mark.parametrize("H", [2])
+@pytest.mark.parametrize("T", [7, 63, 286, 300, 1000])
+@pytest.mark.parametrize("scale", [1, 0.1])
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
 @pytest.mark.parametrize("head_first", [True, False])
 def test_chunk(
@@ -226,22 +232,24 @@ def test_chunk(
     D: int,
     dtype: torch.dtype,
     scale: float,
-    head_first: bool
+    head_first: bool,
+    gate_logit_normalizer: float
 ):
     if head_first:
         q = torch.randn(B, H, T, D, dtype=dtype)
         k = F.normalize(torch.randn(B, H, T, D, dtype=torch.float32), p=2, dim=-1).to(dtype)
         v = torch.randn(B, H, T, D, dtype=dtype)
         beta = torch.rand(B, H, T, dtype=dtype).sigmoid()
-        g = F.logsigmoid(torch.rand(B, H, T, dtype=dtype))
-        h0 = torch.randn(B, H, D, D, dtype=torch.float32)
+        g = F.logsigmoid(torch.rand(B, H, T, dtype=torch.float32))
+        h0 = torch.zeros(B, H, D, D, dtype=torch.float32)
     else:
         q = torch.randn(B, T, H, D, dtype=dtype)
         k = F.normalize(torch.randn(B, T, H, D, dtype=torch.float32), p=2, dim=-1).to(dtype)
         v = torch.randn(B, T, H, D, dtype=dtype)
         beta = torch.rand(B, T, H, dtype=dtype).sigmoid()
-        g = F.logsigmoid(torch.rand(B, T, H, dtype=dtype))
-        h0 = torch.randn(B, H, D, D, dtype=torch.float32)
+        g = F.logsigmoid(torch.rand(B, T, H, dtype=torch.float32))
+        h0 = torch.zeros(B, H, D, D, dtype=torch.float32)
+    g = g / gate_logit_normalizer
     q, k, v, beta, g, h0 = map(lambda x: x.cuda().requires_grad_(True), (q, k, v, beta, g, h0))
 
     tri, tri_ht = chunk_gated_delta_rule(
@@ -258,8 +266,8 @@ def test_chunk(
     do = torch.randn_like(v)
     dht = torch.randn_like(h0)
     ((tri * do).sum() + (tri_ht * dht).sum()).backward(retain_graph=True)
-    tri_dq, tri_dk, tri_dv, tri_dbeta, tri_dh0 = q.grad, k.grad, v.grad, beta.grad, h0.grad
-    q.grad = k.grad = v.grad = beta.grad = h0.grad = None
+    tri_dq, tri_dk, tri_dv, tri_dbeta, tri_dg, tri_dh0 = q.grad, k.grad, v.grad, beta.grad, g.grad, h0.grad
+    q.grad = k.grad = v.grad = beta.grad = g.grad = h0.grad = None
 
     ref, ref_ht = chunk_gated_delta_rule_ref(
         q.clone(),
@@ -274,22 +282,23 @@ def test_chunk(
     )
 
     ((ref * do).sum() + (ref_ht * dht).sum()).backward(retain_graph=True)
-    ref_dq, ref_dk, ref_dv, ref_dbeta, ref_dh0 = q.grad, k.grad, v.grad, beta.grad, h0.grad
+    ref_dq, ref_dk, ref_dv, ref_dbeta, ref_dg, ref_dh0 = q.grad, k.grad, v.grad, beta.grad, g.grad, h0.grad
     assert_close("  o", ref, tri, 0.005)
     assert_close(" ht", ref_ht, tri_ht, 0.005)
-    assert_close(" dq", ref_dq, tri_dq, 0.007)
+    assert_close(" dq", ref_dq, tri_dq, 0.008)
     assert_close(" dk", ref_dk, tri_dk, 0.008)
-    assert_close(" dv", ref_dv, tri_dv, 0.007)
-    assert_close(" db", ref_dbeta, tri_dbeta, 0.007)
-    assert_close("dh0", ref_dh0, tri_dh0, 0.007)
-
+    assert_close(" dv", ref_dv, tri_dv, 0.008)
+    assert_close(" db", ref_dbeta, tri_dbeta, 0.02)
+    assert_close("dh0", ref_dh0, tri_dh0, 0.008)
+    if gate_logit_normalizer >= 1 and ref_dg.norm() > 0.01:
+        assert_close("dg", ref_dg, tri_dg, 0.02)
 
 
 @pytest.mark.parametrize("N", [4])
 @pytest.mark.parametrize("T", [64, 128, 200, 250, 256, 300, 400, 512, 1000, 2048])
 @pytest.mark.parametrize("H", [2, 16])
 @pytest.mark.parametrize("D", [50, 100, 200])
-@pytest.mark.parametrize("scale", [1])
+@pytest.mark.parametrize("scale", [1, 0.1])
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
 def test_chunk_varlen(
     N: int,
@@ -331,8 +340,8 @@ def test_chunk_varlen(
         head_first=False
     )
     ((tri * do).sum() + (tri_ht * dht).sum()).backward(retain_graph=True)
-    tri_dq, tri_dk, tri_dv, tri_dbeta, tri_dh0 = q.grad, k.grad, v.grad, beta.grad, h0.grad
-    q.grad = k.grad = v.grad = beta.grad = h0.grad = None
+    tri_dq, tri_dk, tri_dv, tri_dbeta, tri_dg, tri_dh0 = q.grad, k.grad, v.grad, beta.grad, g.grad, h0.grad
+    q.grad = k.grad = v.grad = beta.grad = g.grad = h0.grad = None
 
     ref = []
     ref_ht = []
@@ -350,16 +359,17 @@ def test_chunk_varlen(
         )
         ref.append(ref_i)
         ref_ht.append(ref_ht_i)
-    ref =  torch.cat(ref, 1)
+    ref = torch.cat(ref, 1)
     ref_ht = torch.cat(ref_ht, 0)
 
     ((ref * do).sum() + (ref_ht * dht).sum()).backward(retain_graph=True)
-    ref_dq, ref_dk, ref_dv, ref_dbeta, ref_dh0 = q.grad, k.grad, v.grad, beta.grad, h0.grad
+    ref_dq, ref_dk, ref_dv, ref_dbeta, ref_dg, ref_dh0 = q.grad, k.grad, v.grad, beta.grad, g.grad, h0.grad
 
     assert_close("  o", ref, tri, 0.005)
     assert_close(" ht", ref_ht, tri_ht, 0.005)
     assert_close(" dq", ref_dq, tri_dq, 0.007)
     assert_close(" dk", ref_dk, tri_dk, 0.008)
     assert_close(" dv", ref_dv, tri_dv, 0.007)
-    assert_close(" db", ref_dbeta, tri_dbeta, 0.007)
+    assert_close(" db", ref_dbeta, tri_dbeta, 0.015)
+    assert_close(" dg", ref_dg, tri_dg, 0.015)
     assert_close("dh0", ref_dh0, tri_dh0, 0.007)

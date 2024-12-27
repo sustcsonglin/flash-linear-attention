@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import torch
 import triton
 import triton.language as tl
+from fla.ops.utils.safe import safe_diff_exp
 
 
 @triton.heuristics({
@@ -70,8 +71,7 @@ def fwd_prepare_wy_repr_kernel_chunk32(
         p_g = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
 
     b_g = tl.load(p_g, boundary_check=(0,))
-
-    b_Au = b_Aw * tl.exp(b_g[:, None] - b_g[None, :])
+    b_Au = b_Aw * safe_diff_exp(b_g, BC, q_first=True)
 
     for i in range(1, BC):
         mask = tl.arange(0, BC) == i
@@ -177,9 +177,10 @@ def fwd_prepare_wy_repr_kernel_chunk64(
     mask_g = i_t * BT + tl.arange(0, BC) < T
     mask_g2 = i_t * BT + BC + tl.arange(0, BC) < T
 
-    b_Au = tl.where(mask_g[None, :] & mask_c, b_Aw * tl.exp(b_g[:, None] - b_g[None, :]), 0)
-    b_Au2 = tl.where(mask_g2[None, :] & mask_c, b_Aw2 * tl.exp(b_g2[:, None] - b_g2[None, :]), 0)
-    b_Au3 = tl.where(mask_g[None, :], b_Aw3 * tl.exp(b_g2[:, None] - b_g[None, :]), 0)
+    b_Au = tl.where(mask_g[None, :] & mask_c, b_Aw * safe_diff_exp(b_g, BC, q_first=True), 0)
+    b_Au2 = tl.where(mask_g2[None, :] & mask_c, b_Aw2 * safe_diff_exp(b_g2, BC, q_first=True), 0)
+    tmp = b_g2[:, None] - b_g[None, :]
+    b_Au3 = tl.where(mask_g[None, :], b_Aw3 * tl.exp(tl.where(tmp < 0, tmp, float('-inf'))), 0)
 
     for i in range(1, BC):
         mask = tl.arange(0, BC) == i
@@ -527,9 +528,8 @@ def bwd_prepare_wy_repr_kernel(
     else:
         p_g = tl.make_block_ptr(g + (bos*H + i_h), (T,), (H,), (i_t * BT,), (BT,), (0,))
     b_g = tl.load(p_g, boundary_check=(0,))
-
-    b_dA += b_dA2 * tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], tl.exp(b_g[:, None] - b_g[None, :]), 0)
-
+    b_dA2 *= safe_diff_exp(b_g, BT, q_first=True)
+    b_dA += b_dA2
     b_dA = b_dA.to(k.dtype.element_ty)
     b_A = tl.zeros([BT, BT], dtype=tl.float32)
 
@@ -549,9 +549,8 @@ def bwd_prepare_wy_repr_kernel(
         b_dk += tl.dot(tl.trans(b_dA), b_k_beta, allow_tf32=False)
         b_dk += b_dk_beta * b_beta[:, None]
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
-    b_A = b_A * tl.where(tl.arange(0, BT)[:, None] > tl.arange(0, BT)[None, :], tl.exp(b_g[:, None] - b_g[None, :]), 0)
-    b_A *= b_dA2
-    b_dg = tl.sum(b_A, axis=1) - tl.sum(b_A, axis=0)
+    b_dA2 *= b_A
+    b_dg = tl.sum(b_dA2, axis=1) - tl.sum(b_dA2, axis=0)
     if HEAD_FIRST:
         p_dg = tl.make_block_ptr(dg + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
         p_dbeta = tl.make_block_ptr(dbeta + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
@@ -560,6 +559,7 @@ def bwd_prepare_wy_repr_kernel(
         p_dbeta = tl.make_block_ptr(dbeta + (bos*H + i_h), (T,), (H,), (i_t * BT,), (BT,), (0,))
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0,))
     tl.store(p_dbeta, b_dbeta.to(p_dbeta.dtype.element_ty), boundary_check=(0,))
+
 
 
 def bwd_prepare_wy_repr(

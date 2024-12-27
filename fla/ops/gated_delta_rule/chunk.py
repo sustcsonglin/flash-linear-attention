@@ -11,6 +11,7 @@ from fla.ops.gated_delta_rule.wy_fast import (bwd_prepare_wy_repr,
                                               fwd_prepare_wy_repr,
                                               fwd_recompute_w_u)
 from fla.ops.utils import chunk_local_cumsum
+from fla.ops.utils.safe import safe_diff_exp
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
@@ -160,9 +161,6 @@ def chunk_gated_delta_rule_fwd_kernel_o(
         i_tg = i_b * NT + i_t
         bos, eos = i_b * T, i_b * T + T
 
-    o_i = tl.arange(0, BT)
-    m_s = o_i[:, None] >= o_i[None, :]
-
     b_o = tl.zeros([BT, BV], dtype=tl.float32)
     b_s = tl.zeros([BT, BT], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
@@ -192,9 +190,7 @@ def chunk_gated_delta_rule_fwd_kernel_o(
         p_o = tl.make_block_ptr(o + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     b_g = tl.load(p_g, boundary_check=(0,))
     b_o = b_o * tl.exp(b_g)[:, None]
-    b_s = b_s * tl.exp(b_g[:, None] - b_g[None, :])
-    b_s = tl.where(m_s, b_s, 0)
-
+    b_s = b_s * safe_diff_exp(b_g, BT, q_first=True)
     b_v = tl.load(p_v, boundary_check=(0, 1))
     b_o = (b_o + tl.dot(b_s.to(b_v.dtype), b_v, allow_tf32=False)) * scale
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
@@ -206,7 +202,7 @@ def chunk_gated_delta_rule_fwd_kernel_o(
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=num_warps)
-        for num_warps in [2, 4]
+        for num_warps in [1, 4]
     ],
     key=['BT', 'BK', 'BV'],
 )
@@ -258,8 +254,8 @@ def chunk_gated_delta_rule_fwd_kernel_prepare_dv(
         p_g = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
 
     b_g = tl.load(p_g, boundary_check=(0,))
-    b_A = b_A * tl.exp(b_g[None, :] - b_g[:, None]) * scale
-    b_A = tl.where(tl.arange(0, BT)[:, None] <= tl.arange(0, BT)[None, :], b_A, 0).to(do.dtype.element_ty)
+    b_A = b_A * safe_diff_exp(b_g, BT, q_first=False) * scale
+    b_A = b_A.to(do.dtype.element_ty)
 
     for i_v in range(tl.cdiv(V, BV)):
         if HEAD_FIRST:
@@ -413,6 +409,7 @@ def chunk_gated_delta_rule_bwd_kernel_dqkw(
     offsets,
     indices,
     scale,
+    B: tl.constexpr,
     T: tl.constexpr,
     H: tl.constexpr,
     K: tl.constexpr,
@@ -426,6 +423,7 @@ def chunk_gated_delta_rule_bwd_kernel_dqkw(
 ):
     i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
+    dg += i_k * B * T * H
     if USE_OFFSETS:
         i_tg = i_t
         i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
@@ -517,16 +515,18 @@ def chunk_gated_delta_rule_bwd_kernel_dqkw(
     b_dw *= b_g_exp_qw[:, None]
     b_dg -= tl.sum(b_dw * b_w, axis=1)
     b_dk *= tl.exp(b_g_last - b_g)[:, None]
+
     b_dg -= tl.sum(b_dk * b_k, axis=1)
     b_dg_last += tl.sum(b_dk * b_k)
     b_g_exp_qw = None
     # [BT, BT]
-    b_ds = tl.where(o_i[:, None] >= o_i[None, :], b_ds * scale * tl.exp(b_g[:, None] - b_g[None, :]), 0).to(b_q.dtype)
+    b_ds = b_ds * scale * safe_diff_exp(b_g, BT, q_first=True)
     # gradient wrt
     b_dg_mask = tl.dot(b_q, tl.trans(b_k), allow_tf32=False) * b_ds
     b_dg += tl.sum(b_dg_mask, axis=1)
     b_dg -= tl.sum(b_dg_mask, axis=0)
     # [BT, BK]
+    b_ds = b_ds.to(b_k.dtype)
     b_dq += tl.dot(b_ds, b_k, allow_tf32=False)
     b_dk += tl.trans(tl.dot(tl.trans(b_q), b_ds, allow_tf32=False))
     b_dg = tl.where(o_i < min(BT, T-i_t*BT) - 1, b_dg, b_dg + b_dg_last)
@@ -768,7 +768,6 @@ def chunk_gated_delta_rule_fwd_o(
     BK = min(triton.next_power_of_2(K), 64)
     BV = min(triton.next_power_of_2(V), 64)
     NV = triton.cdiv(V, BV)
-
     o = torch.empty_like(v_new)
     grid = (NV, NT, B * H)
     chunk_gated_delta_rule_fwd_kernel_o[grid](
@@ -828,7 +827,7 @@ def chunk_gated_delta_rule_bwd_dqkwg(
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
     dw = torch.empty_like(w)
-    dg = torch.empty_like(g)
+    dg = torch.empty(NK, *g.shape, dtype=torch.float32, device=g.device)
     grid = (NK, NT, B * H)
     chunk_gated_delta_rule_bwd_kernel_dqkw[grid](
         q=q,
@@ -847,6 +846,7 @@ def chunk_gated_delta_rule_bwd_dqkwg(
         offsets=offsets,
         indices=indices,
         scale=scale,
+        B=B,
         T=T,
         H=H,
         K=K,
@@ -857,6 +857,7 @@ def chunk_gated_delta_rule_bwd_dqkwg(
         NT=NT,
         HEAD_FIRST=head_first
     )
+    dg = dg.sum(0)
     return dq, dk, dw, dg
 
 
@@ -1062,11 +1063,9 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
             head_first=head_first,
             chunk_size=chunk_size
         )
-        ctx.save_for_backward(q, k, v, g, beta, Aw, Au, initial_state)
+        ctx.save_for_backward(q, k, v, g, beta, Aw, Au, initial_state, offsets, indices)
         ctx.chunk_size = chunk_size
         ctx.scale = scale
-        ctx.offsets = offsets
-        ctx.indices = indices
         ctx.head_first = head_first
         return o.to(q.dtype), final_state
 
@@ -1078,7 +1077,7 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
         do: torch.Tensor,
         dht: torch.Tensor
     ):
-        q, k, v, g, beta, Aw, Au, initial_state = ctx.saved_tensors
+        q, k, v, g, beta, Aw, Au, initial_state, offsets, indices = ctx.saved_tensors
         dq, dk, dv, db, dg, dh0 = chunk_gated_delta_rule_bwd(
             q=q,
             k=k,
@@ -1091,8 +1090,8 @@ class ChunkDeltaRuleFunction(torch.autograd.Function):
             initial_state=initial_state,
             do=do,
             dht=dht,
-            offsets=ctx.offsets,
-            indices=ctx.indices,
+            offsets=offsets,
+            indices=indices,
             head_first=ctx.head_first,
             chunk_size=ctx.chunk_size
         )
