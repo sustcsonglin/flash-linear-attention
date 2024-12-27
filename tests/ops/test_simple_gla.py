@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from fla.ops.simple_gla import chunk_simple_gla
 from fla.ops.simple_gla.fused_recurrent import fused_recurrent_simple_gla
 from fla.ops.simple_gla.parallel import parallel_simple_gla
-
+from einops import rearrange
 
 def get_abs_err(x, y):
     return (x-y).flatten().abs().max().item()
@@ -27,19 +27,71 @@ def assert_close(prefix, ref, tri, ratio):
     assert get_err_ratio(ref, tri) < ratio, msg
 
 
-@pytest.mark.parametrize("B", [1])
-@pytest.mark.parametrize("H", [1])
+def chunk_simple_gla_ref(q, k, v, g, initial_state=None, output_final_state=False, BT=64, scale=None, head_first=True):
+    if not head_first:
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        g = g.transpose(1, 2)
+
+    T = q.shape[-2]
+    pad_len = (BT - (T % BT)) % BT
+    if pad_len > 0:            
+        # Pad all tensors
+        q = F.pad(q, (0, 0, 0, pad_len))
+        k = F.pad(k, (0, 0, 0, pad_len))
+        v = F.pad(v, (0, 0, 0, pad_len))
+        g = F.pad(g, (0, pad_len))
+    q, k, v, g = map(lambda x: x.to(torch.float32), [q, k, v, g])
+    decay = g
+    chunk_size = BT
+    b, h, l, d_k = q.shape
+    d_v = v.shape[-1]
+    q = q * scale
+    q, k, v, decay = map(lambda x: rearrange(x, 'b h (n c) d -> b h n c d',
+                                c=chunk_size), [q, k, v, decay.unsqueeze(-1)])
+    decay = decay.squeeze(-1).cumsum(-1)
+    L_mask = ((decay.unsqueeze(-1) - decay.unsqueeze(-2)).tril().exp().float()).tril()
+    S = k.new_zeros(b, h, d_k, d_v)
+    if initial_state is not None:
+        S = initial_state
+    o = torch.zeros_like(v)
+    mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=q.device), diagonal=1)
+    for i in range(0, l // chunk_size):
+        q_i, k_i, v_i = q[:, :, i], k[:, :, i], v[:, :, i]
+        attn = (q_i @ k_i.transpose(-1, -2) * L_mask[:, :, i])
+        o_inter = (q_i * decay[:, :, i, :, None].exp()) @ S
+        o[:, :, i] = o_inter + attn @ v_i
+        S = S * decay[:, :, i, -1, None, None].exp() + (k_i * (decay[:, :, i, -1, None] - decay[:, :, i]).exp()
+                                                        [..., None]).transpose(-1, -2) @ v_i
+    if not output_final_state:
+        S = None
+    # unpad
+    o = rearrange(o, 'b h n c d -> b h (n c) d')
+    o = o[:, :, :T]
+    if not head_first:
+        o = o.transpose(1, 2)
+    return o, S
+    
+
+
+@pytest.mark.parametrize("B", [2])
+@pytest.mark.parametrize("H", [3])
+@pytest.mark.parametrize("gate_logit_normalizer", [1, 0.05, 20])
 @pytest.mark.parametrize("T", [100, 512])
 @pytest.mark.parametrize("D", [100, 256])
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
 @pytest.mark.parametrize("head_first", [True, False])
+@pytest.mark.parametrize("scale", [1, 0.1])
 def test_chunk(
     B: int,
     H: int,
     T: int,
     D: int,
     dtype: torch.dtype,
-    head_first: bool
+    head_first: bool,
+    gate_logit_normalizer: float,
+    scale: float,
 ):
     torch.manual_seed(42)
     os.environ['TRITON_F32_DEFAULT'] = 'ieee'
@@ -48,28 +100,27 @@ def test_chunk(
         q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
         k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
         v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_(True)
-        g = torch.randn((B, H, T), dtype=dtype, device='cuda')
+        g = torch.randn((B, H, T), dtype=torch.float32, device='cuda')
     else:
         q = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_(True)
         k = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_(True)
         v = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_(True)
-        g = torch.randn((B, T, H), dtype=dtype, device='cuda')
+        g = torch.randn((B, T, H), dtype=torch.float32, device='cuda')
     h0 = torch.rand((B, H, D, D), dtype=torch.float32, device='cuda').requires_grad_(True)
-    g = F.logsigmoid(g).requires_grad_(True)
+    dht = torch.randn_like(h0)
+    g = (F.logsigmoid(g) / gate_logit_normalizer).requires_grad_(True)
     do = torch.randn_like(v)
 
-    ref, ref_ht = fused_recurrent_simple_gla(q, k, v, g, initial_state=h0, output_final_state=True, head_first=head_first)
-    # dht not supported yet in `fused_recurrent` kernel
-    ref, _ = fused_recurrent_simple_gla(q, k, v, g, initial_state=h0, output_final_state=False, head_first=head_first)
-    (ref * do).sum().backward()
+    ref, ref_ht = chunk_simple_gla_ref(q, k, v, g, scale=scale, initial_state=h0, output_final_state=True, head_first=head_first)
+    ((ref * do).sum() + (dht * ref_ht).sum()).backward()
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
     ref_dv, v.grad = v.grad.clone(), None
     ref_dg, g.grad = g.grad.clone(), None
     ref_dh0, h0.grad = h0.grad.clone(), None
 
-    tri, tri_ht = chunk_simple_gla(q, k, v, g, initial_state=h0, output_final_state=True, head_first=head_first)
-    ((tri * do).sum()).backward()
+    tri, tri_ht = chunk_simple_gla(q, k, v, g, scale=scale, initial_state=h0, output_final_state=True, head_first=head_first)
+    ((tri * do).sum() + (dht * tri_ht).sum()).backward()
     tri_dq, q.grad = q.grad.clone(), None
     tri_dk, k.grad = k.grad.clone(), None
     tri_dv, v.grad = v.grad.clone(), None
