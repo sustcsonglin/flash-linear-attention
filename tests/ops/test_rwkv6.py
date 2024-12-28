@@ -31,6 +31,7 @@ def assert_close(prefix, ref, tri, ratio):
 @pytest.mark.parametrize("H", [4])
 @pytest.mark.parametrize("D", [300, 100])
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
+@pytest.mark.parametrize("gate_logit_normalizer", [1, 0.05, 20])
 @pytest.mark.parametrize("head_first", [True, False])
 def test_chunk(
     B: int,
@@ -38,6 +39,7 @@ def test_chunk(
     H: int,
     D: int,
     dtype: torch.dtype,
+    gate_logit_normalizer: float,
     head_first: bool
 ):
     torch.manual_seed(42)
@@ -47,12 +49,14 @@ def test_chunk(
         q = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
         k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
         v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
-        w = F.logsigmoid(torch.randn((B, H, T, D), dtype=dtype, device='cuda')).requires_grad_(True)
+        w = F.logsigmoid(torch.randn((B, H, T, D), dtype=dtype, device='cuda')) / gate_logit_normalizer
+        w = w.clamp_(-64).requires_grad_(True)
     else:
         q = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_()
         k = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_()
         v = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_()
-        w = F.logsigmoid(torch.randn((B, T, H, D), dtype=dtype, device='cuda')).requires_grad_(True)
+        w = F.logsigmoid(torch.randn((B, T, H, D), dtype=dtype, device='cuda')) / gate_logit_normalizer
+        w = w.clamp_(-64).requires_grad_(True)
     u = torch.randn(H, D, dtype=dtype, device='cuda').requires_grad_(True)
 
     h0 = torch.randn(B, H, D, D, dtype=dtype, device='cuda').requires_grad_()

@@ -9,8 +9,8 @@ import triton.language as tl
 
 from fla.ops.common.chunk_h import chunk_bwd_dh, chunk_fwd_h
 from fla.ops.utils import chunk_local_cumsum
+from fla.ops.utils.exp import safe_exp
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
-from fla.ops.utils.safe import safe_diff_exp
 
 
 @triton.heuristics({
@@ -57,6 +57,9 @@ def chunk_simple_gla_fwd_kernel_o(
         i_tg = i_b * NT + i_t
         bos, eos = i_b * T, i_b * T + T
 
+    o_i = tl.arange(0, BT)
+    m_s = o_i[:, None] >= o_i[None, :]
+
     b_o = tl.zeros([BT, BV], dtype=tl.float32)
     b_s = tl.zeros([BT, BT], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
@@ -87,7 +90,7 @@ def chunk_simple_gla_fwd_kernel_o(
         p_o = tl.make_block_ptr(o + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     b_g = tl.load(p_g, boundary_check=(0,))
     b_o = b_o * tl.exp(b_g)[:, None]
-    b_s = b_s * safe_diff_exp(b_g, BT, q_first=True)
+    b_s = tl.where(m_s, b_s * safe_exp(b_g[:, None] - b_g[None, :]), 0)
     b_v = tl.load(p_v, boundary_check=(0, 1))
     b_o = (b_o + tl.dot(b_s.to(b_v.dtype), b_v, allow_tf32=False)) * scale
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
@@ -200,7 +203,7 @@ def chunk_simple_gla_bwd_kernel_dqkg(
     b_dq = b_dq * tl.exp(b_g)[:, None] * scale
     b_dk = b_dk * tl.exp(-b_g + b_g_last)[:, None]
     b_dg_last += tl.sum(b_dk * b_k)
-    b_ds = b_ds * safe_diff_exp(b_g, BT, q_first=True) * scale
+    b_ds = tl.where(o_i[:, None] >= o_i[None, :], b_ds * safe_exp(b_g[:, None] - b_g[None, :]) * scale, 0)
     b_ds = b_ds.to(b_k.dtype)
     # [BT, BK]
     b_dq += tl.dot(b_ds, b_k)
@@ -291,7 +294,8 @@ def chunk_simple_gla_bwd_kernel_dv(
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_A += tl.dot(b_k, b_q, allow_tf32=False)
 
-    b_A = b_A * safe_diff_exp(b_g, BT, q_first=False) * scale
+    mask = (tl.arange(0, BT)[:, None] <= tl.arange(0, BT)[None, :]) & (i_t * BT + tl.arange(0, BT) < T)
+    b_A = tl.where(mask, b_A * safe_exp(b_g[None, :] - b_g[:, None]) * scale, 0).to(do.dtype.element_ty)
     if HEAD_FIRST:
         p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         p_dv = tl.make_block_ptr(dv + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))

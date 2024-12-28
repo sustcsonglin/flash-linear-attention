@@ -11,6 +11,7 @@ from einops import reduce
 from fla.ops.common.chunk_h import chunk_bwd_dh, chunk_fwd_h
 from fla.ops.gla.chunk import chunk_gla_bwd, chunk_gla_fwd
 from fla.ops.utils import chunk_local_cumsum, softmax_bwd, softmax_fwd
+from fla.ops.utils.exp import safe_exp
 from fla.utils import contiguous
 
 
@@ -551,11 +552,11 @@ def chunk_gsa_bwd_k_kernel_intra_dvg(
             p_do = tl.make_block_ptr(do + (bos*HQ+i_hq) * V, (T, V), (HQ*V, 1), (i_t*BT + i_j*BC, i_v*BV), (BC, BV), (1, 0))
         # [BC, BV]
         b_g = tl.load(p_g, boundary_check=(0, 1))
-        b_do = tl.load(p_do, boundary_check=(0, 1))
-        b_do = (b_do * tl.exp(b_g - b_gn[None, :])).to(b_do.dtype)
+        b_do = tl.load(p_do, boundary_check=(0, 1)) * safe_exp(b_g - b_gn[None, :])
         # [BC, BC]
         b_A = tl.load(p_A, boundary_check=(0, 1))
-        b_dv += tl.dot(b_A, b_do)
+        # [BC, BV]
+        b_dv += tl.dot(b_A, b_do.to(b_A.dtype))
     b_dv *= tl.exp(b_gn[None, :] - b_gv)
 
     o_i = tl.arange(0, BC)

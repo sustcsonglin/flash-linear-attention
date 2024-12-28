@@ -11,7 +11,7 @@ from fla.ops.gated_delta_rule.wy_fast import (bwd_prepare_wy_repr,
                                               fwd_prepare_wy_repr,
                                               fwd_recompute_w_u)
 from fla.ops.utils import chunk_local_cumsum
-from fla.ops.utils.safe import safe_diff_exp
+from fla.ops.utils.exp import safe_exp
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
@@ -190,7 +190,7 @@ def chunk_gated_delta_rule_fwd_kernel_o(
         p_o = tl.make_block_ptr(o + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
     b_g = tl.load(p_g, boundary_check=(0,))
     b_o = b_o * tl.exp(b_g)[:, None]
-    b_s = b_s * safe_diff_exp(b_g, BT, q_first=True)
+    b_s = b_s * safe_exp(b_g[:, None] - b_g[None, :])
     b_v = tl.load(p_v, boundary_check=(0, 1))
     b_o = (b_o + tl.dot(b_s.to(b_v.dtype), b_v, allow_tf32=False)) * scale
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
@@ -254,7 +254,7 @@ def chunk_gated_delta_rule_fwd_kernel_prepare_dv(
         p_g = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
 
     b_g = tl.load(p_g, boundary_check=(0,))
-    b_A = b_A * safe_diff_exp(b_g, BT, q_first=False) * scale
+    b_A = b_A * safe_exp(b_g[None, :] - b_g[:, None]) * scale
     b_A = b_A.to(do.dtype.element_ty)
 
     for i_v in range(tl.cdiv(V, BV)):
@@ -520,7 +520,7 @@ def chunk_gated_delta_rule_bwd_kernel_dqkw(
     b_dg_last += tl.sum(b_dk * b_k)
     b_g_exp_qw = None
     # [BT, BT]
-    b_ds = b_ds * scale * safe_diff_exp(b_g, BT, q_first=True)
+    b_ds = b_ds * scale * safe_exp(b_g[:, None] - b_g[None, :])
     # gradient wrt
     b_dg_mask = tl.dot(b_q, tl.trans(b_k), allow_tf32=False) * b_ds
     b_dg += tl.sum(b_dg_mask, axis=1)

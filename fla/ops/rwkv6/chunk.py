@@ -153,6 +153,8 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_inter(
     if i_i <= i_j:
         return
 
+    m_i = i_t * BT + i_i * BC + tl.arange(0, BC) < T
+
     b_A = tl.zeros([BC, BC], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
         o_k = i_k * BK + tl.arange(0, BK)
@@ -175,7 +177,7 @@ def chunk_rwkv6_fwd_A_kernel_intra_sub_inter(
         b_gn = tl.load(p_gn, mask=m_k, other=0)
         # [BC, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
-        b_gq = tl.load(p_gq, boundary_check=(0, 1))
+        b_gq = tl.where(m_i[:, None] & m_k, tl.load(p_gq, boundary_check=(0, 1)), float('-inf'))
         b_qg = b_q * tl.exp(b_gq - b_gn[None, :]) * scale
         # [BK, BC]
         b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -519,10 +521,8 @@ def chunk_rwkv6_bwd_kernel_dh(
 })
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [1, 2, 4, 8]
     ],
     key=["BK", "NC", "BT"],
 )
@@ -588,7 +588,7 @@ def chunk_rwkv6_bwd_kernel_intra(
             # [BC, BK]
             b_k = tl.load(p_k, boundary_check=(0, 1))
             b_gk = tl.load(p_gk, boundary_check=(0, 1))
-            b_kg = (b_k * tl.exp(b_gn[None, :] - b_gk))
+            b_kg = b_k * tl.exp(b_gn[None, :] - b_gk)
             # [BC, BC]
             b_dA = tl.load(p_dA, boundary_check=(0, 1))
             # [BC, BK]
@@ -639,24 +639,26 @@ def chunk_rwkv6_bwd_kernel_intra(
     NC = min(NC, tl.cdiv(T - i_t * BT, BC))
     if i_i < NC - 1:
         if HEAD_FIRST:
-            p_gn = tl.max_contiguous(tl.multiple_of(gi + i_bh*T*K + (i_t * BT + i_i * BC + BC - 1)*K + o_k, BK), BK)
+            p_gn = gi + i_bh * T*K + (min(i_t * BT + i_i * BC + BC, T) - 1)*K + o_k
         else:
-            p_gn = tl.max_contiguous(tl.multiple_of(gi + bos*H*K + (i_t * BT + i_i * BC + BC - 1)*H*K + i_h*K + o_k, BK), BK)
+            p_gn = gi + (bos + min(i_t * BT + i_i * BC + BC, T) - 1) * H*K + i_h*K + o_k
+        p_gn = tl.max_contiguous(tl.multiple_of(p_gn, BK), BK)
         # [BK,]
         b_gn = tl.load(p_gn, mask=m_k, other=0)
         for i_j in range(i_i + 1, NC):
+            m_j = (i_t * BT + i_j * BC + tl.arange(0, BC)) < T
             if HEAD_FIRST:
                 p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k * BK), (BC, BK), (1, 0))
-                p_ge = tl.make_block_ptr(ge + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k*BK), (BC, BK), (1, 0))
+                p_gq = tl.make_block_ptr(ge + i_bh * T*K, (T, K), (K, 1), (i_t * BT + i_j * BC, i_k*BK), (BC, BK), (1, 0))
                 p_dA = tl.make_block_ptr(dA + i_bh * T*BT, (BT, T), (1, BT), (i_i*BC, i_t*BT + i_j*BC), (BC, BC), (0, 1))
             else:
                 p_q = tl.make_block_ptr(q + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k*BK), (BC, BK), (1, 0))
-                p_ge = tl.make_block_ptr(ge + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k*BK), (BC, BK), (1, 0))
+                p_gq = tl.make_block_ptr(ge + (bos*H+i_h)*K, (T, K), (H*K, 1), (i_t * BT + i_j * BC, i_k*BK), (BC, BK), (1, 0))
                 p_dA = tl.make_block_ptr(dA + (bos*H+i_h)*BT, (BT, T), (1, H*BT), (i_i*BC, i_t*BT + i_j*BC), (BC, BC), (0, 1))
             # [BC, BK]
             b_q = tl.load(p_q, boundary_check=(0, 1))
-            b_ge = tl.load(p_ge, boundary_check=(0, 1))
-            b_qg = (b_q * tl.exp(b_ge - b_gn[None, :]))
+            b_gq = tl.where(m_j[:, None] & m_k, tl.load(p_gq, boundary_check=(0, 1)), float('-inf'))
+            b_qg = b_q * tl.exp(b_gq - b_gn[None, :])
             # [BC, BC]
             b_dA = tl.load(p_dA, boundary_check=(0, 1))
             # [BC, BK]
@@ -1190,7 +1192,6 @@ def chunk_rwkv6_bwd(
     chunk_size: int = 64
 ):
     gi, ge = chunk_rwkv6_fwd_cumsum(g, chunk_size=chunk_size, offsets=offsets, indices=indices, head_first=head_first)
-
     h, _ = chunk_fwd_h(
         k=k,
         v=v,

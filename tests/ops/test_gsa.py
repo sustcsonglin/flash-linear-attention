@@ -213,6 +213,7 @@ def test_fused_recurrent_varlen(
 @pytest.mark.parametrize("D", [100, 300])
 @pytest.mark.parametrize("M", [32, 64, 128])
 @pytest.mark.parametrize("dtype", [torch.float])
+@pytest.mark.parametrize("gate_logit_normalizer", [1, 0.05, 20])
 @pytest.mark.parametrize("head_first", [True, False])
 def test_chunk(
     B: int,
@@ -220,8 +221,9 @@ def test_chunk(
     T: int,
     D: int,
     M: int,
-    head_first: bool,
-    dtype: torch.dtype
+    dtype: torch.dtype,
+    gate_logit_normalizer: float,
+    head_first: bool
 ):
     torch.manual_seed(42)
     os.environ['TRITON_F32_DEFAULT'] = 'ieee'
@@ -231,13 +233,13 @@ def test_chunk(
         k = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
         v = torch.randn((B, H, T, D), dtype=dtype, device='cuda').requires_grad_()
         s = torch.randn((B, H, T, M), dtype=dtype, device='cuda').requires_grad_()
-        g = F.logsigmoid(torch.randn((B, H, T, M), dtype=dtype, device='cuda')).requires_grad_()
+        g = (F.logsigmoid(torch.randn((B, H, T, M), dtype=dtype, device='cuda')) / gate_logit_normalizer).requires_grad_()
     else:
         q = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_()
         k = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_()
         v = torch.randn((B, T, H, D), dtype=dtype, device='cuda').requires_grad_()
         s = torch.randn((B, T, H, M), dtype=dtype, device='cuda').requires_grad_()
-        g = F.logsigmoid(torch.randn((B, T, H, M), dtype=dtype, device='cuda')).requires_grad_()
+        g = (F.logsigmoid(torch.randn((B, T, H, M), dtype=dtype, device='cuda')) / gate_logit_normalizer).requires_grad_()
     hk0 = torch.randn(B, H, D, M, device='cuda').requires_grad_()
     hv0 = torch.randn(B, H, M, D, device='cuda').requires_grad_()
 

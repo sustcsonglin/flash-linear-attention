@@ -6,7 +6,8 @@ from typing import Optional, Tuple
 import torch
 import triton
 import triton.language as tl
-from fla.ops.utils.safe import safe_diff_exp
+
+from fla.ops.utils.exp import safe_exp
 
 
 @triton.heuristics({
@@ -71,7 +72,7 @@ def fwd_prepare_wy_repr_kernel_chunk32(
         p_g = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
 
     b_g = tl.load(p_g, boundary_check=(0,))
-    b_Au = b_Aw * safe_diff_exp(b_g, BC, q_first=True)
+    b_Au = b_Aw * safe_exp(b_g[:, None] - b_g[None, :])
 
     for i in range(1, BC):
         mask = tl.arange(0, BC) == i
@@ -177,8 +178,8 @@ def fwd_prepare_wy_repr_kernel_chunk64(
     mask_g = i_t * BT + tl.arange(0, BC) < T
     mask_g2 = i_t * BT + BC + tl.arange(0, BC) < T
 
-    b_Au = tl.where(mask_g[None, :] & mask_c, b_Aw * safe_diff_exp(b_g, BC, q_first=True), 0)
-    b_Au2 = tl.where(mask_g2[None, :] & mask_c, b_Aw2 * safe_diff_exp(b_g2, BC, q_first=True), 0)
+    b_Au = tl.where(mask_g[None, :] & mask_c, b_Aw * safe_exp(b_g[:, None] - b_g[None, :]), 0)
+    b_Au2 = tl.where(mask_g2[None, :] & mask_c, b_Aw2 * safe_exp(b_g2[:, None] - b_g2[None, :]), 0)
     tmp = b_g2[:, None] - b_g[None, :]
     b_Au3 = tl.where(mask_g[None, :], b_Aw3 * tl.exp(tl.where(tmp < 0, tmp, float('-inf'))), 0)
 
@@ -528,7 +529,7 @@ def bwd_prepare_wy_repr_kernel(
     else:
         p_g = tl.make_block_ptr(g + (bos*H + i_h), (T,), (H,), (i_t * BT,), (BT,), (0,))
     b_g = tl.load(p_g, boundary_check=(0,))
-    b_dA2 *= safe_diff_exp(b_g, BT, q_first=True)
+    b_dA2 *= safe_exp(b_g[:, None] - b_g[None, :])
     b_dA += b_dA2
     b_dA = b_dA.to(k.dtype.element_ty)
     b_A = tl.zeros([BT, BT], dtype=tl.float32)
@@ -559,7 +560,6 @@ def bwd_prepare_wy_repr_kernel(
         p_dbeta = tl.make_block_ptr(dbeta + (bos*H + i_h), (T,), (H,), (i_t * BT,), (BT,), (0,))
     tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0,))
     tl.store(p_dbeta, b_dbeta.to(p_dbeta.dtype.element_ty), boundary_check=(0,))
-
 
 
 def bwd_prepare_wy_repr(
