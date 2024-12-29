@@ -29,7 +29,7 @@ conv1d = ["causal-conv1d>=1.4.0"]
 dev = ["pytest"]
 
 [project.urls]
-Homepage = "https://github.com/sustcsonglin/flash-linear-attention"
+Homepage = "https://github.com/fla-org/flash-linear-attention"
 
 [build-system]
 requires = ["setuptools>=45", "wheel", "ninja", "torch"]

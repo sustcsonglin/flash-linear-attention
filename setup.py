@@ -25,7 +25,7 @@ setup(
     long_description_content_type='text/markdown',
     author='Songlin Yang, Yu Zhang',
     author_email='yangsl66@mit.edu',
-    url='https://github.com/sustcsonglin/flash-linear-attention',
+    url='https://github.com/fla-org/flash-linear-attention',
     packages=find_packages(),
     license='MIT',
     classifiers=[
