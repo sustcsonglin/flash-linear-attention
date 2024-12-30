@@ -18,14 +18,6 @@ def chunk_linear_attn_fwd_kernel_h(
     h,
     h0,
     ht,
-    s_k_h,
-    s_k_t,
-    s_k_d,
-    s_v_h,
-    s_v_t,
-    s_v_d,
-    s_h_h,
-    s_h_t,
     T: tl.constexpr,
     K: tl.constexpr,
     V: tl.constexpr,
@@ -46,9 +38,9 @@ def chunk_linear_attn_fwd_kernel_h(
         b_h = tl.load(p_h0, boundary_check=(0, 1)).to(tl.float32)
 
     for i_t in range(NT):
-        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_h = tl.make_block_ptr(h + i_bh * s_h_h + i_t * K * V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+        p_v = tl.make_block_ptr(v + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_h = tl.make_block_ptr(h + i_bh * NT*K*V + i_t * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
 
         tl.store(p_h, b_h.to(p_h.dtype.element_ty), boundary_check=(0, 1))
         # [BK, BT]
@@ -70,21 +62,14 @@ def chunk_linear_attn_fwd_kernel_o(
     v,
     h,
     o,
-    s_k_h,
-    s_k_t,
-    s_k_d,
-    s_v_h,
-    s_v_t,
-    s_v_d,
-    s_h_h,
-    s_h_t,
     scale,
     T: tl.constexpr,
     K: tl.constexpr,
     V: tl.constexpr,
     BT: tl.constexpr,
     BK: tl.constexpr,
-    BV: tl.constexpr
+    BV: tl.constexpr,
+    NT: tl.constexpr
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
 
@@ -94,9 +79,9 @@ def chunk_linear_attn_fwd_kernel_o(
     b_o = tl.zeros([BT, BV], dtype=tl.float32)
     b_s = tl.zeros([BT, BT], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_k = tl.make_block_ptr(k + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_h = tl.make_block_ptr(h + i_bh * s_h_h + i_t * K * V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_k = tl.make_block_ptr(k + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+        p_h = tl.make_block_ptr(h + i_bh * NT*K*V + i_t * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         # [BT, BK]
         b_q = tl.load(p_q, boundary_check=(0, 1))
         # [BK, BT]
@@ -107,8 +92,8 @@ def chunk_linear_attn_fwd_kernel_o(
         b_s += tl.dot(b_q, b_k, allow_tf32=False)
     b_s = tl.where(m_s, b_s, 0)
 
-    p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    p_o = tl.make_block_ptr(o + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_v = tl.make_block_ptr(v + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+    p_o = tl.make_block_ptr(o + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
 
     b_v = tl.load(p_v, boundary_check=(0, 1))
     b_o = (b_o + tl.dot(b_s.to(b_v.dtype), b_v, allow_tf32=False)) * scale
@@ -121,14 +106,6 @@ def chunk_linear_attn_bwd_kernel_dh(
     q,
     do,
     dh,
-    s_k_h,
-    s_k_t,
-    s_k_d,
-    s_v_h,
-    s_v_t,
-    s_v_d,
-    s_h_h,
-    s_h_t,
     scale,
     T: tl.constexpr,
     K: tl.constexpr,
@@ -143,9 +120,9 @@ def chunk_linear_attn_bwd_kernel_dh(
     # [BK, BV]
     b_dh = tl.zeros([BK, BV], dtype=tl.float32)
     for i_t in range(NT - 1, -1, -1):
-        p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dh = tl.make_block_ptr(dh + i_bh * s_h_h + i_t * K * V, (K, V), (s_h_t, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_q = tl.make_block_ptr(q + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+        p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V + i_t * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
 
         tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
         # [BK, BT]
@@ -168,14 +145,6 @@ def chunk_linear_attn_bwd_kernel_dqkv(
     dq,
     dk,
     dv,
-    s_k_h,
-    s_k_t,
-    s_k_d,
-    s_v_h,
-    s_v_t,
-    s_v_d,
-    s_h_h,
-    s_h_t,
     scale,
     T: tl.constexpr,
     K: tl.constexpr,
@@ -189,8 +158,8 @@ def chunk_linear_attn_bwd_kernel_dqkv(
     n_bh = tl.num_programs(2)
     o_i = tl.arange(0, BT)
 
-    p_q = tl.make_block_ptr(q + i_bh * s_k_h, (K, T), (s_k_d, s_k_t), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-    p_k = tl.make_block_ptr(k + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_q = tl.make_block_ptr(q + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+    p_k = tl.make_block_ptr(k + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
 
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_k = tl.load(p_k, boundary_check=(0, 1))
@@ -201,11 +170,11 @@ def chunk_linear_attn_bwd_kernel_dqkv(
     b_dk = tl.zeros([BT, BK], dtype=tl.float32)
     b_ds = tl.zeros([BT, BT], dtype=tl.float32)
     for i_v in range(tl.cdiv(V, BV)):
-        p_v = tl.make_block_ptr(v + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_h = tl.make_block_ptr(h + i_bh * s_h_h, (V, NT * K), (1, s_h_t), (i_v * BV, i_t * K + i_k * BK), (BV, BK), (0, 1))
-        p_do = tl.make_block_ptr(do + i_bh * s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dh = tl.make_block_ptr(dh + i_bh * s_h_h, (NT * K, V), (s_h_t, 1), (i_t * K + i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        p_dv = tl.make_block_ptr(dv + (i_k*n_bh+i_bh)*s_v_h, (T, V), (s_v_t, s_v_d), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_v = tl.make_block_ptr(v + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_h = tl.make_block_ptr(h + i_bh * NT*K*V, (V, NT * K), (1, V), (i_v * BV, i_t * K + i_k * BK), (BV, BK), (0, 1))
+        p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V, (NT * K, V), (V, 1), (i_t * K + i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        p_dv = tl.make_block_ptr(dv + (i_k*n_bh+i_bh)*T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         # [BT, BV]
         b_v = tl.load(p_v, boundary_check=(0, 1))
         b_do = tl.load(p_do, boundary_check=(0, 1))
@@ -227,8 +196,8 @@ def chunk_linear_attn_bwd_kernel_dqkv(
     b_dq += tl.dot(b_ds, b_k, allow_tf32=False)
     b_dk += tl.trans(tl.dot(b_q, b_ds, allow_tf32=False))
 
-    p_dq = tl.make_block_ptr(dq + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    p_dk = tl.make_block_ptr(dk + i_bh * s_k_h, (T, K), (s_k_t, s_k_d), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dq = tl.make_block_ptr(dq + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+    p_dk = tl.make_block_ptr(dk + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
     tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
     tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
 
@@ -255,9 +224,6 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
         grid = (NK, NV, B * H)
         chunk_linear_attn_fwd_kernel_h[grid](
             k, v, h, initial_state, final_state,
-            q.stride(1), q.stride(2), q.stride(3),
-            v.stride(1), v.stride(2), v.stride(3),
-            h.stride(1), h.stride(2),
             T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             USE_INITIAL_STATE=initial_state is not None,
             STORE_FINAL_STATE=output_final_state,
@@ -268,11 +234,8 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
         o = torch.empty_like(v)
         chunk_linear_attn_fwd_kernel_o[grid](
             q, k, v, h, o,
-            q.stride(1), q.stride(2), q.stride(3),
-            v.stride(1), v.stride(2), v.stride(3),
-            h.stride(1), h.stride(2),
             scale,
-            T=T, K=K, V=V, BT=BT, BK=BK, BV=BV,
+            T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             num_warps=num_warps,
             num_stages=num_stages
         )
@@ -297,9 +260,6 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
         grid = (NK, NV, B * H)
         chunk_linear_attn_bwd_kernel_dh[grid](
             q, do, dh,
-            q.stride(1), q.stride(2), q.stride(3),
-            v.stride(1), v.stride(2), v.stride(3),
-            dh.stride(1), dh.stride(2),
             scale,
             T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             num_warps=num_warps,
@@ -314,9 +274,6 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
         num_warps = 4 if BK == 64 else 2
         chunk_linear_attn_bwd_kernel_dqkv[grid](
             q, k, v, h, do, dh, dq, dk, dv,
-            q.stride(1), q.stride(2), q.stride(3),
-            v.stride(1), v.stride(2), v.stride(3),
-            dh.stride(1), dh.stride(2),
             scale,
             T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
             num_warps=num_warps,
@@ -367,8 +324,8 @@ def chunk_linear_attn(
     if not head_first:
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
     o, final_state = ChunkLinearAttentionFunction.apply(q, k, v, scale, initial_state, output_final_state)
-    if normalize:
-        o = normalize_output(q * scale, k, o)
     if not head_first:
         o = o.transpose(1, 2)
+    if normalize:
+        o = normalize_output(q * scale, k, o)
     return o, final_state
