@@ -598,7 +598,7 @@ class FusedRecurrentRWKV6Function(torch.autograd.Function):
             offsets=ctx.offsets,
             head_first=ctx.head_first
         )
-        return dq.to(q), dk.to(k), dv.to(v), dw.to(w), du.to(u), None, dh0.to(initial_state), None, None, None, None
+        return dq.to(q), dk.to(k), dv.to(v), dw.to(w), du.to(u), None, dh0.to(initial_state) if dh0 is not None else dh0, None, None, None, None
 
 
 def fused_recurrent_rwkv6(
