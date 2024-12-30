@@ -7,52 +7,9 @@ import torch
 import triton
 import triton.language as tl
 
+from fla.ops.common.chunk_h import chunk_bwd_dh, chunk_fwd_h
 from fla.ops.linear_attn.utils import normalize_output
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
-
-
-@triton.jit
-def chunk_linear_attn_fwd_kernel_h(
-    k,
-    v,
-    h,
-    h0,
-    ht,
-    T: tl.constexpr,
-    K: tl.constexpr,
-    V: tl.constexpr,
-    BT: tl.constexpr,
-    BK: tl.constexpr,
-    BV: tl.constexpr,
-    NT: tl.constexpr,
-    USE_INITIAL_STATE: tl.constexpr,
-    STORE_FINAL_STATE: tl.constexpr
-):
-    i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-
-    # [BK, BV]
-    b_h = tl.zeros([BK, BV], dtype=tl.float32)
-
-    if USE_INITIAL_STATE:
-        p_h0 = tl.make_block_ptr(h0 + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        b_h = tl.load(p_h0, boundary_check=(0, 1)).to(tl.float32)
-
-    for i_t in range(NT):
-        p_k = tl.make_block_ptr(k + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_v = tl.make_block_ptr(v + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_h = tl.make_block_ptr(h + i_bh * NT*K*V + i_t * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-
-        tl.store(p_h, b_h.to(p_h.dtype.element_ty), boundary_check=(0, 1))
-        # [BK, BT]
-        b_k = tl.load(p_k, boundary_check=(0, 1))
-        # [BT, BV]
-        b_v = tl.load(p_v, boundary_check=(0, 1))
-        # [BK, BV]
-        b_h += tl.dot(b_k, b_v, allow_tf32=False)
-
-    if STORE_FINAL_STATE:
-        p_ht = tl.make_block_ptr(ht + i_bh * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -99,39 +56,6 @@ def chunk_linear_attn_fwd_kernel_o(
     b_o = (b_o + tl.dot(b_s.to(b_v.dtype), b_v, allow_tf32=False)) * scale
 
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
-
-
-@triton.jit
-def chunk_linear_attn_bwd_kernel_dh(
-    q,
-    do,
-    dh,
-    scale,
-    T: tl.constexpr,
-    K: tl.constexpr,
-    V: tl.constexpr,
-    BT: tl.constexpr,
-    BK: tl.constexpr,
-    BV: tl.constexpr,
-    NT: tl.constexpr
-):
-    i_k, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-
-    # [BK, BV]
-    b_dh = tl.zeros([BK, BV], dtype=tl.float32)
-    for i_t in range(NT - 1, -1, -1):
-        p_q = tl.make_block_ptr(q + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V + i_t * K * V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-
-        tl.store(p_dh, b_dh.to(p_dh.dtype.element_ty), boundary_check=(0, 1))
-        # [BK, BT]
-        b_q = tl.load(p_q, boundary_check=(0, 1))
-        b_q = (b_q * scale).to(b_q.dtype)
-        # [BT, V]
-        b_do = tl.load(p_do, boundary_check=(0, 1))
-        # [BK, BV]
-        b_dh += tl.dot(b_q, b_do.to(b_q.dtype), allow_tf32=False)
 
 
 @triton.jit
@@ -211,24 +135,21 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT = 64
         BK, BV = min(64, triton.next_power_of_2(K)), min(64, triton.next_power_of_2(V))
-        NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
+        NT, NV = triton.cdiv(T, BT), triton.cdiv(V, BV)
         num_stages = 1
         num_warps = 4 if BK == 64 else 2
         ctx.scale = scale
 
-        final_state = None
-        if output_final_state:
-            final_state = q.new_empty(B, H, K, V, dtype=torch.float32, requires_grad=False)
-
-        h = q.new_empty(B, H, NT * K, V)
-        grid = (NK, NV, B * H)
-        chunk_linear_attn_fwd_kernel_h[grid](
-            k, v, h, initial_state, final_state,
-            T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-            USE_INITIAL_STATE=initial_state is not None,
-            STORE_FINAL_STATE=output_final_state,
-            num_warps=num_warps,
-            num_stages=num_stages
+        h, final_state = chunk_fwd_h(
+            k=k,
+            v=v,
+            g=None,
+            gk=None,
+            gv=None,
+            h0=initial_state,
+            output_final_state=output_final_state,
+            head_first=True,
+            chunk_size=BT
         )
         grid = (NV, NT, B * H)
         o = torch.empty_like(v)
@@ -240,6 +161,7 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
             num_stages=num_stages
         )
         ctx.save_for_backward(q, k, v, h)
+        ctx.initial_state = initial_state
         return o.to(q.dtype), final_state
 
     @staticmethod
@@ -247,23 +169,27 @@ class ChunkLinearAttentionFunction(torch.autograd.Function):
     @autocast_custom_bwd
     def backward(ctx, do, dht=None):
         q, k, v, h = ctx.saved_tensors
+        initial_state = ctx.initial_state
+        scale = ctx.scale
 
         B, H, T, K, V = *q.shape, v.shape[-1]
         BT = 64
         BK, BV = min(64, triton.next_power_of_2(K)), min(32 if q.dtype == torch.float32 else 64, triton.next_power_of_2(V))
-        NT, NK, NV = triton.cdiv(T, BT), triton.cdiv(K, BK), triton.cdiv(V, BV)
-        num_stages = 1
-        num_warps = 4 if BK == 64 else 2
-        scale = ctx.scale
+        NT, NK = triton.cdiv(T, BT), triton.cdiv(K, BK)
 
-        dh = q.new_empty(B, H, NT * K, V)
-        grid = (NK, NV, B * H)
-        chunk_linear_attn_bwd_kernel_dh[grid](
-            q, do, dh,
-            scale,
-            T=T, K=K, V=V, BT=BT, BK=BK, BV=BV, NT=NT,
-            num_warps=num_warps,
-            num_stages=num_stages
+        dh, _ = chunk_bwd_dh(
+            q=q,
+            k=k,
+            v=v,
+            g=None,
+            gk=None,
+            gv=None,
+            do=do,
+            h0=initial_state,
+            dht=dht,
+            scale=scale,
+            head_first=True,
+            chunk_size=BT
         )
 
         grid = (NK, NT, B * H)
@@ -324,8 +250,8 @@ def chunk_linear_attn(
     if not head_first:
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
     o, final_state = ChunkLinearAttentionFunction.apply(q, k, v, scale, initial_state, output_final_state)
-    if not head_first:
-        o = o.transpose(1, 2)
     if normalize:
         o = normalize_output(q * scale, k, o)
+    if not head_first:
+        o = o.transpose(1, 2)
     return o, final_state
