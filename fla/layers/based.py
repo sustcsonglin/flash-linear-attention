@@ -64,13 +64,14 @@ class BasedLinearAttention(nn.Module):
         q, k, v = map(lambda x: rearrange(x, "... (h d) -> ... h d", h=self.num_heads), [q, k, v])
         if mode == "fused_chunk":
             q, k = self.feature_map(q), self.feature_map(k)
-            o = fused_chunk_linear_attn(q, k, v, normalize=True, scale=1, head_first=False)
+            o, _ = fused_chunk_linear_attn(q, k, v, normalize=True, scale=1, head_first=False)
         elif mode == 'chunk':
             q, k = self.feature_map(q), self.feature_map(k)
-            o = chunk_linear_attn(q, k, v, normalize=True, scale=1, head_first=False)
+            o, _ = chunk_linear_attn(q, k, v, normalize=True, scale=1, head_first=False)
         elif mode == 'parallel':
             assert q.shape[-1] <= 128
-            o = parallel_based(q, k, v, True, True, head_first=False)
+            o = parallel_based(q, k, v, scale=1, use_norm=True, head_first=False)
+        o = rearrange(o, 'b t h d -> b t (h d)')
         o = self.o_proj(o)
         o = self.dropout(o)
         return o
