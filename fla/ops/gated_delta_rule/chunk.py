@@ -13,6 +13,7 @@ from fla.ops.gated_delta_rule.wy_fast import (bwd_prepare_wy_repr,
 from fla.ops.utils import chunk_local_cumsum
 from fla.ops.utils.exp import safe_exp
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
+from fla.ops.common.chunk_o import chunk_bwd_dv, chunk_fwd_o, chunk_bwd_dqkwg
 
 
 @triton.heuristics({
@@ -116,157 +117,6 @@ def chunk_gated_delta_rule_fwd_kernel_h(
     if STORE_FINAL_STATE:
         p_ht = tl.make_block_ptr(ht + i_nh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
-
-
-@triton.heuristics({
-    'USE_OFFSETS': lambda args: args['offsets'] is not None
-})
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=4),
-    ],
-    key=['BT', 'BK', 'BV']
-)
-@triton.jit
-def chunk_gated_delta_rule_fwd_kernel_o(
-    q,
-    k,
-    v,
-    h,
-    g,
-    o,
-    offsets,
-    indices,
-    scale,
-    T: tl.constexpr,
-    H: tl.constexpr,
-    K: tl.constexpr,
-    V: tl.constexpr,
-    BT: tl.constexpr,
-    BK: tl.constexpr,
-    BV: tl.constexpr,
-    USE_OFFSETS: tl.constexpr,
-    HEAD_FIRST: tl.constexpr
-):
-    i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    i_b, i_h = i_bh // H, i_bh % H
-    if USE_OFFSETS:
-        i_tg = i_t
-        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
-        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
-        T = eos - bos
-        NT = tl.cdiv(T, BT)
-    else:
-        NT = tl.cdiv(T, BT)
-        i_tg = i_b * NT + i_t
-        bos, eos = i_b * T, i_b * T + T
-
-    b_o = tl.zeros([BT, BV], dtype=tl.float32)
-    b_s = tl.zeros([BT, BT], dtype=tl.float32)
-    for i_k in range(tl.cdiv(K, BK)):
-        if HEAD_FIRST:
-            p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-            p_k = tl.make_block_ptr(k + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-            p_h = tl.make_block_ptr(h + (i_bh * NT + i_t) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        else:
-            p_q = tl.make_block_ptr(q + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-            p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (K, T), (1, H*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-            p_h = tl.make_block_ptr(h + (i_tg * H + i_h) * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-        # [BT, BK]
-        b_q = tl.load(p_q, boundary_check=(0, 1))
-        # [BK, BT]
-        b_k = tl.load(p_k, boundary_check=(0, 1))
-        # [BK, BV]
-        b_h = tl.load(p_h, boundary_check=(0, 1))
-        b_o += tl.dot(b_q, b_h, allow_tf32=False)
-        b_s += tl.dot(b_q, b_k, allow_tf32=False)
-    if HEAD_FIRST:
-        p_g = tl.make_block_ptr(g + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
-        p_v = tl.make_block_ptr(v + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_o = tl.make_block_ptr(o + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    else:
-        p_g = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
-        p_v = tl.make_block_ptr(v + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        p_o = tl.make_block_ptr(o + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-    b_g = tl.load(p_g, boundary_check=(0,))
-    b_o = b_o * tl.exp(b_g)[:, None]
-    b_s = b_s * safe_exp(b_g[:, None] - b_g[None, :])
-    b_v = tl.load(p_v, boundary_check=(0, 1))
-    b_o = (b_o + tl.dot(b_s.to(b_v.dtype), b_v, allow_tf32=False)) * scale
-    tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
-
-
-@triton.heuristics({
-    'USE_OFFSETS': lambda args: args['offsets'] is not None
-})
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=num_warps)
-        for num_warps in [1, 4]
-    ],
-    key=['BT', 'BK', 'BV'],
-)
-@triton.jit
-def chunk_gated_delta_rule_fwd_kernel_prepare_dv(
-    q,
-    k,
-    g,
-    do,
-    dv,
-    offsets,
-    indices,
-    scale,
-    T: tl.constexpr,
-    H: tl.constexpr,
-    K: tl.constexpr,
-    V: tl.constexpr,
-    BT: tl.constexpr,
-    BK: tl.constexpr,
-    BV: tl.constexpr,
-    USE_OFFSETS: tl.constexpr,
-    HEAD_FIRST: tl.constexpr
-):
-    i_t, i_bh = tl.program_id(0), tl.program_id(1)
-    i_b, i_h = i_bh // H, i_bh % H
-    if USE_OFFSETS:
-        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
-        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
-        T = eos - bos
-    else:
-        bos, eos = i_b * T, i_b * T + T
-
-    b_A = tl.zeros([BT, BT], dtype=tl.float32)
-    for i_k in range(tl.cdiv(K, BK)):
-        if HEAD_FIRST:
-            p_q = tl.make_block_ptr(q + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-            p_k = tl.make_block_ptr(k + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        else:
-            p_q = tl.make_block_ptr(q + (bos * H + i_h) * K, (K, T), (1, H*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-            p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-
-        b_k = tl.load(p_k, boundary_check=(0, 1))
-        b_q = tl.load(p_q, boundary_check=(0, 1))
-        b_A += tl.dot(b_k, b_q, allow_tf32=False)
-
-    if HEAD_FIRST:
-        p_g = tl.make_block_ptr(g + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
-    else:
-        p_g = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
-
-    b_g = tl.load(p_g, boundary_check=(0,))
-    b_A = b_A * safe_exp(b_g[None, :] - b_g[:, None]) * scale
-    b_A = b_A.to(do.dtype.element_ty)
-
-    for i_v in range(tl.cdiv(V, BV)):
-        if HEAD_FIRST:
-            p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_dv = tl.make_block_ptr(dv + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        else:
-            p_do = tl.make_block_ptr(do + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_dv = tl.make_block_ptr(dv + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-        b_do = tl.load(p_do, boundary_check=(0, 1))
-        b_dv = tl.dot(b_A, b_do, allow_tf32=False)
-        tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
 
 @triton.heuristics({
@@ -380,208 +230,6 @@ def chunk_gated_delta_rule_bwd_kernel_dhu(
         p_dh0 = tl.make_block_ptr(dh0 + i_nh * K*V, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         tl.store(p_dh0, b_dh.to(p_dh0.dtype.element_ty), boundary_check=(0, 1))
 
-
-@triton.heuristics({
-    'USE_OFFSETS': lambda args: args['offsets'] is not None
-})
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=num_warps)
-        for num_warps in [2, 4]
-    ],
-    key=['BT', 'BK', 'BV']
-)
-@triton.jit
-def chunk_gated_delta_rule_bwd_kernel_dqkw(
-    q,
-    k,
-    v,
-    w,
-    g,
-    h,
-    do,
-    dh,
-    dq,
-    dk,
-    dv,
-    dw,
-    dg,
-    offsets,
-    indices,
-    scale,
-    B: tl.constexpr,
-    T: tl.constexpr,
-    H: tl.constexpr,
-    K: tl.constexpr,
-    V: tl.constexpr,
-    BT: tl.constexpr,
-    BK: tl.constexpr,
-    BV: tl.constexpr,
-    NT: tl.constexpr,
-    USE_OFFSETS: tl.constexpr,
-    HEAD_FIRST: tl.constexpr
-):
-    i_k, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    i_b, i_h = i_bh // H, i_bh % H
-    dg += i_k * B * T * H
-    if USE_OFFSETS:
-        i_tg = i_t
-        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
-        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
-        T = eos - bos
-        NT = tl.cdiv(T, BT)
-    else:
-        NT = tl.cdiv(T, BT)
-        i_tg = i_b * NT + i_t
-        bos, eos = i_b * T, i_b * T + T
-
-    o_i = tl.arange(0, BT)
-
-    if HEAD_FIRST:
-        p_q = tl.make_block_ptr(q + i_bh * T*K, (K, T), (1, K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_k = tl.make_block_ptr(k + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-    else:
-        p_q = tl.make_block_ptr(q + (bos * H + i_h) * K, (K, T), (1, H*K), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
-        p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-
-    b_dq = tl.zeros([BT, BK], dtype=tl.float32)
-    b_dk = tl.zeros([BT, BK], dtype=tl.float32)
-    b_dw = tl.zeros([BT, BK], dtype=tl.float32)
-    b_ds = tl.zeros([BT, BT], dtype=tl.float32)
-    b_dg = tl.zeros([BT, ], dtype=tl.float32)
-    b_dg_last = tl.zeros([1, ], dtype=tl.float32)
-    last_idx = min((i_t + 1) * BT, T) - 1
-    if HEAD_FIRST:
-        b_g_last = tl.load(g + i_bh * T + last_idx)
-    else:
-        b_g_last = tl.load(g + (bos + last_idx) * H + i_h)
-    for i_v in range(tl.cdiv(V, BV)):
-        if HEAD_FIRST:
-            p_v = tl.make_block_ptr(v + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_do = tl.make_block_ptr(do + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_dv = tl.make_block_ptr(dv + i_bh * T*V, (T, V), (V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_h = tl.make_block_ptr(h + i_bh * NT*K*V + i_t * K*V, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
-            p_dh = tl.make_block_ptr(dh + i_bh * NT*K*V + i_t * K*V, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
-        else:
-            p_v = tl.make_block_ptr(v + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_do = tl.make_block_ptr(do + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_dv = tl.make_block_ptr(dv + (bos * H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
-            p_h = tl.make_block_ptr(h + (i_tg * H + i_h) * K*V, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
-            p_dh = tl.make_block_ptr(dh + (i_tg * H + i_h) * K*V, (V, K), (1, V), (i_v * BV, i_k * BK), (BV, BK), (0, 1))
-        # [BT, BV]
-        b_v = tl.load(p_v, boundary_check=(0, 1))
-        b_do = tl.load(p_do, boundary_check=(0, 1))
-        # [BV, BK]
-        b_h = tl.load(p_h, boundary_check=(0, 1))
-        # [BK, BV]
-        b_dh = tl.load(p_dh, boundary_check=(0, 1))
-        # [BT]
-        b_dg_last += (tl.sum(b_h * b_dh))
-        # [BT, BT]
-        b_ds += tl.dot(b_do, tl.trans(b_v), allow_tf32=False)
-        # [BT, BK]
-        b_dq += tl.dot(b_do, b_h, allow_tf32=False)
-        b_dk += tl.dot(b_v, b_dh, allow_tf32=False)
-
-        b_dv = tl.load(p_dv, boundary_check=(0, 1))
-        b_dw += tl.dot(b_dv.to(b_v.dtype), b_h.to(b_v.dtype), allow_tf32=False)
-    b_dg_last *= tl.exp(b_g_last)
-    if HEAD_FIRST:
-        p_q = tl.make_block_ptr(q + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_k = tl.make_block_ptr(k + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_w = tl.make_block_ptr(w + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dq = tl.make_block_ptr(dq + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dk = tl.make_block_ptr(dk + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dw = tl.make_block_ptr(dw + i_bh * T*K, (T, K), (K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
-        p_dg = tl.make_block_ptr(dg + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
-    else:
-        p_q = tl.make_block_ptr(q + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_k = tl.make_block_ptr(k + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_w = tl.make_block_ptr(w + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dq = tl.make_block_ptr(dq + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dk = tl.make_block_ptr(dk + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_dw = tl.make_block_ptr(dw + (bos * H + i_h) * K, (T, K), (H*K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_g = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
-        p_dg = tl.make_block_ptr(dg + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
-    # [BK, BT]
-    b_q = tl.load(p_q, boundary_check=(0, 1))
-    b_k = tl.load(p_k, boundary_check=(0, 1))
-    b_g = tl.load(p_g, boundary_check=(0,))
-    b_w = tl.load(p_w, boundary_check=(0, 1))
-    b_g_exp_qw = tl.exp(b_g)
-    b_dq *= b_g_exp_qw[:, None] * scale
-    b_dg += tl.sum(b_dq * b_q, axis=1)
-    b_dw *= b_g_exp_qw[:, None]
-    b_dg -= tl.sum(b_dw * b_w, axis=1)
-    b_dk *= tl.exp(b_g_last - b_g)[:, None]
-
-    b_dg -= tl.sum(b_dk * b_k, axis=1)
-    b_dg_last += tl.sum(b_dk * b_k)
-    b_g_exp_qw = None
-    # [BT, BT]
-    b_ds = b_ds * scale * safe_exp(b_g[:, None] - b_g[None, :])
-    # gradient wrt
-    b_dg_mask = tl.dot(b_q, tl.trans(b_k), allow_tf32=False) * b_ds
-    b_dg += tl.sum(b_dg_mask, axis=1)
-    b_dg -= tl.sum(b_dg_mask, axis=0)
-    # [BT, BK]
-    b_ds = b_ds.to(b_k.dtype)
-    b_dq += tl.dot(b_ds, b_k, allow_tf32=False)
-    b_dk += tl.trans(tl.dot(tl.trans(b_q), b_ds, allow_tf32=False))
-    b_dg = tl.where(o_i < min(BT, T-i_t*BT) - 1, b_dg, b_dg + b_dg_last)
-    tl.store(p_dq, b_dq.to(p_dq.dtype.element_ty), boundary_check=(0, 1))
-    tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
-    tl.store(p_dw, -b_dw.to(p_dw.dtype.element_ty), boundary_check=(0, 1))
-    tl.store(p_dg, b_dg.to(p_dg.dtype.element_ty), boundary_check=(0, ))
-
-
-def chunk_gated_delta_rule_fwd_prepare_dv(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    g: torch.Tensor,
-    do: torch.Tensor,
-    scale: float,
-    offsets: Optional[torch.LongTensor] = None,
-    indices: Optional[torch.LongTensor] = None,
-    head_first: bool = True,
-    chunk_size: int = 64
-) -> torch.Tensor:
-    if head_first:
-        B, H, T, K, V = *k.shape, do.shape[-1]
-    else:
-        B, T, H, K, V = *k.shape, do.shape[-1]
-    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
-    if offsets is None:
-        NT = triton.cdiv(T, BT)
-    else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
-        NT = len(indices)
-    BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(V), 64)
-
-    dv = torch.empty_like(do)
-    chunk_gated_delta_rule_fwd_kernel_prepare_dv[(NT, B * H)](
-        q=q,
-        k=k,
-        g=g,
-        do=do,
-        dv=dv,
-        offsets=offsets,
-        indices=indices,
-        scale=scale,
-        T=T,
-        H=H,
-        K=K,
-        V=V,
-        BT=BT,
-        BK=BK,
-        BV=BV,
-        HEAD_FIRST=head_first
-    )
-    return dv
 
 
 def chunk_gated_delta_rule_fwd_h(
@@ -741,57 +389,6 @@ def chunk_gated_delta_rule_bwd_dhu(
     return dh, dh0, dv2
 
 
-def chunk_gated_delta_rule_fwd_o(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v_new: torch.Tensor,
-    h: torch.Tensor,
-    g: torch.Tensor,
-    scale: float,
-    offsets: Optional[torch.LongTensor] = None,
-    indices: Optional[torch.LongTensor] = None,
-    head_first: bool = True,
-    chunk_size: int = 64
-) -> torch.Tensor:
-    if head_first:
-        B, H, T, K, V = *q.shape, v_new.shape[-1]
-    else:
-        B, T, H, K, V = *q.shape, v_new.shape[-1]
-    BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
-    if offsets is None:
-        NT = triton.cdiv(T, BT)
-    else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
-        NT = len(indices)
-    BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(V), 64)
-    NV = triton.cdiv(V, BV)
-    o = torch.empty_like(v_new)
-    grid = (NV, NT, B * H)
-    chunk_gated_delta_rule_fwd_kernel_o[grid](
-        q=q,
-        k=k,
-        v=v_new,
-        h=h,
-        g=g,
-        o=o,
-        offsets=offsets,
-        indices=indices,
-        scale=scale,
-        T=T,
-        H=H,
-        K=K,
-        V=V,
-        BT=BT,
-        BK=BK,
-        BV=BV,
-        HEAD_FIRST=head_first
-    )
-    return o
-
-
 def chunk_gated_delta_rule_bwd_dqkwg(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -902,10 +499,10 @@ def chunk_gated_delta_rule_fwd(
     )
 
     # obtain output
-    o = chunk_gated_delta_rule_fwd_o(
+    o = chunk_fwd_o(
         q=q,
         k=k,
-        v_new=v_new,
+        v=v_new,
         h=h,
         g=g,
         scale=scale,
@@ -958,11 +555,12 @@ def chunk_gated_delta_rule_bwd(
         head_first=head_first,
         chunk_size=BT
     )
-    dv = chunk_gated_delta_rule_fwd_prepare_dv(
+    dv = chunk_bwd_dv(
         q=q,
         k=k,
         g=g,
         do=do,
+        dh=None,
         scale=scale,
         offsets=offsets,
         indices=indices,
@@ -983,14 +581,14 @@ def chunk_gated_delta_rule_bwd(
         head_first=head_first,
         chunk_size=BT
     )
-    dq, dk, dw, dg = chunk_gated_delta_rule_bwd_dqkwg(
+    dq, dk, dw, dg = chunk_bwd_dqkwg(
         q=q,
         k=k,
-        v_new=v_new,
+        v=v_new,
         w=w,
         g=g,
         h=h,
-        du=dv,
+        dv=dv,
         do=do,
         dh=dh,
         scale=scale,
