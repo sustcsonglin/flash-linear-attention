@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -14,7 +14,6 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast)
 from transformers.modeling_utils import PreTrainedModel
-from transformers.processing_utils import Unpack
 from transformers.utils import logging
 
 from fla.layers.attn import Attention
@@ -27,6 +26,9 @@ from fla.modules.activations import swiglu_linear
 from fla.modules.layernorm import rms_norm_linear
 
 logger = logging.get_logger(__name__)
+
+if TYPE_CHECKING:
+    from transformers.processing_utils import Unpack
 
 
 class DeltaNetMLP(nn.Module):

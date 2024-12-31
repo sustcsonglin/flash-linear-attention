@@ -10,13 +10,14 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers.processing_utils import Unpack
 
 from fla.modules import FusedRMSNormSwishGate, ShortConvolution
 from fla.modules.activations import swiglu
 from fla.ops.hgrn import chunk_hgrn, fused_recurrent_hgrn
 
 if TYPE_CHECKING:
+    from transformers.processing_utils import Unpack
+
     from fla.models.utils import Cache
 
 

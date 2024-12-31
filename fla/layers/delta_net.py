@@ -9,7 +9,6 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from torch.nn import functional as F
-from transformers.processing_utils import Unpack
 
 from fla.modules import FusedRMSNormSwishGate, RMSNorm, ShortConvolution
 from fla.modules.l2norm import l2_norm
@@ -17,6 +16,8 @@ from fla.ops.delta_rule import (chunk_delta_rule, fused_chunk_delta_rule,
                                 fused_recurrent_delta_rule)
 
 if TYPE_CHECKING:
+    from transformers.processing_utils import Unpack
+
     from fla.models.utils import Cache
 
 

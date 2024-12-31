@@ -11,7 +11,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from transformers.processing_utils import Unpack
 
 from fla.modules import RMSNorm, ShortConvolution
 from fla.modules.activations import swish
@@ -19,6 +18,8 @@ from fla.modules.layernorm import rms_norm_linear
 from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
 
 if TYPE_CHECKING:
+    from transformers.processing_utils import Unpack
+
     from fla.models.utils import Cache
 
 
