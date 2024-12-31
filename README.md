@@ -30,7 +30,7 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 
 ## News
 
-- **$\texttt{[2024-12]}$:** :book: Integrated `flash-bilinear-attention` to `fla-org` ([repo](https://github.com/fla-org/flash-bidirectional-linear-attention)) 
+- **$\texttt{[2024-12]}$:** ↔️ Integrated `flash-bidirectional-attention` to `fla-org` ([repo](https://github.com/fla-org/flash-bidirectional-linear-attention)) 
 - **$\texttt{[2024-12]}$:** :tada: Add Gated DeltaNet implementation to `fla` ([paper](https://arxiv.org/abs/2412.06464)).
 - **$\texttt{[2024-12]}$:** :rocket: `fla` now officially supports kernels with variable-length inputs.
 - **$\texttt{[2024-11]}$:** The inputs are now switched from head-first to seq-first format.
@@ -70,6 +70,7 @@ The following requirements should be satisfied
 - [einops](https://einops.rocks/)
 - [transformers](https://github.com/huggingface/transformers) >=4.45.0
 - [datasets](https://github.com/huggingface/datasets) >=2.11.0
+- [causal-conv1d](https://github.com/Dao-AILab/causal-conv1d) >=1.4.0
 
 As `fla` is actively developed now, no released packages are provided at this time.
 If you do need to use `fla` ops/modules and contemplate further explorations, an alternative way is to install the package from source
@@ -399,7 +400,7 @@ Performance:
 
 
 ## Citation
-If you find this repo useful, please consider citing our works:
+If you find this repository helpful, please cite our work:
 ```bib
 @software{yang2024fla,
   title  = {FLA: A Triton-Based Library for Hardware-Efficient Implementations of Linear Attention Mechanism},
