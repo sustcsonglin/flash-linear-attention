@@ -509,7 +509,7 @@ def chunk_bwd_dqkwg(
     NK = triton.cdiv(K, BK)
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
-    dg = torch.empty(NK, *g.shape, dtype=torch.float32, device=g.device)) if g is not None else None
+    dg = torch.empty(NK, *g.shape, dtype=torch.float32, device=g.device) if g is not None else None
     dw = torch.empty_like(w) if w is not None else None
     grid = (NK, NT, B * H)
 
