@@ -13,7 +13,6 @@ from fla.ops.utils import chunk_local_cumsum
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
-
 def chunk_simple_gla_fwd(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -27,7 +26,7 @@ def chunk_simple_gla_fwd(
     head_first: bool = True,
     chunk_size: int = 64
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    g = chunk_local_cumsum(g, chunk_size, offsets=offsets, head_first=head_first)
+    g = chunk_local_cumsum(g, chunk_size, offsets=offsets, head_first=head_first) if g is not None else None
     h, ht = chunk_fwd_h(
         k=k,
         v=v,
@@ -203,8 +202,12 @@ class ChunkSimpleGLAFunction(torch.autograd.Function):
             head_first=head_first,
             chunk_size=chunk_size
         )
-        dg = chunk_local_cumsum(dg, chunk_size, reverse=True, offsets=offsets, head_first=head_first)
-        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg.to(g.dtype), None, dh0, None, None, None
+        if g is not None:
+            dg = chunk_local_cumsum(dg, chunk_size, reverse=True, offsets=offsets, head_first=head_first).to(g.dtype)
+        else:
+            dg = None
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), dg, None, dh0, None, None, None
+
 
 
 def chunk_simple_gla(

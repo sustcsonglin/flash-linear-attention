@@ -271,7 +271,6 @@ def chunk_bwd_kernel_dqkwg(
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
 
 
-
 @triton.heuristics({
     'USE_OFFSETS': lambda args: args['offsets'] is not None,
     'USE_G': lambda args: args['g'] is not None,
@@ -280,7 +279,7 @@ def chunk_bwd_kernel_dqkwg(
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=num_warps)
-        for num_warps in [2, 4, 8]
+        for num_warps in [4]
     ],
     key=["BT", "BK", "BV", "USE_G", "USE_DH"],
 )
@@ -353,7 +352,7 @@ def chunk_bwd_kernel_dv(
     else:
         b_g, b_g_last = None, None
     
-    if USE_DH:
+    if USE_DH and USE_G:
         b_dv *= safe_exp(-b_g + b_g_last)[:, None]
 
     mask = (tl.arange(0, BT)[:, None] <= tl.arange(0, BT)[None, :])
@@ -399,7 +398,6 @@ def chunk_fwd_o(
     NV = triton.cdiv(V, BV)
 
     o = torch.empty_like(v)
-    # .fill_(float('nan'))
     grid = (NV, NT, B * H)
     chunk_fwd_kernel_o[grid](
         q,
@@ -511,8 +509,8 @@ def chunk_bwd_dqkwg(
     NK = triton.cdiv(K, BK)
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
-    dg = torch.empty(NK, *g.shape, dtype=torch.float32, device=g.device).fill_(float('nan')) if g is not None else None
-    dw = torch.empty_like(w).fill_(float('nan')) if w is not None else None
+    dg = torch.empty(NK, *g.shape, dtype=torch.float32, device=g.device)) if g is not None else None
+    dw = torch.empty_like(w) if w is not None else None
     grid = (NK, NT, B * H)
 
     chunk_bwd_kernel_dqkwg[grid](
