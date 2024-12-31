@@ -41,7 +41,7 @@ def chunk_local_cumsum_scalar_kernel(
         T = eos - bos
     else:
         bos, eos = i_b * T, i_b * T + T
-    
+
     if HEAD_FIRST:
         p_s = tl.make_block_ptr(s + bos*H + i_h*T, (T,), (1,), (i_t * BT,), (BT,), (0,))
         p_o = tl.make_block_ptr(o + bos*H + i_h*T, (T,), (1,), (i_t * BT,), (BT,), (0,))
@@ -221,7 +221,6 @@ def chunk_global_cumsum_vector_kernel(
             b_z += tl.sum(b_s, 0)
 
 
-
 def chunk_local_cumsum_scalar(
     g: torch.Tensor,
     chunk_size: int,
@@ -292,19 +291,18 @@ def chunk_local_cumsum_vector(
     # this kernel is equivalent to
     # g = g.view(B, H, NT, BT, -1).cumsum(-2).view(B, H, T, -1)
     chunk_local_cumsum_vector_kernel[grid](
-            g_org,
-            g,
-            offsets,
-            indices,
-            T=T,
-            H=H,
-            S=S,
-            BT=BT,
-            HEAD_FIRST=head_first,
-            REVERSE=reverse
-        )
+        g_org,
+        g,
+        offsets,
+        indices,
+        T=T,
+        H=H,
+        S=S,
+        BT=BT,
+        HEAD_FIRST=head_first,
+        REVERSE=reverse
+    )
     return g
-
 
 
 @contiguous
