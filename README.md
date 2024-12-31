@@ -6,7 +6,8 @@
 
 </div>
 
-This repo aims at providing a collection of efficient Triton-based implementations for state-of-the-art linear attention models. **Any pull requests are welcome!**
+This repo aims at providing a collection of efficient Triton-based implementations for state-of-the-art linear attention models. **Any pull requests are welcome!**  [Click me for feature request](https://docs.google.com/forms/d/e/1FAIpQLSdbqbRF_vuAU3_YGCSiNM6EffVtR8GOj73NykbOIC_JZT7F4Q/viewform?usp=sharing)
+
 
 <div align="center">
   <img width="400" alt="image" src="https://github.com/fla-org/flash-linear-attention/assets/18402347/02ff2e26-1495-4088-b701-e72cd65ac6cf">
@@ -24,8 +25,12 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 * [Benchmarks](#benchmarks)
 * [Citation](#citation)
 
+
+
+
 ## News
 
+- **$\texttt{[2024-12]}$:** :book: Integrated `flash-bilinear-attention` to `fla-org` ([repo](https://github.com/fla-org/flash-bidirectional-linear-attention)) 
 - **$\texttt{[2024-12]}$:** :tada: Add Gated DeltaNet implementation to `fla` ([paper](https://arxiv.org/abs/2412.06464)).
 - **$\texttt{[2024-12]}$:** :rocket: `fla` now officially supports kernels with variable-length inputs.
 - **$\texttt{[2024-11]}$:** The inputs are now switched from head-first to seq-first format.
