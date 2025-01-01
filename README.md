@@ -16,6 +16,7 @@ This repo aims at providing a collection of efficient Triton-based implementatio
 * [News](#news)
 * [Models](#models)
 * [Installation](#installation)
+* [Frequent Issues](#frequent-issues)
 * [Usage](#usage)
   * [Token Mixing](#token-mixing)
   * [Fused Modules](#fused-modules)
@@ -66,7 +67,7 @@ Roughly sorted according to the timeline supported in `fla`. The recommended tra
 
 The following requirements should be satisfied 
 - [PyTorch](https://pytorch.org/) >= 2.0
-- [Triton](https://github.com/openai/triton) >=3.0
+- [Triton](https://github.com/openai/triton) >=3.0 (Recommended: triton-nightly. (`pip install -U --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/Triton-Nightly/pypi/simple/triton-nightly`)
 - [einops](https://einops.rocks/)
 - [transformers](https://github.com/huggingface/transformers) >=4.45.0
 - [datasets](https://github.com/huggingface/datasets) >=2.11.0
@@ -82,6 +83,20 @@ or manage `fla` with submodules
 git submodule add https://github.com/fla-org/flash-linear-attention.git 3rdparty/flash-linear-attention
 ln -s 3rdparty/flash-linear-attention/fla fla
 ```
+
+## Frequent Issues
+### H100 MMA->MMA Assertion Error
+
+Error Message:
+
+```
+Assertion `!(srcMmaLayout && dstMmaLayout && !srcMmaLayout.isAmpere()) && "mma -> mma layout conversion is only supported on Ampere"' failed.
+```
+
+Solution:
+
+Use triton-nightly version. This issue has been fixed in [PR #4492](https://github.com/triton-lang/triton/pull/4492).
+
 
 ## Usage
 
