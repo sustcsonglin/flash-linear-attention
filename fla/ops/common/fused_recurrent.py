@@ -514,15 +514,15 @@ class FusedRecurrentFunction(torch.autograd.Function):
     @autocast_custom_bwd
     def backward(ctx, do, dht):
         q, k, v, g, gk, gv, initial_state, o = ctx.saved_tensors
-
         # not supported yet.
         if dht is not None:
-            if g is not None:
-                assert g.requires_grad is False, "Cannot load final state gradient and use gates at the same time"
-            if gk is not None:
-                assert gk.requires_grad is False, "Cannot load final state gradient and use gates at the same time"
-            if gv is not None:
-                assert gv.requires_grad is False, "Cannot load final state gradient and use gates at the same time"
+            if not dht.eq(0).all():
+                if g is not None:
+                    assert g.requires_grad is False, "Cannot load final state gradient and use gates at the same time"
+                if gk is not None:
+                    assert gk.requires_grad is False, "Cannot load final state gradient and use gates at the same time"
+                if gv is not None:
+                    assert gv.requires_grad is False, "Cannot load final state gradient and use gates at the same time"
         dq, dk, dv, dg, dgk, dgv, dh0 = fused_recurrent_bwd(
             q=q,
             k=k,
