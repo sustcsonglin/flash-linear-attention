@@ -306,7 +306,6 @@ def chunk_bwd_kernel_dv(
     USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr,
     USE_G: tl.constexpr,
-    USE_DH: tl.constexpr
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
@@ -331,8 +330,7 @@ def chunk_bwd_kernel_dv(
     stride_qk = K if HEAD_FIRST else H*K
     stride_vo = V if HEAD_FIRST else H*V
     stride_g = 1 if HEAD_FIRST else H
-    if USE_DH:
-        dh += (i_bh * NT + i_t) * K*V if HEAD_FIRST else (i_tg * H + i_h) * K*V
+    dh += (i_bh * NT + i_t) * K*V if HEAD_FIRST else (i_tg * H + i_h) * K*V
 
     b_A = tl.zeros([BT, BT], dtype=tl.float32)
     for i_k in range(tl.cdiv(K, BK)):
@@ -352,10 +350,8 @@ def chunk_bwd_kernel_dv(
         b_g_last = tl.load(g + (min(i_t * BT + BT, T) - 1) * stride_g)
     else:
         b_g, b_g_last = None, None
-    
-    if USE_DH and USE_G:
-        b_dv *= safe_exp(-b_g + b_g_last)[:, None]
 
+    b_dv *= safe_exp(-b_g + b_g_last)[:, None]
     mask = (tl.arange(0, BT)[:, None] <= tl.arange(0, BT)[None, :])
     if USE_G:
         b_A = tl.where(mask, b_A * safe_exp(b_g[None, :] - b_g[:, None]) * scale, 0).to(do.dtype.element_ty)
