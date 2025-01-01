@@ -5,12 +5,11 @@ from typing import Optional, Tuple
 
 import torch
 import triton
-import triton.language as tl
 
 from fla.ops.delta_rule.wy_fast import (bwd_prepare_wy_repr,
                                         fwd_prepare_wy_repr, fwd_recompute_w_u)
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
-from fla.ops.common.chunk_o import chunk_fwd_o, chunk_bwd_dv, chunk_bwd_dqkwg
+from fla.ops.common.chunk_o import chunk_fwd_o, chunk_bwd_dv_local, chunk_bwd_dqkwg
 from fla.ops.common.chunk_delta_h import chunk_gated_delta_rule_fwd_h, chunk_gated_delta_rule_bwd_dhu
 
 def chunk_delta_rule_fwd(
@@ -103,7 +102,7 @@ def chunk_delta_rule_bwd(
         head_first=head_first,
         chunk_size=BT
     )
-    dv = chunk_bwd_dv(
+    dv = chunk_bwd_dv_local(
         q=q,
         k=k,
         do=do,
@@ -336,5 +335,3 @@ def chunk_delta_rule(
         head_first
     )
     return o, final_state
-
-

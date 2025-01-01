@@ -5,7 +5,6 @@ from typing import Optional, Tuple
 
 import torch
 import triton
-import triton.language as tl
 
 from fla.ops.gated_delta_rule.wy_fast import (bwd_prepare_wy_repr,
                                               fwd_prepare_wy_repr,
@@ -13,7 +12,7 @@ from fla.ops.gated_delta_rule.wy_fast import (bwd_prepare_wy_repr,
 from fla.ops.utils import chunk_local_cumsum
 from fla.ops.utils.exp import safe_exp
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
-from fla.ops.common.chunk_o import chunk_bwd_dv, chunk_fwd_o, chunk_bwd_dqkwg
+from fla.ops.common.chunk_o import chunk_bwd_dv_local, chunk_fwd_o, chunk_bwd_dqkwg
 from fla.ops.common.chunk_delta_h import chunk_gated_delta_rule_bwd_dhu, chunk_gated_delta_rule_fwd_h
 
 def chunk_gated_delta_rule_fwd(
@@ -113,7 +112,7 @@ def chunk_gated_delta_rule_bwd(
         head_first=head_first,
         chunk_size=BT
     )
-    dv = chunk_bwd_dv(
+    dv = chunk_bwd_dv_local(
         q=q,
         k=k,
         g=g,

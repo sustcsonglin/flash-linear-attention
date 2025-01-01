@@ -4,8 +4,6 @@ from fla.ops.utils.exp import safe_exp
 import triton
 import triton.language as tl
 import torch
-from fla.ops.utils.cumsum import chunk_local_cumsum
-
 
 @triton.heuristics({
     'USE_OFFSETS': lambda args: args['offsets'] is not None,
@@ -13,9 +11,13 @@ from fla.ops.utils.cumsum import chunk_local_cumsum
 })
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=4),
+        triton.Config({'BK': BK, 'BV': BV}, num_warps=num_warps, num_stages=num_stages)
+        for BK in [64, 128]
+        for BV in [64, 128]
+        for num_warps in [2, 4, 8]
+        for num_stages in [2, 3]
     ],
-    key=["BT", "BK", "BV", "USE_G"],
+    key=["BT"],
 )
 @triton.jit
 def chunk_fwd_kernel_o(
@@ -35,13 +37,12 @@ def chunk_fwd_kernel_o(
     BT: tl.constexpr,
     BK: tl.constexpr,
     BV: tl.constexpr,
-    NT: tl.constexpr,
     USE_OFFSETS: tl.constexpr,
     HEAD_FIRST: tl.constexpr,
     USE_G: tl.constexpr
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    i_b, i_h = i_bh // H, i_bh % H    
+    i_b, i_h = i_bh // H, i_bh % H
     
     if USE_OFFSETS:
         i_tg = i_t
@@ -100,7 +101,6 @@ def chunk_fwd_kernel_o(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
-
 @triton.heuristics({
     'USE_OFFSETS': lambda args: args['offsets'] is not None,
     'USE_G': lambda args: args['g'] is not None,
@@ -108,7 +108,9 @@ def chunk_fwd_kernel_o(
 })
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=4)
+        triton.Config({}, num_warps=num_warps, num_stages=num_stages)
+        for num_warps in [2, 4, 8]
+        for num_stages in [2, 3]
     ],
     key=["BT", "BK", "BV", "USE_G", "USE_DW"],
 )
@@ -271,17 +273,17 @@ def chunk_bwd_kernel_dqkwg(
         tl.store(p_dk, b_dk.to(p_dk.dtype.element_ty), boundary_check=(0, 1))
 
 
+
 @triton.heuristics({
     'USE_OFFSETS': lambda args: args['offsets'] is not None,
     'USE_G': lambda args: args['g'] is not None,
-    'USE_DH': lambda args: args['dh'] is not None
 })
 @triton.autotune(
     configs=[
         triton.Config({}, num_warps=num_warps)
-        for num_warps in [4]
+        for num_warps in [4, 8]
     ],
-    key=["BT", "BK", "BV", "USE_G", "USE_DH"],
+    key=["BT", "BK", "BV", "USE_G"],
 )
 @triton.jit
 def chunk_bwd_kernel_dv(
@@ -339,10 +341,9 @@ def chunk_bwd_kernel_dv(
         b_q = tl.load(p_q, boundary_check=(0, 1))
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_A += tl.dot(b_k, b_q)
-        if USE_DH:
-            p_dh = tl.make_block_ptr(dh, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
-            b_dh = tl.load(p_dh, boundary_check=(0, 1))
-            b_dv += tl.dot(b_k, b_dh.to(b_k.dtype))
+        p_dh = tl.make_block_ptr(dh, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
+        b_dh = tl.load(p_dh, boundary_check=(0, 1))
+        b_dv += tl.dot(b_k, b_dh.to(b_k.dtype))
 
     if USE_G:
         g += (i_bh * T) if HEAD_FIRST else (bos * H + i_h)
@@ -365,6 +366,83 @@ def chunk_bwd_kernel_dv(
     b_do = tl.load(p_do, boundary_check=(0, 1))
     b_dv += tl.dot(b_A.to(b_do.dtype), b_do)
     tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
+
+
+@triton.heuristics({
+    'USE_OFFSETS': lambda args: args['offsets'] is not None,
+    'USE_G': lambda args: args['g'] is not None,
+})
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=num_warps)
+        for num_warps in [4]
+    ],
+    key=["BT", "BK", "BV", "USE_G"],
+)
+@triton.jit
+def chunk_bwd_kernel_dv_local(
+    q,
+    k,
+    g,
+    do,
+    dv,
+    offsets,
+    indices,
+    scale,
+    T: tl.constexpr,
+    H: tl.constexpr,
+    K: tl.constexpr,
+    V: tl.constexpr,
+    BT: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
+    USE_OFFSETS: tl.constexpr,
+    HEAD_FIRST: tl.constexpr,
+    USE_G: tl.constexpr,
+):
+    i_t, i_bh = tl.program_id(0), tl.program_id(1)
+    i_b, i_h = i_bh // H, i_bh % H
+    if USE_OFFSETS:
+        i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
+        T = eos - bos
+    else:
+        bos, eos = i_b * T, i_b * T + T
+
+    # offset calculation
+    q += i_bh * T * K if HEAD_FIRST else (bos * H + i_h) * K
+    k += i_bh * T * K if HEAD_FIRST else (bos * H + i_h) * K
+    do += i_bh * T * V if HEAD_FIRST else (bos * H + i_h) * V
+    dv += i_bh * T * V if HEAD_FIRST else (bos * H + i_h) * V
+    stride_qk = K if HEAD_FIRST else H*K
+    stride_vo = V if HEAD_FIRST else H*V
+    stride_g = 1 if HEAD_FIRST else H
+
+    b_A = tl.zeros([BT, BT], dtype=tl.float32)
+    for i_k in range(tl.cdiv(K, BK)):
+        p_k = tl.make_block_ptr(k, (T, K), (stride_qk, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
+        p_q = tl.make_block_ptr(q, (K, T), (1, stride_qk), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
+        b_q = tl.load(p_q, boundary_check=(0, 1))
+        b_k = tl.load(p_k, boundary_check=(0, 1))
+        b_A += tl.dot(b_k, b_q)
+
+    if USE_G:
+        g += (i_bh * T) if HEAD_FIRST else (bos * H + i_h)
+        p_g = tl.make_block_ptr(g, (T,), (stride_g,), (i_t * BT,), (BT,), (0,))
+        b_g = tl.load(p_g, boundary_check=(0,))
+    
+    mask = (tl.arange(0, BT)[:, None] <= tl.arange(0, BT)[None, :])
+    if USE_G:
+        b_A = tl.where(mask, b_A * safe_exp(b_g[None, :] - b_g[:, None]) * scale, 0).to(do.dtype.element_ty)
+    else:
+        b_A = tl.where(mask, b_A * scale, 0).to(do.dtype.element_ty)
+    
+    for i_v in range(tl.cdiv(V, BV)):
+        p_do = tl.make_block_ptr(do, (T, V), (stride_vo, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        p_dv = tl.make_block_ptr(dv, (T, V), (stride_vo, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
+        b_do = tl.load(p_do, boundary_check=(0, 1))
+        b_dv = tl.dot(b_A.to(b_do.dtype), b_do)
+        tl.store(p_dv, b_dv.to(p_dv.dtype.element_ty), boundary_check=(0, 1))
 
 
 def chunk_fwd_o(
@@ -393,12 +471,14 @@ def chunk_fwd_o(
             indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
             indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         NT = len(indices)
-    BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(V), 64)
-    NV = triton.cdiv(V, BV)
 
     o = torch.empty_like(v)
-    grid = (NV, NT, B * H)
+    
+    grid = lambda meta: (
+        triton.cdiv(V, meta['BV']),
+        NT,
+        B * H
+    )
     chunk_fwd_kernel_o[grid](
         q,
         k,
@@ -414,12 +494,11 @@ def chunk_fwd_o(
         K=K,
         V=V,
         BT=BT,
-        BK=BK,
-        BV=BV,
-        NT=NT,
         HEAD_FIRST=head_first
     )
     return o
+
+
 
 def chunk_bwd_dv(
     q: torch.Tensor,
@@ -445,8 +524,8 @@ def chunk_bwd_dv(
             indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
             indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         NT = len(indices)
-    BK = min(triton.next_power_of_2(K), 64)
-    BV = min(triton.next_power_of_2(V), 64)
+    BK = min(triton.next_power_of_2(K), 128)
+    BV = min(triton.next_power_of_2(V), 128)
     NV = triton.cdiv(V, BV)
 
     dv = torch.empty_like(do)
@@ -458,6 +537,56 @@ def chunk_bwd_dv(
         do,
         dv,
         dh,
+        offsets,
+        indices,
+        scale,
+        T=T,
+        H=H,
+        K=K,
+        V=V,
+        BT=BT,
+        BK=BK,
+        BV=BV,
+        HEAD_FIRST=head_first
+    )
+    return dv
+
+
+def chunk_bwd_dv_local(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    g: torch.Tensor,
+    do: torch.Tensor,
+    dh: torch.Tensor,
+    scale: float,
+    offsets: Optional[torch.LongTensor] = None,
+    indices: Optional[torch.LongTensor] = None,
+    head_first: bool = True,
+    chunk_size: int = 64
+) -> torch.Tensor:
+    if head_first:
+        B, H, T, K, V = *k.shape, do.shape[-1]
+    else:
+        B, T, H, K, V = *k.shape, do.shape[-1]
+    BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
+    if offsets is None:
+        NT = triton.cdiv(T, BT)
+    else:
+        if indices is None:
+            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
+            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
+        NT = len(indices)
+    BK = min(triton.next_power_of_2(K), 128)
+    BV = min(triton.next_power_of_2(V), 128)
+
+    dv = torch.empty_like(do)
+    grid = (NT, B * H)
+    chunk_bwd_kernel_dv_local[grid](
+        q,
+        k,
+        g,
+        do,
+        dv,
         offsets,
         indices,
         scale,
