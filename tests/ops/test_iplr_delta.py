@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from fla.ops.generalized_delta_rule.iplr.chunk import chunk_iplr_delta_rule
+from fla.ops.generalized_delta_rule.iplr.fused_recurrent import fused_recurrent_iplr_delta_rule
 from utils import assert_close
 
 def chunk_iplr_delta_rule_ref(
@@ -132,14 +133,14 @@ def test_chunk(
 ):
     if head_first:
         q = torch.randn(B, H, T, D, dtype=dtype)
-        k = F.normalize(torch.randn(B, H, T, D, dtype=torch.float32), p=2, dim=-1).to(dtype)
+        k = torch.randn(B, H, T, D, dtype=dtype)
         v = torch.randn(B, H, T, D, dtype=dtype)
-        a = torch.rand(B, H, T, D, dtype=dtype).sigmoid()
+        a = torch.rand(B, H, T, D, dtype=dtype)
     else:
         q = torch.randn(B, T, H, D, dtype=dtype)
-        k = F.normalize(torch.randn(B, T, H, D, dtype=torch.float32), p=2, dim=-1).to(dtype)
+        k = torch.randn(B, T, H, D, dtype=dtype)
         v = torch.randn(B, T, H, D, dtype=dtype)
-        a = torch.rand(B, T, H, D, dtype=dtype).sigmoid()
+        a = torch.rand(B, T, H, D, dtype=dtype)
 
     a = torch.nn.functional.normalize(a, p=2, dim=-1)
     b = -a
@@ -169,3 +170,72 @@ def test_chunk(
     )
     assert_close("  o", ref, tri, 0.007)
     assert_close(" ht", ref_ht, tri_ht, 0.008)
+
+
+@pytest.mark.parametrize("B", [2])
+@pytest.mark.parametrize("T", [256, 300, 1024])
+@pytest.mark.parametrize("H", [2])
+@pytest.mark.parametrize("D", [256, 100])
+@pytest.mark.parametrize("scale", [0.25])
+@pytest.mark.parametrize("dtype", [torch.bfloat16])
+@pytest.mark.parametrize("head_first", [True, False])
+def test_recurrent(
+    B: int,
+    T: int,
+    H: int,
+    D: int,
+    scale: float,
+    dtype: torch.dtype,
+    head_first: bool,
+):
+    if head_first:
+        q = torch.randn(B, H, T, D, dtype=dtype)
+        k = torch.randn(B, H, T, D, dtype=dtype)
+        v = torch.randn(B, H, T, D, dtype=dtype)
+        a = torch.rand(B, H, T, D, dtype=dtype)
+    else:
+        q = torch.randn(B, T, H, D, dtype=dtype)
+        k = torch.randn(B, T, H, D, dtype=dtype)
+        v = torch.randn(B, T, H, D, dtype=dtype)
+        a = torch.rand(B, T, H, D, dtype=dtype)
+
+    a = torch.nn.functional.normalize(a, p=2, dim=-1)
+    b = -a
+    h0 = torch.zeros(B, H, D, D, dtype=torch.float32)
+    q, k, v, a, b, h0 = map(lambda x: x.cuda().requires_grad_(True), (q, k, v, a, b, h0))
+    ref, ref_ht = recurrence_iplr_delta_rule_ref(
+        q=q.clone(),
+        k=k.clone(),
+        v=v.clone(),
+        a=a.clone(),
+        b=b.clone(),
+        scale=scale,
+        initial_state=h0.clone(),
+        output_final_state=True,
+        head_first=head_first
+    )
+    dht = torch.rand_like(h0)
+    do = torch.rand_like(ref)
+    ((dht * ref_ht).sum() + (do * ref).sum()).backward()
+    dq, dk, dv, da, db, dh0 = map(lambda x: x.grad, (q, k, v, a, b, h0))
+    q.grad, k.grad, v.grad, a.grad, b.grad, h0.grad = None, None, None, None, None, None
+    tri, tri_ht = fused_recurrent_iplr_delta_rule(
+        q=q.clone(),
+        k=k.clone(),
+        v=v.clone(),
+        a=a.clone(),
+        b=b.clone(),
+        scale=scale,
+        initial_state=h0.clone(),
+        output_final_state=True,
+        head_first=head_first
+    )
+    ((dht * tri_ht).sum() + (do * tri).sum()).backward()
+    assert_close("  o", ref, tri, 0.003)
+    assert_close(" ht", ref_ht, tri_ht, 0.003)
+    assert_close(" dq", dq, q.grad, 0.003)
+    assert_close(" dk", dk, k.grad, 0.003)
+    assert_close(" dv", dv, v.grad, 0.003)
+    assert_close(" da", da, a.grad, 0.003)
+    assert_close(" db", db, b.grad, 0.003)
+    assert_close(" dh0", dh0, h0.grad, 0.003)
