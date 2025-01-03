@@ -70,12 +70,9 @@ def rms_norm_ref(
 
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-        triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=num_warps, num_stages=num_stages)
+        for num_warps in [1, 2, 4, 8, 16, 32]
+        for num_stages in [2, 3, 4]
     ],
     key=["N", "HAS_RESIDUAL", "STORE_RESIDUAL_OUT", "IS_RMS_NORM", "HAS_BIAS"],
 )
@@ -212,12 +209,9 @@ def layer_norm_fwd(
 })
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-        triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=num_warps, num_stages=num_stages)
+        for num_warps in [1, 2, 4, 8, 16, 32]
+        for num_stages in [2, 3, 4]
     ],
     key=["N", "HAS_DRESIDUAL", "STORE_DRESIDUAL", "IS_RMS_NORM", "HAS_BIAS"],
 )
@@ -568,9 +562,17 @@ class LayerNorm(nn.Module):
         self.register_parameter("weight", None)
         self.register_parameter("bias", None)
         if elementwise_affine:
-            self.weight = nn.Parameter(torch.ones(hidden_size))
+            self.weight = nn.Parameter(torch.empty(hidden_size))
             if bias:
-                self.bias = nn.Parameter(torch.zeros(hidden_size))
+                self.bias = nn.Parameter(torch.empty(hidden_size))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        if self.elementwise_affine:
+            nn.init.ones_(self.weight)
+            if self.bias:
+                nn.init.zeros_(self.bias)
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.hidden_size}"
@@ -615,9 +617,17 @@ class GroupNorm(nn.Module):
         self.register_parameter("weight", None)
         self.register_parameter("bias", None)
         if elementwise_affine:
-            self.weight = nn.Parameter(torch.ones(hidden_size))
+            self.weight = nn.Parameter(torch.empty(hidden_size))
             if bias:
-                self.bias = nn.Parameter(torch.zeros(hidden_size))
+                self.bias = nn.Parameter(torch.empty(hidden_size))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        if self.elementwise_affine:
+            nn.init.ones_(self.weight)
+            if self.bias:
+                nn.init.zeros_(self.bias)
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.num_groups}, {self.hidden_size}"
@@ -658,9 +668,17 @@ class RMSNorm(nn.Module):
         self.register_parameter("weight", None)
         self.register_parameter("bias", None)
         if elementwise_affine:
-            self.weight = nn.Parameter(torch.ones(hidden_size))
+            self.weight = nn.Parameter(torch.empty(hidden_size))
             if bias:
-                self.bias = nn.Parameter(torch.zeros(hidden_size))
+                self.bias = nn.Parameter(torch.empty(hidden_size))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        if self.elementwise_affine:
+            nn.init.ones_(self.weight)
+            if self.bias:
+                nn.init.zeros_(self.bias)
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.hidden_size}"
@@ -806,9 +824,17 @@ class LayerNormLinear(nn.Module):
         self.register_parameter("weight", None)
         self.register_parameter("bias", None)
         if elementwise_affine:
-            self.weight = nn.Parameter(torch.ones(hidden_size))
+            self.weight = nn.Parameter(torch.empty(hidden_size))
             if bias:
-                self.bias = nn.Parameter(torch.zeros(hidden_size))
+                self.bias = nn.Parameter(torch.empty(hidden_size))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        if self.elementwise_affine:
+            nn.init.ones_(self.weight)
+            if self.bias:
+                nn.init.zeros_(self.bias)
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.hidden_size}"
@@ -856,9 +882,17 @@ class GroupNormLinear(nn.Module):
         self.register_parameter("weight", None)
         self.register_parameter("bias", None)
         if elementwise_affine:
-            self.weight = nn.Parameter(torch.ones(hidden_size))
+            self.weight = nn.Parameter(torch.empty(hidden_size))
             if bias:
-                self.bias = nn.Parameter(torch.zeros(hidden_size))
+                self.bias = nn.Parameter(torch.empty(hidden_size))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        if self.elementwise_affine:
+            nn.init.ones_(self.weight)
+            if self.bias:
+                nn.init.zeros_(self.bias)
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.num_groups}, {self.hidden_size}"
@@ -902,9 +936,17 @@ class RMSNormLinear(nn.Module):
         self.register_parameter("weight", None)
         self.register_parameter("bias", None)
         if elementwise_affine:
-            self.weight = nn.Parameter(torch.ones(hidden_size))
+            self.weight = nn.Parameter(torch.empty(hidden_size))
             if bias:
-                self.bias = nn.Parameter(torch.zeros(hidden_size))
+                self.bias = nn.Parameter(torch.empty(hidden_size))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        if self.elementwise_affine:
+            nn.init.ones_(self.weight)
+            if self.bias:
+                nn.init.zeros_(self.bias)
 
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}({self.hidden_size}"

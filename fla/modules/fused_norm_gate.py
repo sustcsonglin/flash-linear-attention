@@ -22,46 +22,11 @@ import triton.language as tl
 from fla.utils import contiguous
 
 
-def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
-    dtype = x.dtype
-    if upcast:
-        weight = weight.float()
-        bias = bias.float() if bias is not None else None
-    if upcast:
-        x = x.float()
-        residual = residual.float() if residual is not None else residual
-    if residual is not None:
-        x = (x + residual).to(x.dtype)
-    out = F.layer_norm(x.to(weight.dtype), x.shape[-1:], weight=weight, bias=bias, eps=eps).to(
-        dtype
-    )
-    return out if not prenorm else (out, x)
-
-
-def rms_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
-    dtype = x.dtype
-    if upcast:
-        weight = weight.float()
-        bias = bias.float() if bias is not None else None
-    if upcast:
-        x = x.float()
-        residual = residual.float() if residual is not None else residual
-    if residual is not None:
-        x = (x + residual).to(x.dtype)
-    rstd = 1 / torch.sqrt((x.square()).mean(dim=-1, keepdim=True) + eps)
-    out = (x * rstd * weight) + bias if bias is not None else (x * rstd * weight)
-    out = out.to(dtype)
-    return out if not prenorm else (out, x)
-
-
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-        triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=num_warps, num_stages=num_stages)
+        for num_warps in [1, 2, 4, 8, 16, 32]
+        for num_stages in [2, 3, 4]
     ],
     key=["N", "HAS_RESIDUAL", "STORE_RESIDUAL_OUT", "IS_RMS_NORM", "HAS_BIAS"],
 )
@@ -208,12 +173,9 @@ def layer_norm_fwd(
 })
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-        triton.Config({}, num_warps=32),
+        triton.Config({}, num_warps=num_warps, num_stages=num_stages)
+        for num_warps in [1, 2, 4, 8, 16, 32]
+        for num_stages in [2, 3, 4]
     ],
     key=["N", "HAS_DRESIDUAL", "STORE_DRESIDUAL", "IS_RMS_NORM", "HAS_BIAS"],
 )
