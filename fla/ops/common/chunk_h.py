@@ -364,9 +364,6 @@ def chunk_bwd_dh(
     if offsets is None:
         N, NT, chunk_offsets = B, triton.cdiv(T, BT), None
     else:
-        if indices is None:
-            indices = torch.cat([torch.arange(n) for n in triton.cdiv(offsets[1:] - offsets[:-1], BT).tolist()])
-            indices = torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(offsets)
         N, NT = len(offsets) - 1, len(indices)
         chunk_offsets = prepare_varlen_inputs(offsets, BT)
     NG = HQ // H

@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2024, Songlin Yang, Yu Zhang
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import triton
 
+from fla.ops.common.chunk_delta_h import (chunk_gated_delta_rule_bwd_dhu,
+                                          chunk_gated_delta_rule_fwd_h)
+from fla.ops.common.chunk_o import (chunk_bwd_dqkwg, chunk_bwd_dv_local,
+                                    chunk_fwd_o)
 from fla.ops.delta_rule.wy_fast import (bwd_prepare_wy_repr,
                                         fwd_prepare_wy_repr, fwd_recompute_w_u)
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
-from fla.ops.common.chunk_o import chunk_fwd_o, chunk_bwd_dv_local, chunk_bwd_dqkwg
-from fla.ops.common.chunk_delta_h import chunk_gated_delta_rule_fwd_h, chunk_gated_delta_rule_bwd_dhu
+
 
 def chunk_delta_rule_fwd(
     q: torch.Tensor,

@@ -1,8 +1,10 @@
+from typing import Optional, Tuple
+
 import torch
 import triton
 import triton.language as tl
-from typing import Optional, Tuple
-from fla.ops.generalized_delta_rule.iplr.wy_fast import fwd_prepare_wy_repr 
+
+from fla.ops.generalized_delta_rule.iplr.wy_fast import fwd_prepare_wy_repr
 from fla.utils import autocast_custom_bwd, autocast_custom_fwd, contiguous
 
 
@@ -30,7 +32,7 @@ def chunk_generalized_iplr_delta_rule_fwd_kernel_h(
     h0,
     ht,
     offsets,
-    c_offsets,
+    chunk_offsets,
     T: tl.constexpr,
     H: tl.constexpr,
     K: tl.constexpr,
@@ -51,7 +53,7 @@ def chunk_generalized_iplr_delta_rule_fwd_kernel_h(
         bos, eos = tl.load(offsets + i_n).to(tl.int32), tl.load(offsets + i_n + 1).to(tl.int32)
         T = eos - bos
         NT = tl.cdiv(T, BT)
-        boh = tl.load(c_offsets + i_n).to(tl.int32)
+        boh = tl.load(chunk_offsets + i_n).to(tl.int32)
     else:
         bos, eos = i_n * T, i_n * T + T
         NT = tl.cdiv(T, BT)
@@ -102,7 +104,6 @@ def chunk_generalized_iplr_delta_rule_fwd_kernel_h(
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
 
 
-
 @triton.heuristics({
     'USE_OFFSETS': lambda args: args['offsets'] is not None,
 })
@@ -140,7 +141,7 @@ def chunk_generalized_iplr_delta_rule_fwd_kernel_o(
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
-    
+
     if USE_OFFSETS:
         i_tg = i_t
         i_n, i_t = tl.load(indices + i_t * 2).to(tl.int32), tl.load(indices + i_t * 2 + 1).to(tl.int32)
@@ -151,7 +152,7 @@ def chunk_generalized_iplr_delta_rule_fwd_kernel_o(
         NT = tl.cdiv(T, BT)
         i_tg = i_b * NT + i_t
         bos, eos = i_b * T, i_b * T + T
-    
+
     # offset calculation
     q += (i_bh * T * K) if HEAD_FIRST else ((bos * H + i_h) * K)
     k += (i_bh * T * K) if HEAD_FIRST else ((bos * H + i_h) * K)
@@ -166,10 +167,10 @@ def chunk_generalized_iplr_delta_rule_fwd_kernel_o(
     b_o = tl.zeros([BT, BV], dtype=tl.float32)
     b_Aqk = tl.zeros([BT, BT], dtype=tl.float32)
     b_Aqb = tl.zeros([BT, BT], dtype=tl.float32)
-    
+
     for i_k in range(tl.cdiv(K, BK)):
         p_q = tl.make_block_ptr(q, (T, K), (stride_qk, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
-        p_k = tl.make_block_ptr(k, (K, T), (1, stride_qk), (i_k * BK, i_t * BT), (BK, BT), (0, 1)) 
+        p_k = tl.make_block_ptr(k, (K, T), (1, stride_qk), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         p_h = tl.make_block_ptr(h, (K, V), (V, 1), (i_k * BK, i_v * BV), (BK, BV), (1, 0))
         p_b = tl.make_block_ptr(b, (K, T), (1, stride_qk), (i_k * BK, i_t * BT), (BK, BT), (0, 1))
         # [BT, BK]
@@ -185,7 +186,7 @@ def chunk_generalized_iplr_delta_rule_fwd_kernel_o(
         b_Aqk += tl.dot(b_q, b_k)
         # [BT, BK] @ [BK, BT] -> [BT, BT]
         b_Aqb += tl.dot(b_q, b_b)
-    
+
     o_i = tl.arange(0, BT)
     m_A = o_i[:, None] >= o_i[None, :]
     b_Aqk = tl.where(m_A, b_Aqk, 0)
@@ -230,7 +231,7 @@ def chunk_generalized_iplr_delta_rule_fwd_o(
 
     o = torch.empty_like(v)
 
-    grid = lambda meta: (
+    def grid(meta): return (
         triton.cdiv(V, meta['BV']),
         NT,
         B * H
@@ -265,7 +266,7 @@ def chunk_generalized_iplr_delta_rule_fwd_h(
     initial_state: Optional[torch.Tensor] = None,
     output_final_state: bool = False,
     offsets: Optional[torch.LongTensor] = None,
-    c_offsets: Optional[torch.Tensor] = None,
+    chunk_offsets: Optional[torch.Tensor] = None,
     head_first: bool = True,
     chunk_size: int = 64
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -276,12 +277,12 @@ def chunk_generalized_iplr_delta_rule_fwd_h(
     BT = min(chunk_size, max(triton.next_power_of_2(T), 16))
     # N: the actual number of sequences in the batch with either equal or variable lengths
     if offsets is None:
-        N, NT, c_offsets = B, triton.cdiv(T, BT), None
+        N, NT, chunk_offsets = B, triton.cdiv(T, BT), None
     else:
         N = len(offsets) - 1
-        if c_offsets is None:
-            c_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
-        NT = c_offsets[-1]
+        if chunk_offsets is None:
+            chunk_offsets = torch.cat([offsets.new_tensor([0]), triton.cdiv(offsets[1:] - offsets[:-1], BT)]).cumsum(-1)
+        NT = chunk_offsets[-1]
     BK = triton.next_power_of_2(K)
     assert BK <= 256, "current kernel does not support head dimension larger than 256."
     # H100 can have larger block size
@@ -308,7 +309,7 @@ def chunk_generalized_iplr_delta_rule_fwd_h(
 
     chunk_generalized_iplr_delta_rule_fwd_kernel_h[grid](
         k=k,
-        v=v, 
+        v=v,
         d=w,
         b=b,
         u=u,
@@ -317,7 +318,7 @@ def chunk_generalized_iplr_delta_rule_fwd_h(
         h0=initial_state,
         ht=final_state,
         offsets=offsets,
-        c_offsets=c_offsets,
+        chunk_offsets=chunk_offsets,
         T=T,
         H=H,
         K=K,
@@ -405,7 +406,6 @@ class ChunkGeneralizedIPLRDeltaRuleFunction(torch.autograd.Function):
         offsets: Optional[torch.LongTensor] = None,
         head_first: bool = True
     ):
-        T = q.shape[2] if head_first else q.shape[1]
         chunk_size = 64
 
         # 2-d indices denoting the offsets of chunks in each sequence
@@ -441,7 +441,10 @@ class ChunkGeneralizedIPLRDeltaRuleFunction(torch.autograd.Function):
         do: torch.Tensor,
         dht: torch.Tensor
     ):
-        raise NotImplementedError("Backward pass for ChunkGeneralizedIPLRDeltaRuleFunction is not implemented yet. Stay tuned!")
+        raise NotImplementedError(
+            "Backward pass for ChunkGeneralizedIPLRDeltaRuleFunction is not implemented yet. "
+            "Stay tuned!"
+        )
 
 
 def chunk_iplr_delta_rule(
@@ -519,4 +522,3 @@ def chunk_iplr_delta_rule(
         head_first
     )
     return o, final_state
-
